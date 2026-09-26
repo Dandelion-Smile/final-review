@@ -12,6 +12,9 @@ class Store(Protocol):
     def put(self, table: str, key: str, data: dict) -> None: ...
     def get(self, table: str, key: str) -> dict | None: ...
     def scan(self, table: str, filters: dict) -> list[dict]: ...
+    def delete(self, table: str, key: str) -> None: ...
+    def delete_document(self, key: str) -> None: ...
+    def deindex_document(self, key: str) -> None: ...
     def ingest(self, document: dict, chunks: list[dict]) -> None: ...
     def search(self, vector: list[float], course: str, chapter: str, limit: int) -> list[dict]: ...
 
@@ -26,12 +29,28 @@ class StorageError(RuntimeError):
 
 class SurrealStore:
     TABLES = {
+        "course",
         "document",
         "chunk",
+        "conversation",
+        "message",
         "review_session",
         "knowledge_point",
         "checkpoint",
         "pending_write",
+        "attempt",
+        "learning_event",
+        "fast_quiz_session",
+        "exam",
+        "learning_asset",
+        "asset_revision",
+        "quiz_revision_payload",
+        "question_revision",
+        "material_version",
+        "source_reference",
+        "source_snapshot",
+        "confirmation",
+        "audit_event",
     }
 
     def __init__(self, settings: Settings):
@@ -122,11 +141,34 @@ class SurrealStore:
 
     def scan(self, table, filters):
         table = self._table(table)
-        allowed = {"thread_id", "checkpoint_ns", "checkpoint_id", "course_id"}
+        allowed = {
+            "thread_id",
+            "checkpoint_ns",
+            "checkpoint_id",
+            "course_id",
+            "conversation_id",
+            "document_id",
+        }
         if not filters.keys() <= allowed:
             raise ValueError("不支持的查询字段")
         where = " AND ".join(f"{k} = ${k}" for k in filters) or "true"
-        return self.query(f"SELECT * OMIT id FROM {table} WHERE {where};", filters)[0]
+        order = " ORDER BY created_at ASC" if table == "message" else ""
+        return self.query(f"SELECT * OMIT id FROM {table} WHERE {where}{order};", filters)[0]
+
+    def delete(self, table, key):
+        self._table(table)
+        self.query("DELETE type::thing($table, $key);", {"table": table, "key": key})
+
+    def delete_document(self, key):
+        self.query(
+            "BEGIN TRANSACTION; DELETE chunk WHERE document_id = $key; "
+            "DELETE type::thing('document', $key); COMMIT TRANSACTION;",
+            {"key": key},
+        )
+
+    def deindex_document(self, key):
+        """Remove retrieval chunks while retaining the document provenance record."""
+        self.query("DELETE chunk WHERE document_id = $key;", {"key": key})
 
     def ingest(self, document, chunks):
         # Single transaction prevents incomplete documents from entering retrieval.

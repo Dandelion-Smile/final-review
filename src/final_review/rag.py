@@ -49,7 +49,7 @@ class KnowledgeBase:
 
     def ingest(self, material: MaterialInput) -> dict:
         cleaned = clean_markdown(material.markdown)
-        document_id = stable_key(
+        document_id = material.document_id or stable_key(
             material.course_id,
             material.title,
             material.chapter,
@@ -57,7 +57,10 @@ class KnowledgeBase:
             sha256(cleaned.encode()).hexdigest(),
         )
         existing = self.store.get("document", document_id)
-        if existing:
+        # Direct ingest callers do not create an upload-state placeholder; retain
+        # their deterministic deduplication while allowing a pending upload ID
+        # to proceed through parsing exactly once.
+        if existing and (material.document_id is None or existing.get("parse_status") == "ready"):
             return {"document_id": document_id, "chunks": existing["chunk_count"], "cached": True}
         texts = list(dict.fromkeys(self.splitter.split_text(cleaned)))
         vectors = []

@@ -1,6 +1,6 @@
 # Final Review Agent
 
-基于 **LangChain + LangGraph + SurrealDB** 的期末复习 Agent 后端。可独立运行，也可作为学习系统中的一个 Agent 模块使用。
+基于 **LangChain + LangGraph + PostgreSQL/pgvector** 的期末复习 Agent 后端。可独立运行，也可作为学习系统中的一个 Agent 模块使用。
 
 接收课程资料，完成资料入库、带来源问答、模拟出题、作答评测与薄弱点反馈。原有 [SKILL.md](SKILL.md) 保留为领域规范；[policy.py](src/final_review/policy.py) 和工作流把关键规则落实为代码。
 
@@ -9,19 +9,20 @@
 | 能力 | 实现 |
 | --- | --- |
 | 资料处理 | MarkItDown 转 PDF/PPTX/DOCX；Markdown 清洗、分块去重、Embedding、事务入库 |
-| RAG | 课程/章节过滤 → SurrealDB 精确余弦召回 → 相关性阈值 → 题源加权重排 |
+| RAG | 课程/章节过滤 → PostgreSQL/pgvector 召回 → 相关性阈值 → 题源加权重排 |
+| 认证与隔离 | FastAPI 自管 Argon2id 密码、HttpOnly Session Cookie；所有业务查询绑定 Session 的 user_id |
 | Tool Calling | 模型调用 search_course_material，实际执行 LangChain Retriever，并接收 ToolMessage；最多两轮 |
 | 结构化输出 | ChatModel + PromptTemplate + Pydantic，结构错误有限重试 |
 | 工作流 | LangGraph StateGraph、条件路由、证据校验回环、人工输入中断 |
 | 复习策略 | 真题优先；按知识点分配 1～6 题；验证考试题型与题量；保留得分解析 |
 | 反馈闭环 | 出题 → 用户作答 → 评分 → 更新会话薄弱点 → 下一轮优先覆盖 |
-| 恢复 | 自定义 SurrealDB Checkpointer，保存图状态、父检查点、pending writes |
+| 恢复 | 自定义 PostgreSQL Checkpointer，保存图状态、父检查点、pending writes |
 | 交付 | FastAPI /docs、JSON 响应、题答分离 Markdown 导出、Docker Compose |
 
 ```mermaid
 flowchart TD
     A[资料上传] --> B[MarkItDown / 清洗 / 分块]
-    B --> C[Embedding → SurrealDB]
+    B --> C[Embedding → PostgreSQL / pgvector]
     D[用户请求] --> E[意图路由]
     E -->|出题| F[考试信息确认 / interrupt]
     E -->|问答| G[模型调用资料检索工具]
@@ -41,17 +42,19 @@ flowchart TD
 
 ## 快速启动
 
-需要 Python 3.11+、[uv](https://docs.astral.sh/uv/)、SurrealDB 2.3.10，以及支持 Tool Calling 的聊天模型和 Embedding 模型。两个模型可来自不同的 OpenAI 兼容提供商。
+课程与考试工作台需要 Python 3.11+、[uv](https://docs.astral.sh/uv/) 和 Docker（或本机 PostgreSQL + pgvector）。AI 资料问答与生成另需支持 Tool Calling 的聊天模型和 Embedding 模型；两个模型可来自不同的 OpenAI 兼容提供商。
 
 ```powershell
 uv sync --frozen
 Copy-Item .env.example .env
-# 编辑 .env，填入模型 Key、模型名称、URL 和 SURREAL_PASSWORD
-docker compose up -d surrealdb
+# 编辑 .env，填入 POSTGRES_PASSWORD 和 DATABASE_URL；使用 AI 功能时再配置模型
+docker compose up -d postgres
 uv run uvicorn final_review.api:create_app --factory --host 127.0.0.1 --port 8080 --workers 1
 ```
 
-打开 [接口文档](http://127.0.0.1:8080/docs)。也可使用本机 SurrealDB，修改 SURREAL_URL 即可。
+打开 [接口文档](http://127.0.0.1:8080/docs)。在本机直接启动前先运行
+`uv run python -m final_review.migrations "$env:DATABASE_URL"`；Compose 中 Agent 会在启动
+时自动执行相同的版本化迁移。已有数据库同样会升级，详见[本地 PostgreSQL 部署](docs/local-postgres.md)。
 
 全 Docker 启动：
 
@@ -66,12 +69,13 @@ docker compose up --build -d
 | LLM_API_KEY / LLM_BASE_URL / LLM_MODEL | 聊天模型，须支持工具调用 |
 | EMBEDDING_API_KEY / EMBEDDING_BASE_URL / EMBEDDING_MODEL | Embedding 提供商 |
 | EMBEDDING_DIMENSIONS | 必须匹配实际维度；提供商接口需接受 dimensions 参数 |
-| SURREAL_* | 数据库连接、认证与 namespace/database |
+| DATABASE_URL | 本机 PostgreSQL 连接串 |
+| AUTH_COOKIE_SECURE / AUTH_SESSION_DAYS | HTTPS Cookie 开关 / Session 有效期（默认 30 天） |
 | API_TOKEN | 可选 Bearer Token；共享部署时配置 |
 | TOP_K / RETRIEVAL_CANDIDATES | 最终上下文数 / 初始召回数，默认 5 / 20 |
 | MIN_SIMILARITY / MAX_REPAIRS | 相关性阈值 / 校验最大修复次数，默认 0.25 / 1 |
 
-启动时核对数据库内的 Embedding 配置。更换模型、维度或提供商地址时，使用新的 SURREAL_DATABASE 重新入库，避免混用向量空间。
+启动时核对数据库内的 Embedding 配置。更换模型、维度或提供商地址时，应使用新的数据库重新入库，避免混用向量空间。
 
 ## 跑通一次复习
 
@@ -158,20 +162,11 @@ uv run ruff format --check src tests examples eval
 
 默认测试使用显式测试 adapter，不需要模型 Key。覆盖真实 LangGraph 与 LangChain 请求编解码，但这不是模型准确率评测。
 
-真实数据库集成测试创建、删除独立的 final_review_tests/test_<uuid> 数据库：
-
-```powershell
-$env:SURREAL_TEST_URL='http://127.0.0.1:8000'
-$env:SURREAL_TEST_USER='root'
-$env:SURREAL_TEST_PASSWORD='你的本地数据库密码'
-uv run pytest -m integration -q
-```
-
 真实模型评测见 [eval/README.md](eval/README.md)。不预填准确率或检索提升百分比。
 
 ## 范围与限制
 
-- 单进程、可信环境后端；资料和会话按 course_id 隔离，薄弱点在同一 session_id 累计。没有登录系统和多租户权限。
+- 单进程后端；用户以邮箱和密码注册，数据按后端从有效 Session 取得的 user_id 隔离。薄弱点在同一 session_id 累计。
 - 检索是数据库内精确余弦计算，不是 HNSW、混合检索或训练后的 Reranker。题源权重与阈值是启发式，需要真实课程数据调参。
 - 引用 ID/原文匹配是确定性校验，语义支持由模型复核。模型复核、出题和评分仍可能出错，不能当作形式证明或权威考试成绩。
 - 小型语料采用字符分块、轻量清洗和分块去重。扫描件先 OCR；复杂公式与版式需抽查转换结果。
@@ -185,8 +180,9 @@ src/final_review/
   agent.py          # 图、状态、中断、反馈闭环
   llm.py            # LangChain 模型、工具循环、结构化输出
   rag.py            # 清洗、Embedding、Retriever、题源重排
-  storage.py        # SurrealDB 事务、向量查询、业务记录
-  checkpoints.py    # SurrealDB LangGraph Checkpointer
+  postgres.py       # PostgreSQL 事务、向量查询、按用户隔离的业务记录
+  auth.py           # Argon2id 密码与服务端 Session
+  checkpoints.py    # LangGraph Checkpointer
   schemas.py        # 请求、证据、知识点、题目、评分模型
   policy.py         # Skill 对应的可执行规则
   api.py            # FastAPI
@@ -199,4 +195,4 @@ SKILL.md            # 完整领域规范，可继续独立作为 Skill 使用
 AGENTS.md           # 仓库长期复习规则
 ```
 
-技术参考：[LangGraph 持久化](https://docs.langchain.com/oss/python/langgraph/persistence)、[人工中断](https://docs.langchain.com/oss/python/langgraph/interrupts)、[LangChain 模型](https://docs.langchain.com/oss/python/langchain/models)、[SurrealDB 向量函数](https://surrealdb.com/docs/reference/query-language/functions/database-functions/vector)。
+技术参考：[LangGraph 持久化](https://docs.langchain.com/oss/python/langgraph/persistence)、[人工中断](https://docs.langchain.com/oss/python/langgraph/interrupts)、[LangChain 模型](https://docs.langchain.com/oss/python/langchain/models)。

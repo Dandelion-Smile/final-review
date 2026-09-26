@@ -23,11 +23,75 @@ QuestionType = Literal["choice", "fill_blank", "true_false", "short_answer", "ca
 
 
 class MaterialInput(Model):
+    document_id: Identifier | None = None
     course_id: Identifier
     title: Annotated[str, Field(min_length=1, max_length=200)]
     source_type: SourceType
     chapter: Annotated[str, Field(max_length=200)] = ""
     markdown: Annotated[str, Field(min_length=1, max_length=500000)]
+
+
+class CourseCreate(Model):
+    name: Annotated[str, Field(min_length=1, max_length=100)]
+
+
+class CourseUpdate(Model):
+    name: Annotated[str, Field(min_length=1, max_length=100)] | None = None
+    subject: Annotated[str, Field(max_length=100)] | None = None
+    expected_updated_at: str
+
+
+class ExamBlueprintItem(Model):
+    question_type: QuestionType
+    question_count: int = Field(ge=1, le=100)
+    score: float = Field(gt=0, le=10000)
+
+
+class ExamCreate(Model):
+    name: Annotated[str, Field(min_length=1, max_length=100)]
+    exam_at: str | None = None
+    total_score: float | None = Field(default=None, gt=0, le=10000)
+    blueprint: list[ExamBlueprintItem] = Field(default_factory=list, max_length=6)
+    emphasis: list[str] = Field(default_factory=list, max_length=30)
+    exclusions: list[str] = Field(default_factory=list, max_length=30)
+    notes: Annotated[str, Field(max_length=4000)] = ""
+    generation_preferences: dict[str, str | int | float | bool] = Field(default_factory=dict)
+
+
+class ExamUpdate(ExamCreate):
+    expected_updated_at: str
+
+
+class AssetCreate(Model):
+    asset_type: Literal["note", "quiz"]
+    title: Annotated[str, Field(min_length=1, max_length=200)]
+    markdown: Annotated[str, Field(min_length=1, max_length=100000)]
+    source_document_ids: list[Identifier] = Field(default_factory=list, max_length=100)
+
+
+class AssetRevisionCreate(Model):
+    base_revision_id: Identifier
+    title: Annotated[str, Field(min_length=1, max_length=200)]
+    markdown: Annotated[str, Field(min_length=1, max_length=100000)]
+    source_document_ids: list[Identifier] = Field(default_factory=list, max_length=100)
+
+
+class ConfirmationConsume(Model):
+    confirmation_id: Identifier
+
+
+class MaterialDelete(Model):
+    confirmation_id: Identifier
+    mode: Literal["block", "retain_source_snapshot"] = "block"
+
+
+class ConversationCreate(Model):
+    title: Annotated[str, Field(min_length=1, max_length=100)]
+
+
+class Credentials(Model):
+    email: Annotated[str, Field(min_length=3, max_length=320)]
+    password: Annotated[str, Field(min_length=8, max_length=128)]
 
 
 class ExamProfile(Model):
@@ -53,11 +117,15 @@ class ChatMessage(Model):
 class ChatRequest(Model):
     message: Text
     history: list[ChatMessage] = Field(default_factory=list, max_length=20)
+    course_id: Identifier = "software-engineering-basics"
+    conversation_id: Identifier = "default"
+    model_id: Identifier | None = None
 
 
 class ChatResponse(Model):
     reply: Text
     model: str
+    citations: list["Evidence"] = Field(default_factory=list)
 
 
 class ResumeRequest(Model):
@@ -70,6 +138,35 @@ class Submission(Model):
     course_id: Identifier
     session_id: Identifier
     answers: dict[str, Text] = Field(min_length=1, max_length=36)
+
+
+class FastQuizRequest(Model):
+    course_id: Identifier
+    chapter: Annotated[str, Field(max_length=200)] = ""
+    question_types: list[QuestionType] = Field(min_length=1, max_length=6)
+    question_count: int = Field(default=5, ge=1, le=10)
+    model_id: Identifier | None = None
+
+
+class FastQuizQuestion(Model):
+    id: str
+    knowledge_point: Annotated[str, Field(min_length=1, max_length=200)]
+    question_type: QuestionType
+    stem: Text
+    options: list[str] = Field(default_factory=list, max_length=8)
+    reference_answer: Text
+    explanation: Text
+    must_include: list[str] = Field(default_factory=list, max_length=8)
+    source_chunk_ids: list[str] = Field(min_length=1, max_length=3)
+
+
+class FastQuiz(Model):
+    questions: list[FastQuizQuestion] = Field(min_length=1, max_length=10)
+
+
+class FastQuizSubmission(Model):
+    course_id: Identifier
+    answers: dict[str, Text] = Field(min_length=1, max_length=10)
 
 
 class Evidence(Model):

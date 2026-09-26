@@ -7,11 +7,12 @@ from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from pydantic import ValidationError
 
-from .config import Settings
+from .config import ChatModelConfig, Settings
 from .policy import DOMAIN_POLICY
 from .rag import CourseRetriever, KnowledgeBase
 from .schemas import (
     Evidence,
+    FastQuiz,
     Grades,
     GroundedAnswer,
     KnowledgePlan,
@@ -139,6 +140,28 @@ class ReviewModel:
             data,
         )
 
+    def fast_quiz(self, data):
+        return self.structured(
+            FastQuiz,
+            "基于给定资料片段一次性生成题目。严格输出指定总题数，且所有题型都属于允许题型。"
+            "每题引用 source_chunk_ids 中的至少一个真实 chunk_id；答案、解析和考点不得超出资料。"
+            "选择题必须提供四个选项；非选择题 options 为空。",
+            data,
+        )
+
+
+def build_review_model(config: ChatModelConfig, settings: Settings) -> ReviewModel:
+    return ReviewModel(
+        ChatOpenAI(
+            model=config.model,
+            api_key=config.api_key,
+            base_url=config.base_url,
+            timeout=settings.model_timeout,
+            max_retries=2,
+            temperature=0,
+        )
+    )
+
 
 def build_models(settings: Settings):
     if not settings.llm_api_key.get_secret_value():
@@ -146,13 +169,15 @@ def build_models(settings: Settings):
     embedding_key = settings.embedding_api_key.get_secret_value()
     if not embedding_key:
         raise ValueError("请配置 EMBEDDING_API_KEY")
-    model = ChatOpenAI(
-        model=settings.llm_model,
-        api_key=settings.llm_api_key,
-        base_url=settings.llm_base_url,
-        timeout=settings.model_timeout,
-        max_retries=2,
-        temperature=0,
+    model = build_review_model(
+        ChatModelConfig(
+            id="default",
+            label=settings.llm_model,
+            model=settings.llm_model,
+            base_url=settings.llm_base_url,
+            api_key=settings.llm_api_key,
+        ),
+        settings,
     )
     embeddings = OpenAIEmbeddings(
         model=settings.embedding_model,
@@ -163,4 +188,18 @@ def build_models(settings: Settings):
         max_retries=2,
         check_embedding_ctx_length=False,
     )
-    return ReviewModel(model), embeddings
+    return model, embeddings
+
+
+def build_fast_quiz_model(config: ChatModelConfig, settings: Settings) -> ReviewModel:
+    """A single-call, no-transport-retry model for interactive practice generation."""
+    return ReviewModel(
+        ChatOpenAI(
+            model=config.model,
+            api_key=config.api_key,
+            base_url=config.base_url,
+            timeout=settings.fast_quiz_timeout,
+            max_retries=0,
+            temperature=0,
+        )
+    )

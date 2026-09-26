@@ -6,13 +6,13 @@
 
 `FinalReviewAgent` 是外部主要 module，interface 为 `invoke / resume_profile / evaluate / recover / read`。调用者处理课程、会话和公开响应，不操作图节点或检查点。
 
-内部 seam 有真实替代需求：Store（SurrealDB / 测试内存 adapter）、模型与 Embeddings（实际提供商 / 测试 fixture）。测试从 Agent 和 HTTP interface 验证行为。
+内部 seam 有真实替代需求：Store（PostgreSQL / 测试内存 adapter）、模型与 Embeddings（实际提供商 / 测试 fixture）。测试从 Agent 和 HTTP interface 验证行为。
 
 LangChain 负责模型、PromptTemplate、Tool、Retriever、结构化结果；LangGraph 负责控制流与持久状态。文件转换和数据库写入是确定性函数。检索阶段由模型决定检索词及是否继续检索，后续生成与评分使用固定结构化调用。
 
 ## 数据流
 
-入库：MarkItDown → 原始 Markdown → 清洗控制字符/空白 → 字符分块与重复块去重 → 分批 Embedding → SurrealDB 事务写入。
+入库：MarkItDown → 原始 Markdown → 清洗控制字符/空白 → 字符分块与重复块去重 → 分批 Embedding → PostgreSQL 事务写入。
 
 文档键由课程、标题、章节、题源、清洗内容哈希构成。相同资料重复上传不再支付 Embedding 成本。内容变更产生新文档，当前不自动撤下旧版本。
 
@@ -27,12 +27,13 @@ priority: past_exam=4, teacher_ppt=3, homework=2, crash_course=1, ai_supplement=
 
 当前使用精确向量计算，无 HNSW。小规模语料下易于验证元数据过滤；扩容时可替换 Store.search，先测带过滤的 ANN 召回率，再引入索引。
 
-## SurrealDB 表
+## PostgreSQL 表
 
 | 表 | 内容 |
 | --- | --- |
-| document | 课程、来源、章节、原始/清洗 Markdown、哈希、分块数 |
-| chunk | 文档 ID、文本、Embedding、课程/章节/题源元数据 |
+| app_users / auth_sessions | 邮箱、Argon2id 密码哈希；Session 哈希、过期与撤销状态 |
+| documents | 课程、来源、章节、原始/清洗 Markdown、哈希、分块数 |
+| document_chunks | 文档 ID、文本、pgvector Embedding、课程/章节/题源元数据 |
 | knowledge_point | 会话最近已完成测评的知识点计划 |
 | review_session | 最近公开结果、薄弱点；保留一个 Embedding 配置记录 |
 | checkpoint | thread/namespace/checkpoint ID、父 ID、序列化图状态和元数据 |
@@ -66,6 +67,6 @@ SKILL.md 是规则源文档，运行时稳定规则显式映射到代码和测�
 
 ## 扩展前提
 
-API_TOKEN 是整体访问控制，无逐用户授权。多 worker/副本需数据库锁或队列；当前不可直接横向扩容。检查点历史、旧文档版本无自动清理。大规模精确扫描与检查点历史扫描可能变慢。
+认证使用 HttpOnly Cookie 和服务端 Session；请求中的 user_id 不被信任。多 worker/副本需数据库锁或队列；当前不可直接横向扩容。检查点历史、旧文档版本无自动清理。大规模精确扫描与检查点历史扫描可能变慢。
 
 模型协议测试和数据库测试不等于模型质量评测。证明/计算题还需要学科校验，不把模型复核当成数学保证。后续扩展优先由真实失败样本决定。

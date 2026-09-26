@@ -35,6 +35,19 @@ class MemoryStore:
                 if all(row.get(k) == v for k, v in filters.items())
             ]
 
+    def delete(self, table, key):
+        with self.lock:
+            self.tables.get(table, {}).pop(key, None)
+
+    def delete_document(self, key):
+        with self.lock:
+            self.tables.get("document", {}).pop(key, None)
+            self.chunks = [chunk for chunk in self.chunks if chunk["document_id"] != key]
+
+    def deindex_document(self, key):
+        with self.lock:
+            self.chunks = [chunk for chunk in self.chunks if chunk["document_id"] != key]
+
     def ingest(self, document, chunks):
         with self.lock:
             self.put("document", document["document_id"], document)

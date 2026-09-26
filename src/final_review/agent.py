@@ -103,6 +103,8 @@ class FinalReviewAgent:
         self.graph = graph.compile(checkpointer=SurrealSaver(store))
 
     def _key(self, course, session):
+        if hasattr(self.store, "session_key"):
+            return self.store.session_key(course, session)
         return stable_key(course, session)
 
     def _lock(self, key):
