@@ -2,6 +2,15 @@ from fastapi.testclient import TestClient
 
 from final_review.api import create_app
 from final_review.config import ChatModelConfig
+from final_review.material_jobs import process_material_job
+
+
+def _run_queued_job(system):
+    job = system.store.claim_material_job()
+    assert job is not None
+    process_material_job(system.store, system.kb, job,
+                         system.settings.max_upload_mb * 1024 * 1024)
+    return system.store.get_material_job(job["job_id"])
 
 
 def test_api_full_feedback_cycle(system):
@@ -48,7 +57,7 @@ def test_upload_supported_and_reject_bad_file(system, tmp_path):
             client.post(
                 "/knowledge/upload", data=data, files={"file": ("note.md", "测试内容".encode())}
             ).status_code
-            == 200
+            == 202
         )
         assert (
             client.post(
@@ -56,10 +65,7 @@ def test_upload_supported_and_reject_bad_file(system, tmp_path):
             ).status_code
             == 422
         )
-        assert any(
-            item.get("parse_status") == "failed"
-            for item in client.get("/api/courses/net/documents").json()["items"]
-        )
+        assert _run_queued_job(system)["status"] == "succeeded"
         assert (
             client.post(
                 "/knowledge/upload", data=data, files={"file": ("empty.md", b"")}
@@ -164,7 +170,8 @@ def test_real_pptx_conversion(system, tmp_path):
             },
             files={"file": ("slides.pptx", data.getvalue())},
         )
-        assert response.status_code == 200, response.text
+        assert response.status_code == 202, response.text
+        assert _run_queued_job(system)["status"] == "succeeded"
         stored = system.store.get("document", response.json()["document_id"])
         assert "三次握手" in stored["cleaned_markdown"]
 
@@ -191,6 +198,7 @@ def test_phase_one_persistence_endpoints(system, tmp_path):
             data={"course_id": course["course_id"], "title": "note", "source_type": "homework"},
             files={"file": ("note.md", "TCP 三次握手".encode())},
         ).json()
+        assert _run_queued_job(system)["status"] == "succeeded"
         document = client.get(f"/api/courses/{course['course_id']}/documents").json()["items"][0]
         assert document["parse_status"] == "ready"
         assert (tmp_path / "uploads" / "local-user" / course["course_id"]).exists()

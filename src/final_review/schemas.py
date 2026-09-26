@@ -15,6 +15,7 @@ class SourceType(StrEnum):
     past_exam = "past_exam"
     teacher_ppt = "teacher_ppt"
     homework = "homework"
+    other_practice = "other_practice"
     crash_course = "crash_course"
     ai_supplement = "ai_supplement"
 

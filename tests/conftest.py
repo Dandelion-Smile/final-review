@@ -18,6 +18,7 @@ class MemoryStore:
         self.tables = {}
         self.chunks = []
         self.lock = RLock()
+        self.job_user = "local-user"
 
     def put(self, table, key, data):
         with self.lock:
@@ -57,6 +58,9 @@ class MemoryStore:
     def search(self, vector, course, chapter, limit):
         rows = []
         for chunk in self.chunks:
+            document = self.tables.get("document", {}).get(chunk["document_id"])
+            if document and document.get("parse_status", "ready") != "ready":
+                continue
             if chunk["course_id"] != course or (chapter and chunk["chapter"] != chapter):
                 continue
             embedding = chunk["embedding"]
@@ -67,6 +71,83 @@ class MemoryStore:
                 {**{k: v for k, v in chunk.items() if k != "embedding"}, "similarity": score}
             )
         return sorted(rows, key=lambda c: -c["similarity"])[:limit]
+
+    def create_material_job(self, document, job):
+        with self.lock:
+            if job["idempotency_key"]:
+                existing = self.find_material_job(job["course_id"], job["idempotency_key"])
+                if existing:
+                    return existing
+            self.put("document", document["document_id"], document)
+            row = {**job, "user_id": self.job_user, "status": "queued", "stage": None,
+                   "attempts": 0, "max_attempts": 3, "error_code": None,
+                   "error_message": None}
+            self.put("material_job", job["job_id"], row)
+            return deepcopy(row)
+
+    def find_material_job(self, course_id, key):
+        return next((deepcopy(job) for job in self.tables.get("material_job", {}).values()
+                     if job["course_id"] == course_id and job["idempotency_key"] == key), None)
+
+    def get_material_job(self, job_id):
+        return self.get("material_job", job_id)
+
+    def list_material_jobs(self, course_id):
+        return self.scan("material_job", {"course_id": course_id})
+
+    def claim_material_job(self):
+        with self.lock:
+            for job in self.tables.get("material_job", {}).values():
+                if job["status"] == "queued":
+                    job.update(status="running", stage="parse", attempts=job["attempts"] + 1)
+                    self.tables["document"][job["document_id"]]["parse_status"] = "running"
+                    return deepcopy(job)
+        return None
+
+    def update_material_job(self, job_id, attempt, *, stage=None, **_kwargs):
+        with self.lock:
+            job = self.tables["material_job"][job_id]
+            if job["status"] == "running" and job["attempts"] == attempt and stage:
+                job["stage"] = stage
+
+    def fail_material_job(self, job_id, attempt, *, code, message, retry):
+        with self.lock:
+            job = self.tables["material_job"][job_id]
+            if job["status"] != "running" or job["attempts"] != attempt:
+                return False
+            job.update(status="queued" if retry else "failed", error_code=code,
+                       error_message=message)
+            document = self.tables["document"].get(job["document_id"])
+            if document and document.get("parse_status") != "deleted":
+                document.update(parse_status=job["status"], parse_error=message)
+            return True
+
+    def publish_material_job(self, job_id, attempt, document, chunks):
+        with self.lock:
+            job = self.tables["material_job"][job_id]
+            if job["status"] != "running" or job["attempts"] != attempt:
+                return False
+            if self.tables["document"][job["document_id"]].get("parse_status") == "deleted":
+                job.update(status="failed", error_code="source_removed",
+                           error_message="资料已删除")
+                return False
+            self.ingest(document, chunks)
+            job.update(status="succeeded", stage="index")
+            return True
+
+    def retry_material_job(self, job_id):
+        with self.lock:
+            job = self.tables["material_job"][job_id]
+            if job["status"] != "failed":
+                return None
+            if self.tables["document"][job["document_id"]].get("parse_status") == "deleted":
+                return None
+            job.update(status="queued", attempts=0, stage=None, error_code=None,
+                       error_message=None)
+            document = self.tables["document"][job["document_id"]]
+            document["parse_status"] = "queued"
+            document.pop("parse_error", None)
+            return deepcopy(job)
 
 
 class TestEmbeddings(Embeddings):

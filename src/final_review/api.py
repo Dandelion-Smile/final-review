@@ -1,15 +1,15 @@
+import json
 import logging
 import secrets
-import tempfile
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from markitdown import MarkItDown
 from openai import OpenAI, OpenAIError
 from pydantic import ValidationError
 
@@ -18,6 +18,7 @@ from .auth import CurrentUser, DatabaseAuth
 from .config import Settings
 from .domain import DomainConflict, DomainNotFound, DomainService
 from .llm import ModelError, build_fast_quiz_model, build_models, build_review_model
+from .material_conversion import SUPPORTED_SUFFIXES
 from .postgres import PostgresStore
 from .rag import KnowledgeBase
 from .rendering import render_markdown
@@ -53,29 +54,6 @@ def is_small_talk(message: str) -> bool:
     """Avoid treating greetings as evidence-backed course questions."""
     normalized = "".join(char for char in message.lower().strip() if char.isalnum())
     return normalized in {"hi", "hello", "hey", "你好", "您好", "在吗", "嗨"}
-
-
-def convert_upload(file: UploadFile, max_bytes: int) -> str:
-    suffix = Path(file.filename or "").suffix.lower()
-    if suffix not in {".md", ".txt", ".pdf", ".pptx", ".docx"}:
-        raise ValueError("仅支持 md/txt/pdf/pptx/docx；扫描件请先 OCR")
-    content = file.file.read(max_bytes + 1)
-    if not content or len(content) > max_bytes:
-        raise ValueError("文件为空或超过上传大小限制")
-    if suffix in {".md", ".txt"}:
-        return content.decode("utf-8-sig")
-    if suffix in {".pptx", ".docx"}:
-        from io import BytesIO
-        from zipfile import ZipFile
-
-        with ZipFile(BytesIO(content)) as archive:
-            if sum(info.file_size for info in archive.infolist()) > max_bytes * 20:
-                raise ValueError("Office 文件解压体积超过限制")
-    with tempfile.TemporaryDirectory(prefix="final-review-") as directory:
-        # Client filename is never used as a filesystem path.
-        path = Path(directory) / f"material{suffix}"
-        path.write_bytes(content)
-        return MarkItDown(enable_plugins=False).convert(str(path)).text_content
 
 
 def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None = None):
@@ -580,6 +558,7 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
 
     @app.post("/knowledge/upload", dependencies=[Depends(authorize)])
     def upload(
+        request: Request,
         course_id: Identifier = Form(),
         title: str = Form(),
         source_type: SourceType = Form(),
@@ -587,89 +566,108 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
         file: UploadFile = File(),
         user: CurrentUser = Depends(authorize),
     ):
-        upload_path = None
-        storage_key = None
-        document_id = uuid4().hex
         store = conversation_store()
         require_course(course_id, user)
+        upload_path = None
         try:
             suffix = Path(file.filename or "").suffix.lower()
-            raw = file.file.read()
+            if suffix not in SUPPORTED_SUFFIXES:
+                raise HTTPException(
+                    422, "不支持此文件格式；支持 md/txt/pdf/ppt/pptx/doc/docx/png/jpg/webp"
+                )
+            raw = file.file.read(settings.max_upload_mb * 1024 * 1024 + 1)
             if not raw:
-                raise ValueError("文件为空")
+                raise HTTPException(422, "文件为空")
             if len(raw) > settings.max_upload_mb * 1024 * 1024:
-                raise ValueError("文件超过上传大小限制")
+                raise HTTPException(422, "文件超过上传大小限制")
+            key = request.headers.get("Idempotency-Key")
+            if key is not None and (not key.strip() or len(key) > 200):
+                raise HTTPException(422, "Idempotency-Key 长度须为 1 到 200")
+            fingerprint = sha256(
+                raw + json.dumps([title, chapter, source_type.value, file.filename],
+                                 ensure_ascii=False).encode()
+            ).hexdigest()
+            if key:
+                existing = store.find_material_job(course_id, key)
+                if existing:
+                    if existing["fingerprint"] != fingerprint:
+                        raise HTTPException(409, "相同幂等键对应不同资料")
+                    return JSONResponse(status_code=202, content={
+                        "job_id": existing["job_id"], "document_id": existing["document_id"],
+                        "status": existing["status"],
+                        "status_url": (
+                            f"/api/courses/{course_id}/material-jobs/{existing['job_id']}"
+                        ),
+                    })
+            document_id = uuid4().hex
+            job_id = uuid4().hex
             upload_dir = Path(settings.uploads_dir) / user.id / course_id
             upload_dir.mkdir(parents=True, exist_ok=True)
             upload_path = upload_dir / f"{uuid4().hex}{suffix}"
             upload_path.write_bytes(raw)
-            store.put(
-                "document",
-                document_id,
-                {
-                    "document_id": document_id,
-                    "course_id": course_id,
-                    "title": title,
-                    "user_id": user.id,
-                    "source_type": source_type.value,
-                    "chapter": chapter,
-                    "file_name": file.filename or "upload",
-                    "file_size": len(raw),
-                    "file_path": str(upload_path) if upload_path else None,
-                    "storage_key": storage_key,
-                    "parse_status": "parsing",
-                    "uploaded_at": datetime.now(UTC).isoformat(),
-                    "chunk_count": 0,
-                },
-            )
-            file.file.seek(0)
-            markdown = convert_upload(file, settings.max_upload_mb * 1024 * 1024)
-            material = MaterialInput(
-                document_id=document_id,
-                course_id=course_id,
-                title=title,
-                source_type=source_type,
-                chapter=chapter,
-                markdown=markdown,
-            )
-        except Exception as exc:
-            if upload_path or storage_key:
-                failed = store.get("document", document_id) or {
-                    "document_id": document_id,
-                    "course_id": course_id,
-                    "user_id": user.id,
-                    "title": title,
-                    "source_type": source_type.value,
-                    "chapter": chapter,
-                    "file_name": file.filename or "upload",
-                    "file_size": len(raw) if "raw" in locals() else 0,
-                    "storage_key": storage_key,
-                }
-                failed.update(
-                    {
-                        "parse_status": "failed",
-                        "parse_error": "文件转换失败，请检查格式、大小和可读性",
-                    }
-                )
-                store.put("document", document_id, failed)
-            raise HTTPException(422, "文件转换失败，请检查格式、大小和可读性") from exc
-        finally:
-            file.file.close()
-        result = runtime().kb.ingest(material)
-        document = store.get("document", result["document_id"]) or {}
-        document.update(
-            {
+            document = {
+                "document_id": document_id,
+                "course_id": course_id,
                 "user_id": user.id,
+                "title": title,
+                "source_type": source_type.value,
+                "source_origin": "user_upload",
+                "chapter": chapter,
                 "file_name": file.filename or "upload",
                 "file_size": len(raw),
-                "file_path": str(upload_path) if upload_path else None,
-                "storage_key": storage_key,
-                "parse_status": "ready",
+                "file_path": str(upload_path),
+                "storage_key": None,
                 "uploaded_at": datetime.now(UTC).isoformat(),
+                "chunk_count": 0,
+                "parse_status": "queued",
             }
-        )
-        store.put("document", result["document_id"], document)
-        return {**result, "parse_status": "ready"}
+            job = store.create_material_job(document, {
+                "job_id": job_id, "document_id": document_id, "course_id": course_id,
+                "idempotency_key": key, "fingerprint": fingerprint,
+            })
+            if job["document_id"] != document_id:
+                upload_path.unlink(missing_ok=True)
+            if job["fingerprint"] != fingerprint:
+                raise HTTPException(409, "相同幂等键对应不同资料")
+            return JSONResponse(status_code=202, content={
+                "job_id": job["job_id"], "document_id": job["document_id"],
+                "status": job["status"],
+                "status_url": f"/api/courses/{course_id}/material-jobs/{job['job_id']}",
+            })
+        except Exception:
+            if upload_path is not None and upload_path.exists():
+                upload_path.unlink(missing_ok=True)
+            raise
+        finally:
+            file.file.close()
+
+    @app.get("/api/courses/{course_id}/material-jobs", dependencies=[Depends(authorize)])
+    def list_material_jobs(course_id: Identifier, user: CurrentUser = Depends(authorize)):
+        require_course(course_id, user)
+        return {"items": conversation_store().list_material_jobs(course_id)}
+
+    @app.get("/api/courses/{course_id}/material-jobs/{job_id}", dependencies=[Depends(authorize)])
+    def get_material_job(course_id: Identifier, job_id: Identifier,
+                         user: CurrentUser = Depends(authorize)):
+        require_course(course_id, user)
+        job = conversation_store().get_material_job(job_id)
+        if not job or job["course_id"] != course_id:
+            raise HTTPException(404, "资料任务不存在")
+        return job
+
+    @app.post("/api/courses/{course_id}/material-jobs/{job_id}/retry",
+              dependencies=[Depends(authorize)])
+    def retry_material_job(course_id: Identifier, job_id: Identifier,
+                           user: CurrentUser = Depends(authorize)):
+        require_course(course_id, user)
+        store = conversation_store()
+        job = store.get_material_job(job_id)
+        if not job or job["course_id"] != course_id:
+            raise HTTPException(404, "资料任务不存在")
+        updated = store.retry_material_job(job_id)
+        if updated is None:
+            raise HTTPException(409, "只有失败的资料任务可以重试")
+        return JSONResponse(status_code=202, content=updated)
 
     @app.post("/api/quiz/generate", dependencies=[Depends(authorize)])
     def generate_fast_quiz(request: FastQuizRequest, user: CurrentUser = Depends(authorize)):

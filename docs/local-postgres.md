@@ -15,7 +15,7 @@ HttpOnly Cookie，PostgreSQL 保存密码的 Argon2id 哈希及 Session ID 的 S
 若 PostgreSQL 由本机服务而非 Compose 管理，手动执行：
 
 ```powershell
-uv run python -m final_review.migrations "$env:DATABASE_URL"
+uv run python -m final_review.migrations
 ```
 
 迁移记录在 `schema_migrations`，保存文件名和 SHA-256。再次运行只会校验已应用

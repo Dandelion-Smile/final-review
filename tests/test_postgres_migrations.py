@@ -11,14 +11,17 @@ from uuid import UUID
 
 import psycopg
 import pytest
+from conftest import TestEmbeddings
 from fastapi.testclient import TestClient
 from psycopg.types.json import Jsonb
 
 from final_review.api import create_app
 from final_review.config import Settings
 from final_review.domain import DomainConflict, DomainNotFound, DomainService
+from final_review.material_jobs import process_material_job
 from final_review.migrations import apply_migrations
 from final_review.postgres import PostgresStore
+from final_review.rag import KnowledgeBase
 
 pytestmark = pytest.mark.integration
 TEST_URL = os.environ.get("TEST_DATABASE_URL")
@@ -70,6 +73,7 @@ def test_empty_database_runner_is_versioned_and_repeatable(database_url):
         "001_database_auth.sql",
         "002_m0_domain_contracts.sql",
         "003_m0_database_hardening.sql",
+        "004_m1_material_jobs.sql",
     ]
     assert apply_migrations(database_url) == []
     with psycopg.connect(database_url) as connection, connection.cursor() as cursor:
@@ -78,7 +82,123 @@ def test_empty_database_runner_is_versioned_and_repeatable(database_url):
             "001_database_auth.sql",
             "002_m0_domain_contracts.sql",
             "003_m0_database_hardening.sql",
+            "004_m1_material_jobs.sql",
         ]
+
+
+def test_material_job_claim_publish_and_ready_only_search(database_url):
+    apply_migrations(database_url)
+    with psycopg.connect(database_url) as connection:
+        _seed_course(connection)
+    store = PostgresStore(database_url)
+    token = store.bind_user(str(USER))
+    try:
+        document = {
+            "document_id": "material-1", "course_id": "course-1", "user_id": str(USER),
+            "title": "Job 讲义", "source_type": "homework", "chapter": "", "parse_status": "queued",
+            "chunk_count": 0,
+        }
+        submitted = store.create_material_job(document, {
+            "job_id": "job-1", "document_id": "material-1", "course_id": "course-1",
+            "idempotency_key": "first", "fingerprint": "same-content",
+        })
+        assert submitted["status"] == "queued"
+        assert store.search([1.0, 0.0, 0.0], "course-1", "", 5) == []
+        claimed = store.claim_material_job()
+        assert claimed["job_id"] == "job-1" and claimed["attempts"] == 1
+        assert store.claim_material_job() is None
+        ready = {**document, "parse_status": "ready", "chunk_count": 1}
+        chunk = {
+            "chunk_id": "chunk-1", "document_id": "material-1", "course_id": "course-1",
+            "source_type": "homework", "chapter": "", "content": "TCP 三次握手",
+            "embedding": [1.0, 0.0, 0.0],
+        }
+        assert store.publish_material_job("job-1", 1, ready, [chunk])
+        assert store.get_material_job("job-1")["status"] == "succeeded"
+        assert store.get("document", "material-1")["parse_status"] == "ready"
+        assert len(store.search([1.0, 0.0, 0.0], "course-1", "", 5)) == 1
+        assert not store.publish_material_job("job-1", 1, ready, [chunk])
+    finally:
+        store.reset_user(token)
+        store.close()
+
+
+def test_material_job_failure_and_retry_are_persistent(database_url):
+    apply_migrations(database_url)
+    with psycopg.connect(database_url) as connection:
+        _seed_course(connection)
+    store = PostgresStore(database_url)
+    token = store.bind_user(str(USER))
+    try:
+        document = {
+            "document_id": "material-2", "course_id": "course-1", "user_id": str(USER),
+            "title": "损坏资料", "source_type": "homework", "parse_status": "queued",
+            "chunk_count": 0,
+        }
+        job_data = {
+            "job_id": "job-2", "document_id": "material-2", "course_id": "course-1",
+            "idempotency_key": "same-request", "fingerprint": "same-content",
+        }
+        store.create_material_job(document, job_data)
+        assert store.create_material_job({**document, "document_id": "duplicate"},
+                                         {**job_data, "job_id": "duplicate",
+                                          "document_id": "duplicate"})["job_id"] == "job-2"
+        claimed = store.claim_material_job()
+        assert claimed["job_id"] == "job-2"
+        with store.connection.cursor() as cursor:
+            cursor.execute("UPDATE material_jobs SET lease_until=now()-interval '1 second' "
+                           "WHERE job_id='job-2'")
+        store.connection.commit()
+        reclaimed = store.claim_material_job()
+        assert reclaimed["job_id"] == "job-2" and reclaimed["attempts"] == 2
+        assert not store.publish_material_job("job-2", 1,
+                                             {**document, "parse_status": "ready"}, [])
+        assert store.fail_material_job("job-2", 2, code="invalid_material",
+                                       message="图片损坏", retry=False)
+        assert store.get_material_job("job-2")["status"] == "failed"
+        assert store.get("document", "material-2")["parse_status"] == "failed"
+        assert store.search([1.0, 0.0, 0.0], "course-1", "", 5) == []
+        assert store.retry_material_job("job-2")["status"] == "queued"
+        assert store.claim_material_job()["job_id"] == "job-2"
+        assert store.get("document", "material-2")["parse_status"] == "running"
+        store.put("document", "material-2", {**document, "parse_status": "deleted"})
+        assert not store.publish_material_job("job-2", 1,
+                                             {**document, "parse_status": "ready"}, [])
+        assert store.get_material_job("job-2")["status"] == "failed"
+        assert store.get("document", "material-2")["parse_status"] == "deleted"
+    finally:
+        store.reset_user(token)
+        store.close()
+
+
+def test_material_worker_processes_real_postgres_job(database_url, tmp_path):
+    apply_migrations(database_url)
+    with psycopg.connect(database_url) as connection:
+        _seed_course(connection)
+    source = tmp_path / "lecture.md"
+    source.write_text("TCP 三次握手同步初始序列号。", encoding="utf-8")
+    store = PostgresStore(database_url)
+    token = store.bind_user(str(USER))
+    try:
+        store.create_material_job({
+            "document_id": "material-3", "course_id": "course-1", "user_id": str(USER),
+            "title": "讲义", "source_type": "homework", "source_origin": "user_upload",
+            "chapter": "", "file_name": "lecture.md", "file_path": str(source),
+            "parse_status": "queued", "chunk_count": 0,
+        }, {
+            "job_id": "job-3", "document_id": "material-3", "course_id": "course-1",
+            "idempotency_key": None, "fingerprint": "content",
+        })
+        settings = Settings(_env_file=None, embedding_dimensions=3)
+        kb = KnowledgeBase(store, TestEmbeddings(), settings)
+        job = store.claim_material_job()
+        process_material_job(store, kb, job, settings.max_upload_mb * 1024 * 1024)
+        assert store.get_material_job("job-3")["status"] == "succeeded"
+        assert store.get("document", "material-3")["parse_status"] == "ready"
+        assert len(store.search([1.0, 0.1, 0.0], "course-1", "", 5)) == 1
+    finally:
+        store.reset_user(token)
+        store.close()
 
 
 def test_existing_001_002_with_legacy_attempt_upgrades(database_url):
@@ -86,7 +206,9 @@ def test_existing_001_002_with_legacy_attempt_upgrades(database_url):
         _sql(connection, "001_database_auth.sql")
         _sql(connection, "002_m0_domain_contracts.sql")
         _seed_course(connection, legacy=True)
-    assert apply_migrations(database_url) == ["003_m0_database_hardening.sql"]
+    assert apply_migrations(database_url) == [
+        "003_m0_database_hardening.sql", "004_m1_material_jobs.sql"
+    ]
     with psycopg.connect(database_url) as connection, connection.cursor() as cursor:
         cursor.execute("SELECT legacy_session_id FROM attempts WHERE record_key='attempt-key'")
         assert cursor.fetchone()[0] == "legacy-session"

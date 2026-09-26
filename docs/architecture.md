@@ -12,18 +12,18 @@ LangChain 负责模型、PromptTemplate、Tool、Retriever、结构化结果；L
 
 ## 数据流
 
-入库：MarkItDown → 原始 Markdown → 清洗控制字符/空白 → 字符分块与重复块去重 → 分批 Embedding → PostgreSQL 事务写入。
+文件上传入库：API 校验并保存原文件，事务创建资料占位记录与 `material_jobs`，立即返回 `202`。独立 worker 用 PostgreSQL 行锁领取 Job，执行 MD/TXT 读取、MarkItDown 或 LibreOffice 转换、图片 OCR、Markdown 清洗、分块与 Embedding。完整资料、全部片段和 Job 成功状态在同一事务发布；失败记录阶段及原因，检索只读取 `ready` 资料。worker 中断后租约到期可重新领取，最多尝试 3 次。直接调用 `/knowledge/ingest` 仍同步入库。
 
-文档键由课程、标题、章节、题源、清洗内容哈希构成。相同资料重复上传不再支付 Embedding 成本。内容变更产生新文档，当前不自动撤下旧版本。
+直接调用 `/knowledge/ingest` 的文档键由课程、标题、章节、题源、清洗内容哈希构成，可以复用已入库内容。文件上传使用独立的资料 ID，并保留上传文件及状态；重复上传同一文件会生成新的资料记录。
 
 检索：查询 Embedding → 数据库先过滤课程/章节 → 精确余弦排序召回 → 最低相关性阈值 → 题源 bonus → TopK。
 
 ```text
 rank_score = similarity + 0.04 × priority
-priority: past_exam=4, teacher_ppt=3, homework=2, crash_course=1, ai_supplement=0
+priority: past_exam=4, teacher_ppt=3, homework=2, other_practice=1, crash_course=1, ai_supplement=0
 ```
 
-先排除不相关片段，再加权。权重是启发式，不是强制题源排序：高度相关 PPT 仍可排在弱相关真题之前。来源由上传者填写，后端不认证其真实性。
+先排除不相关片段，再加权。权重是启发式，不是强制题源排序：高度相关 PPT 仍可排在弱相关真题之前。来源由上传者填写，后端不认证其真实性；`source_origin` 独立记录内容是用户上传还是直接录入，不能把自填来源当作教师认证。
 
 当前使用精确向量计算，无 HNSW。小规模语料下易于验证元数据过滤；扩容时可替换 Store.search，先测带过滤的 ANN 召回率，再引入索引。
 
@@ -55,7 +55,7 @@ checkpoint 是恢复的事实来源；review_session 是业务快照，两者职
 
 | 规则 | 代码 |
 | --- | --- |
-| 真题 > PPT > 作业 > 速成课 > AI | policy.SOURCE_PRIORITY + KnowledgeBase.search |
+| 真题 > PPT > 作业 > 其他练习/速成课 > AI | policy.SOURCE_PRIORITY + KnowledgeBase.search |
 | 转 Markdown → 清洗 → 知识点 → 出题 | upload/ingest + generate 中 plan → quiz |
 | 先确认考试信息 | exam_profile + interrupt |
 | 每知识点 1～6 题，遵循考试题型 | Schema + verify 确定性校验 |

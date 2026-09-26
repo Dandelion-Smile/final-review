@@ -117,6 +117,17 @@ class Settings(BaseSettings):
                     api_key=self.llm_api_key,
                 )
             )
+        if self.xpeach_api_key.get_secret_value() and self.xpeach_chat_model:
+            models.append(
+                ChatModelConfig(
+                    id=self.xpeach_chat_model,
+                    label=self.xpeach_chat_label or self.xpeach_chat_model,
+                    model=self.xpeach_chat_model,
+                    base_url=self.xpeach_base_url,
+                    api_key=self.xpeach_api_key,
+                    grounded=False,
+                )
+            )
         return models
 
     def get_chat_model(self, model_id: str | None) -> ChatModelConfig:

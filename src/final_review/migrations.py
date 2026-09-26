@@ -13,6 +13,8 @@ from pathlib import Path
 
 import psycopg
 
+from .config import Settings
+
 MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "db" / "migrations"
 BASELINE_TABLES = {
     "app_users",
@@ -105,9 +107,12 @@ def apply_migrations(database_url: str, *, applied_by: str = "final-review") -> 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Apply Final Review PostgreSQL migrations")
-    parser.add_argument("database_url")
+    parser.add_argument("database_url", nargs="?", help="省略时从 .env 的 DATABASE_URL 读取")
     arguments = parser.parse_args()
-    for version in apply_migrations(arguments.database_url):
+    database_url = arguments.database_url or Settings().database_url.get_secret_value()
+    if not database_url:
+        parser.error("需要 DATABASE_URL 参数或 .env 中的 DATABASE_URL")
+    for version in apply_migrations(database_url):
         print(f"applied {version}")
 
 

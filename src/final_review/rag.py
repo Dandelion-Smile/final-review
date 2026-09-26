@@ -1,6 +1,7 @@
 import math
 import re
 from hashlib import sha256
+from typing import Callable
 
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
@@ -12,6 +13,8 @@ from .config import Settings
 from .policy import SOURCE_PRIORITY
 from .schemas import Evidence, MaterialInput
 from .storage import Store, stable_key
+
+EMBEDDING_BATCH_SIZE = 10
 
 
 def clean_markdown(text: str) -> str:
@@ -47,7 +50,31 @@ class KnowledgeBase:
             separators=["\n## ", "\n\n", "\n", "。", "；", " ", ""],
         )
 
-    def ingest(self, material: MaterialInput) -> dict:
+    def ingest(self, material: MaterialInput, *, source_origin: str = "user_entry") -> dict:
+        if material.document_id is not None:
+            existing = self.store.get("document", material.document_id)
+            if existing and existing.get("parse_status") == "ready":
+                return {
+                    "document_id": material.document_id,
+                    "chunks": existing["chunk_count"], "cached": True,
+                }
+        else:
+            cleaned = clean_markdown(material.markdown)
+            key = stable_key(material.course_id, material.title, material.chapter,
+                             material.source_type.value, sha256(cleaned.encode()).hexdigest())
+            existing = self.store.get("document", key)
+            if existing:
+                return {"document_id": key, "chunks": existing["chunk_count"], "cached": True}
+        document, chunks = self.prepare(material, source_origin=source_origin)
+        self.store.ingest(document, chunks)
+        return {"document_id": document["document_id"], "chunks": len(chunks), "cached": False}
+
+    def prepare(
+        self, material: MaterialInput, *, source_origin: str = "user_entry",
+        stage_callback: Callable[[str], None] | None = None,
+    ) -> tuple[dict, list[dict]]:
+        if stage_callback:
+            stage_callback("clean")
         cleaned = clean_markdown(material.markdown)
         document_id = material.document_id or stable_key(
             material.course_id,
@@ -56,16 +83,12 @@ class KnowledgeBase:
             material.source_type.value,
             sha256(cleaned.encode()).hexdigest(),
         )
-        existing = self.store.get("document", document_id)
-        # Direct ingest callers do not create an upload-state placeholder; retain
-        # their deterministic deduplication while allowing a pending upload ID
-        # to proceed through parsing exactly once.
-        if existing and (material.document_id is None or existing.get("parse_status") == "ready"):
-            return {"document_id": document_id, "chunks": existing["chunk_count"], "cached": True}
         texts = list(dict.fromkeys(self.splitter.split_text(cleaned)))
+        if stage_callback:
+            stage_callback("index")
         vectors = []
-        for start in range(0, len(texts), 32):
-            batch = texts[start : start + 32]
+        for start in range(0, len(texts), EMBEDDING_BATCH_SIZE):
+            batch = texts[start : start + EMBEDDING_BATCH_SIZE]
             result = self.embeddings.embed_documents(batch)
             validate_vectors(result, len(batch), self.settings.embedding_dimensions)
             vectors.extend(result)
@@ -80,17 +103,14 @@ class KnowledgeBase:
             }
             for i, content in enumerate(texts)
         ]
-        self.store.ingest(
-            {
-                **metadata,
-                "document_id": document_id,
-                "markdown": material.markdown,
-                "cleaned_markdown": cleaned,
-                "chunk_count": len(chunks),
-            },
-            chunks,
-        )
-        return {"document_id": document_id, "chunks": len(chunks), "cached": False}
+        return ({
+            **metadata,
+            "document_id": document_id,
+            "source_origin": source_origin,
+            "markdown": material.markdown,
+            "cleaned_markdown": cleaned,
+            "chunk_count": len(chunks),
+        }, chunks)
 
     def search(self, query: str, course: str, chapter: str = "", broaden: bool = False):
         vector = self.embeddings.embed_query(query)

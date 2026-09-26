@@ -13,6 +13,7 @@ dependencies = [
   "langchain>=1,<2", "langgraph>=1,<2", "langchain-openai>=1,<2",
   "langchain-text-splitters>=1,<2", "markitdown[pdf,pptx,docx]>=0.1,<1",
   "psycopg[binary]>=3.2,<4", "argon2-cffi>=23.1,<26",
+  "Pillow>=11,<13",
 ]
 
 [dependency-groups]

@@ -1,5 +1,6 @@
 FROM python:3.13-slim
 WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends libreoffice-writer libreoffice-impress tesseract-ocr tesseract-ocr-chi-sim tesseract-ocr-eng && rm -rf /var/lib/apt/lists/*
 COPY --from=ghcr.io/astral-sh/uv:0.10.0 /uv /usr/local/bin/uv
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project

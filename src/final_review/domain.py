@@ -251,6 +251,7 @@ class DomainService:
             "user_id": self.user_id,
             "file_name": document.get("file_name", document["title"]),
             "source_type": document["source_type"],
+            "source_origin": document.get("source_origin", "legacy_upload"),
             "content_hash": stable_key(document.get("cleaned_markdown", "")),
             "created_at": _now(),
         }
@@ -296,7 +297,7 @@ class DomainService:
             document = self._owned("document", document_id)
             if (
                 document.get("course_id") != revision["course_id"]
-                or document.get("parse_status") == "failed"
+                or document.get("parse_status") != "ready"
             ):
                 raise DomainConflict("来源资料不可用于该资产")
             version = self._material_version(document)
@@ -443,6 +444,7 @@ class DomainService:
                             "revision_id": reference["revision_id"],
                             "display_file_name": document.get("file_name", document["title"]),
                             "source_type": document["source_type"],
+                            "source_origin": document.get("source_origin", "legacy_upload"),
                             "excerpt": document.get("cleaned_markdown", "")[:1500],
                             "created_at": _now(),
                         }

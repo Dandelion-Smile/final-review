@@ -5,18 +5,25 @@ from fastapi.testclient import TestClient
 
 from final_review.api import create_app
 from final_review.domain import DomainConflict, DomainNotFound, DomainService
+from final_review.material_jobs import process_material_job
 
 
 def _course(client: TestClient) -> dict:
     return client.post("/api/courses", json={"name": "M0 course"}).json()
 
 
-def _document(client: TestClient, course_id: str) -> dict:
-    return client.post(
+def _document(client: TestClient, course_id: str, system) -> dict:
+    result = client.post(
         "/knowledge/upload",
         data={"course_id": course_id, "title": "chapter", "source_type": "teacher_ppt"},
         files={"file": ("chapter.md", "课程资料".encode())},
-    ).json()
+    )
+    assert result.status_code == 202
+    job = system.store.claim_material_job()
+    process_material_job(system.store, system.kb, job,
+                         system.settings.max_upload_mb * 1024 * 1024)
+    assert system.store.get_material_job(job["job_id"])["status"] == "succeeded"
+    return result.json()
 
 
 def test_course_lifecycle_exam_and_confirmation(system, tmp_path):
@@ -76,7 +83,7 @@ def test_immutable_revisions_and_material_snapshot_delete(system, tmp_path):
     system.settings.uploads_dir = str(tmp_path / "uploads")
     with TestClient(create_app(system.settings, system)) as client:
         course = _course(client)
-        document = _document(client, course["course_id"])
+        document = _document(client, course["course_id"], system)
         created = client.post(
             f"/api/courses/{course['course_id']}/assets",
             json={
@@ -238,8 +245,8 @@ def test_m0_lifecycle_confirmation_exam_and_source_boundaries(system, tmp_path):
 
         source_course = _course(client)
         other_course = _course(client)
-        other_document = _document(client, other_course["course_id"])
-        document = _document(client, source_course["course_id"])
+        other_document = _document(client, other_course["course_id"], system)
+        document = _document(client, source_course["course_id"], system)
         failed = system.store.get("document", document["document_id"])
         failed["parse_status"] = "failed"
         system.store.put("document", document["document_id"], failed)

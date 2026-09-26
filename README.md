@@ -8,7 +8,7 @@
 
 | 能力 | 实现 |
 | --- | --- |
-| 资料处理 | MarkItDown 转 PDF/PPTX/DOCX；Markdown 清洗、分块去重、Embedding、事务入库 |
+| 资料处理 | PDF/PPTX/DOCX 用 MarkItDown；旧版 PPT/DOC 经 LibreOffice 转换；PNG/JPG/WebP 经中英文 OCR；随后清洗、分块、Embedding、事务入库 |
 | RAG | 课程/章节过滤 → PostgreSQL/pgvector 召回 → 相关性阈值 → 题源加权重排 |
 | 认证与隔离 | FastAPI 自管 Argon2id 密码、HttpOnly Session Cookie；所有业务查询绑定 Session 的 user_id |
 | Tool Calling | 模型调用 search_course_material，实际执行 LangChain Retriever，并接收 ToolMessage；最多两轮 |
@@ -44,17 +44,22 @@ flowchart TD
 
 课程与考试工作台需要 Python 3.11+、[uv](https://docs.astral.sh/uv/) 和 Docker（或本机 PostgreSQL + pgvector）。AI 资料问答与生成另需支持 Tool Calling 的聊天模型和 Embedding 模型；两个模型可来自不同的 OpenAI 兼容提供商。
 
+本机处理旧版 PPT/DOC 需安装 LibreOffice；图片 OCR 需安装 Tesseract 及 `chi_sim`、`eng` 语言包。使用 Docker Compose 启动 Agent 时，这些依赖由镜像安装。缺少工具或语言包时，上传会显示明确失败原因。
+
 ```powershell
 uv sync --frozen
 Copy-Item .env.example .env
 # 编辑 .env，填入 POSTGRES_PASSWORD 和 DATABASE_URL；使用 AI 功能时再配置模型
 docker compose up -d postgres
+uv run python -m final_review.migrations
 uv run uvicorn final_review.api:create_app --factory --host 127.0.0.1 --port 8080 --workers 1
+# 在另一个终端启动资料处理 worker
+uv run python -m final_review.material_jobs
 ```
 
-打开 [接口文档](http://127.0.0.1:8080/docs)。在本机直接启动前先运行
-`uv run python -m final_review.migrations "$env:DATABASE_URL"`；Compose 中 Agent 会在启动
-时自动执行相同的版本化迁移。已有数据库同样会升级，详见[本地 PostgreSQL 部署](docs/local-postgres.md)。
+打开 [接口文档](http://127.0.0.1:8080/docs)。迁移命令会从 `.env` 读取
+`DATABASE_URL`，已有数据库同样会升级；Compose 中 Agent 会在启动时自动执行迁移。
+详见[本地 PostgreSQL 部署](docs/local-postgres.md)。
 
 全 Docker 启动：
 
@@ -63,6 +68,12 @@ docker compose up --build -d
 ```
 
 数据库写入 Compose 命名卷。默认只映射本机端口。当前实现使用单进程会话锁，**保持 --workers 1，不要运行多个后端副本**。
+
+文件上传 `POST /knowledge/upload` 保存原文件并立即返回 `202`、`job_id` 与
+`document_id`。独立 worker 完成解析/OCR、清洗及索引；可通过
+`GET /api/courses/{course_id}/material-jobs/{job_id}` 查询进度，失败后通过对应的
+`POST .../retry` 重新排队。相同上传可携带 `Idempotency-Key` 防止重复建档。
+`/knowledge/ingest` 的直接 Markdown 入库接口仍同步执行。
 
 | 配置 | 含义 |
 | --- | --- |

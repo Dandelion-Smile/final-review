@@ -1,5 +1,9 @@
 import { expect, test } from "@playwright/test";
 
+test.beforeEach(async ({ request }) => {
+  await request.post("http://127.0.0.1:8081/test/reset");
+});
+
 test("one course holds two exams and can be deleted and restored", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "＋ 新建课程" }).click();

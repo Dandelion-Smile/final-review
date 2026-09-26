@@ -16,9 +16,29 @@ services:
       DATABASE_URL: postgresql://final_review:${POSTGRES_PASSWORD}@postgres:5432/final_review
     ports:
       - "127.0.0.1:8080:8080"
+    volumes:
+      - ./uploads:/app/uploads
     depends_on:
       postgres:
         condition: service_started
+    restart: on-failure:3
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 15s
+  material-worker:
+    build: .
+    command: ["uv", "run", "--no-sync", "python", "-m", "final_review.material_jobs"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://final_review:${POSTGRES_PASSWORD}@postgres:5432/final_review
+    volumes:
+      - ./uploads:/app/uploads
+    depends_on:
+      agent:
+        condition: service_healthy
     restart: on-failure:3
 volumes:
   postgres-data:
