@@ -8,7 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from openai import OpenAI, OpenAIError
 from pydantic import ValidationError
@@ -41,6 +41,7 @@ from .schemas import (
     Identifier,
     MaterialDelete,
     MaterialInput,
+    MaterialUpdate,
     ResumeRequest,
     SourceType,
     Submission,
@@ -509,9 +510,103 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
         return domain(user).archive_asset(asset_id)
 
     @app.get("/api/courses/{course_id}/documents", dependencies=[Depends(authorize)])
-    def list_documents(course_id: Identifier, user: CurrentUser = Depends(authorize)):
+    def list_documents(
+        course_id: Identifier, chapter: str | None = None,
+        source_type: SourceType | None = None,
+        status: str | None = None, user: CurrentUser = Depends(authorize),
+    ):
         require_course(course_id, user)
-        return {"items": conversation_store().scan("document", {"course_id": course_id})}
+        if status is not None and status not in {"queued", "running", "ready", "failed"}:
+            raise HTTPException(422, "未知资料状态")
+        items = conversation_store().scan("document", {"course_id": course_id})
+        return {"items": [item for item in items
+                          if item.get("parse_status") != "deleted"
+                          and (chapter is None or item.get("chapter", "") == chapter)
+                          and (source_type is None or item.get("source_type") == source_type.value)
+                          and (status is None or item.get("parse_status") == status)]}
+
+    def ready_material(course_id: str, document_id: str, user: CurrentUser) -> dict:
+        require_course(course_id, user)
+        document = conversation_store().get("document", document_id)
+        if (document is None or document.get("user_id") != user.id
+                or document.get("course_id") != course_id
+                or document.get("parse_status") != "ready"):
+            raise HTTPException(404, "资料不存在")
+        return document
+
+    def material_chunks(course_id: str, document_id: str, user: CurrentUser):
+        document = ready_material(course_id, document_id, user)
+        store = conversation_store()
+        version = store.ensure_material_source(document)
+        chunks = store.list_material_chunks(document_id)
+        return document, version, chunks
+
+    def public_chunk(chunk: dict, *, include_content: bool = False) -> dict:
+        result = {
+            "chunk_id": chunk["chunk_id"],
+            "locator_id": chunk["chunk_id"],
+            "position_kind": chunk.get("position_kind", "document"),
+            "position": chunk.get("position"),
+            "text_start": chunk.get("text_start"),
+            "text_end": chunk.get("text_end"),
+            "excerpt": chunk["content"][:300],
+        }
+        if include_content:
+            result["content"] = chunk["content"]
+        return result
+
+    @app.get("/api/courses/{course_id}/documents/{document_id}/chunks",
+             dependencies=[Depends(authorize)])
+    def list_document_chunks(course_id: Identifier, document_id: Identifier,
+                             user: CurrentUser = Depends(authorize)):
+        document, version, chunks = material_chunks(course_id, document_id, user)
+        return {
+            "document_id": document_id,
+            "material_version_id": version["material_version_id"],
+            "file_name": version["file_name"],
+            "source_type": version["source_type"],
+            "items": [public_chunk(chunk) for chunk in chunks],
+        }
+
+    @app.get("/api/courses/{course_id}/documents/{document_id}/chunks/{chunk_id}",
+             dependencies=[Depends(authorize)])
+    def get_document_chunk(course_id: Identifier, document_id: Identifier,
+                           chunk_id: Identifier, user: CurrentUser = Depends(authorize)):
+        document, version, chunks = material_chunks(course_id, document_id, user)
+        chunk = next((item for item in chunks if item["chunk_id"] == chunk_id), None)
+        if chunk is None:
+            raise HTTPException(404, "资料片段不存在")
+        return {
+            "document_id": document["document_id"],
+            "material_version_id": version["material_version_id"],
+            "file_name": version["file_name"],
+            "source_type": version["source_type"],
+            **public_chunk(chunk, include_content=True),
+        }
+
+    @app.get("/api/courses/{course_id}/documents/{document_id}/download",
+             dependencies=[Depends(authorize)])
+    def download_document(course_id: Identifier, document_id: Identifier,
+                          user: CurrentUser = Depends(authorize)):
+        document = ready_material(course_id, document_id, user)
+        path_value = document.get("file_path")
+        if not path_value:
+            raise HTTPException(404, "原文件不存在")
+        path = Path(path_value)
+        if not path.is_absolute():
+            path = Path(__file__).resolve().parents[2] / path
+        path = path.resolve()
+        upload_root = Path(settings.uploads_dir).resolve()
+        if not path.is_relative_to(upload_root) or not path.is_file():
+            raise HTTPException(404, "原文件不存在")
+        return FileResponse(path, filename=Path(document.get("file_name") or path.name).name)
+
+    @app.patch("/api/courses/{course_id}/documents/{document_id}",
+               dependencies=[Depends(authorize)])
+    def update_document(course_id: Identifier, document_id: Identifier,
+                        request: MaterialUpdate, user: CurrentUser = Depends(authorize)):
+        require_course(course_id, user)
+        return domain(user).update_material(document_id, course_id, request.model_dump(mode="json"))
 
     @app.get("/api/courses/{course_id}/conversations", dependencies=[Depends(authorize)])
     def list_conversations(course_id: Identifier, user: CurrentUser = Depends(authorize)):
@@ -554,7 +649,7 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
     @app.post("/knowledge/ingest", dependencies=[Depends(authorize)])
     def ingest(request: MaterialInput, user: CurrentUser = Depends(authorize)):
         require_course(request.course_id, user)
-        return runtime().kb.ingest(request)
+        return runtime().kb.ingest(request, user_id=user.id)
 
     @app.post("/knowledge/upload", dependencies=[Depends(authorize)])
     def upload(
@@ -601,7 +696,7 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
                     })
             document_id = uuid4().hex
             job_id = uuid4().hex
-            upload_dir = Path(settings.uploads_dir) / user.id / course_id
+            upload_dir = Path(settings.uploads_dir).resolve() / user.id / course_id
             upload_dir.mkdir(parents=True, exist_ok=True)
             upload_path = upload_dir / f"{uuid4().hex}{suffix}"
             upload_path.write_bytes(raw)
@@ -618,6 +713,7 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
                 "file_path": str(upload_path),
                 "storage_key": None,
                 "uploaded_at": datetime.now(UTC).isoformat(),
+                "updated_at": datetime.now(UTC).isoformat(),
                 "chunk_count": 0,
                 "parse_status": "queued",
             }
@@ -810,10 +906,7 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
         course_id: Identifier, document_id: Identifier, user: CurrentUser = Depends(authorize)
     ):
         require_course(course_id, user)
-        preview = domain(user).material_deletion_preview(document_id)
-        if conversation_store().get("document", document_id).get("course_id") != course_id:
-            raise HTTPException(404, "资料不存在")
-        return preview
+        return domain(user).material_deletion_preview(document_id, course_id)
 
     @app.post(
         "/api/courses/{course_id}/documents/{document_id}/delete", dependencies=[Depends(authorize)]

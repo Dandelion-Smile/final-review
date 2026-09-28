@@ -15,8 +15,11 @@ class Store(Protocol):
     def delete(self, table: str, key: str) -> None: ...
     def delete_document(self, key: str) -> None: ...
     def deindex_document(self, key: str) -> None: ...
+    def update_material_metadata(self, key: str, changes: dict) -> dict | None: ...
     def ingest(self, document: dict, chunks: list[dict]) -> None: ...
     def search(self, vector: list[float], course: str, chapter: str, limit: int) -> list[dict]: ...
+    def list_material_chunks(self, document_id: str) -> list[dict]: ...
+    def ensure_material_source(self, document: dict) -> dict: ...
 
 
 def stable_key(*parts: str) -> str:
@@ -48,6 +51,7 @@ class SurrealStore:
         "question_revision",
         "material_version",
         "source_reference",
+        "source_locator",
         "source_snapshot",
         "confirmation",
         "audit_event",
@@ -170,9 +174,49 @@ class SurrealStore:
         """Remove retrieval chunks while retaining the document provenance record."""
         self.query("DELETE chunk WHERE document_id = $key;", {"key": key})
 
+    def list_material_chunks(self, document_id):
+        chunks = self.scan("chunk", {"document_id": document_id})
+        return sorted(chunks, key=lambda chunk: (chunk.get("chunk_ordinal", 2**31),
+                                                 chunk["chunk_id"]))
+
+    def ensure_material_source(self, document):
+        from .source_locators import chunk_locator, material_version
+
+        version = material_version(document)
+        if not self.get("material_version", version["material_version_id"]):
+            self.put("material_version", version["material_version_id"], version)
+        for ordinal, chunk in enumerate(self.list_material_chunks(document["document_id"])):
+            locator = chunk_locator(version, chunk, ordinal)
+            self.put("source_locator", locator["locator_id"], locator)
+        return version
+
+    def update_material_metadata(self, key, changes):
+        from datetime import UTC, datetime
+        document = self.get("document", key)
+        if (document is None or document.get("parse_status") not in {"ready", "failed"}
+                or document.get("updated_at") != changes["expected_updated_at"]):
+            return None
+        for field in ("title", "chapter", "source_type"):
+            document[field] = changes[field]
+        document["updated_at"] = datetime.now(UTC).isoformat()
+        self.query(
+            "BEGIN TRANSACTION; "
+            "UPSERT type::thing('document', $key) CONTENT $document; "
+            "UPDATE chunk SET title=$title, chapter=$chapter, source_type=$source_type "
+            "WHERE document_id=$key; COMMIT TRANSACTION;",
+            {"key": key, "document": document, "title": document["title"],
+             "chapter": document["chapter"], "source_type": document["source_type"]},
+        )
+        return document
+
     def ingest(self, document, chunks):
         # Single transaction prevents incomplete documents from entering retrieval.
         # Data payload is sent in a JSON-bound variable, not interpolated as SQL.
+        if "user_id" in document:
+            from .source_locators import material_version
+
+            document = {**document, "parse_status": document.get("parse_status", "ready")}
+            document["material_version_id"] = material_version(document)["material_version_id"]
         self.query(
             "BEGIN TRANSACTION;"
             "UPSERT type::thing('document', $key) CONTENT $document;"
@@ -181,6 +225,8 @@ class SurrealStore:
             "COMMIT TRANSACTION;",
             {"key": document["document_id"], "document": document, "chunks": chunks},
         )
+        if "user_id" in document:
+            self.ensure_material_source(document)
 
     def search(self, vector, course, chapter, limit):
         # Exact cosine search over the filtered course, suitable for a small course corpus.

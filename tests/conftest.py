@@ -49,11 +49,35 @@ class MemoryStore:
         with self.lock:
             self.chunks = [chunk for chunk in self.chunks if chunk["document_id"] != key]
 
+    def update_material_metadata(self, key, changes):
+        from datetime import UTC, datetime
+        with self.lock:
+            document = self.tables.get("document", {}).get(key)
+            if (document is None or document.get("parse_status") not in {"ready", "failed"}
+                    or document.get("updated_at") != changes["expected_updated_at"]):
+                return None
+            for field in ("title", "chapter", "source_type"):
+                document[field] = changes[field]
+            document.pop("material_version_id", None)
+            document["updated_at"] = datetime.now(UTC).isoformat()
+            for chunk in self.chunks:
+                if chunk["document_id"] == key:
+                    for field in ("title", "chapter", "source_type"):
+                        chunk[field] = document[field]
+            return deepcopy(document)
+
     def ingest(self, document, chunks):
         with self.lock:
+            if "user_id" in document:
+                from final_review.source_locators import material_version
+
+                document = {**document, "parse_status": document.get("parse_status", "ready")}
+                document["material_version_id"] = material_version(document)["material_version_id"]
             self.put("document", document["document_id"], document)
             self.chunks = [c for c in self.chunks if c["document_id"] != document["document_id"]]
             self.chunks.extend(deepcopy(chunks))
+            if "user_id" in document:
+                self.ensure_material_source(document)
 
     def search(self, vector, course, chapter, limit):
         rows = []
@@ -132,8 +156,25 @@ class MemoryStore:
                            error_message="资料已删除")
                 return False
             self.ingest(document, chunks)
+            self.ensure_material_source(document)
             job.update(status="succeeded", stage="index")
             return True
+
+    def list_material_chunks(self, document_id):
+        return sorted(
+            (deepcopy(chunk) for chunk in self.chunks if chunk["document_id"] == document_id),
+            key=lambda chunk: chunk.get("chunk_ordinal", 0),
+        )
+
+    def ensure_material_source(self, document):
+        from final_review.source_locators import chunk_locator, material_version
+
+        version = material_version(document)
+        self.put("material_version", version["material_version_id"], version)
+        for ordinal, chunk in enumerate(self.list_material_chunks(document["document_id"])):
+            locator = chunk_locator(version, chunk, ordinal)
+            self.put("source_locator", locator["locator_id"], locator)
+        return version
 
     def retry_material_job(self, job_id):
         with self.lock:

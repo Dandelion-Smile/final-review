@@ -86,6 +86,13 @@ class MaterialDelete(Model):
     mode: Literal["block", "retain_source_snapshot"] = "block"
 
 
+class MaterialUpdate(Model):
+    title: Annotated[str, Field(min_length=1, max_length=200)]
+    chapter: Annotated[str, Field(max_length=200)] = ""
+    source_type: SourceType
+    expected_updated_at: str | None = None
+
+
 class ConversationCreate(Model):
     title: Annotated[str, Field(min_length=1, max_length=100)]
 
@@ -172,12 +179,17 @@ class FastQuizSubmission(Model):
 
 class Evidence(Model):
     chunk_id: str
+    chunk_ordinal: int = 0
     document_id: str
     title: str
     course_id: str
     chapter: str
     source_type: SourceType
     content: str
+    position_kind: Literal["document", "page", "slide"] = "document"
+    position: int | None = None
+    text_start: int | None = None
+    text_end: int | None = None
     similarity: float
     rank_score: float = 0
 

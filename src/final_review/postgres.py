@@ -14,6 +14,7 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from .source_locators import chunk_locator, material_version
 from .storage import StorageError, stable_key
 
 _user_id: ContextVar[str | None] = ContextVar("final_review_user_id", default=None)
@@ -52,6 +53,10 @@ class PostgresStore:
     @contextmanager
     def transaction(self):
         """Group one destructive domain operation into a single transaction."""
+        if not self._transaction_depth:
+            # Earlier reads start an implicit psycopg transaction. Close it so
+            # the block below owns the outer transaction instead of a savepoint.
+            self.connection.commit()
         self._transaction_depth += 1
         try:
             with self.connection.transaction():
@@ -300,9 +305,41 @@ class PostgresStore:
             self._rollback()
             raise StorageError("PostgreSQL 移除资料检索索引失败") from exc
 
+    def update_material_metadata(self, key: str, changes: dict) -> dict | None:
+        """Update display metadata and indexed chunk metadata under one row lock."""
+        with self.connection.transaction():
+            with self.connection.cursor() as cursor:
+                cursor.execute("SELECT data FROM documents WHERE record_key=%s AND user_id=%s "
+                               "FOR UPDATE", (key, self._user()))
+                row = cursor.fetchone()
+                if row is None:
+                    return None
+                document = row["data"]
+                if (document.get("parse_status") not in {"ready", "failed"}
+                        or document.get("updated_at") != changes["expected_updated_at"]):
+                    return None
+                from datetime import UTC, datetime
+                document.update({field: changes[field] for field in
+                                 ("title", "chapter", "source_type")})
+                document.pop("material_version_id", None)
+                document["updated_at"] = datetime.now(UTC).isoformat()
+                cursor.execute("UPDATE documents SET data=%s WHERE record_key=%s AND user_id=%s",
+                               (Jsonb(document), key, self._user()))
+                cursor.execute(
+                    "UPDATE document_chunks SET data = data || %s::jsonb "
+                    "WHERE document_id=%s AND user_id=%s",
+                    (Jsonb({field: document[field] for field in
+                            ("title", "chapter", "source_type")}), key, self._user()),
+                )
+        self._commit()
+        return document
+
     def ingest(self, document: dict, chunks: list[dict]):
         # One transaction ensures failed parsing never exposes a half-indexed document.
         user_id = self._user()
+        document = {**document, "user_id": user_id,
+                    "parse_status": document.get("parse_status", "ready")}
+        document["material_version_id"] = material_version(document)["material_version_id"]
         try:
             with self.connection.cursor() as cursor:
                 cursor.execute(
@@ -336,6 +373,7 @@ class PostgresStore:
                             self._vector(chunk["embedding"]),
                         ),
                     )
+                self._persist_material_source(cursor, document, chunks)
             self._commit()
         except psycopg.Error as exc:
             self._rollback()
@@ -538,12 +576,59 @@ class PostgresStore:
                              chunk["document_id"], Jsonb(chunk), chunk["content"],
                              self._vector(chunk["embedding"])),
                         )
+                    self._persist_material_source(cursor, document, chunks)
                     cursor.execute(
                         "UPDATE material_jobs SET status='succeeded',stage='index',"
                         "lease_until=NULL,finished_at=now() WHERE job_id=%s", (job_id,),
                     )
         self._commit()
         return valid
+
+    def _persist_material_source(self, cursor, document: dict, chunks: list[dict]) -> None:
+        version = material_version(document)
+        cursor.execute(
+            "INSERT INTO material_versions(record_key,user_id,course_id,document_id,"
+            "material_version_id,data) VALUES (%s,%s,%s,%s,%s,%s) "
+            "ON CONFLICT (record_key) DO NOTHING",
+            (version["material_version_id"], self._user(), version["course_id"],
+             version["document_id"], version["material_version_id"], Jsonb(version)),
+        )
+        cursor.execute(
+            "INSERT INTO material_locators(user_id,course_id,material_version_id,"
+            "locator_id,locator_kind,ordinal) VALUES (%s,%s,%s,'document','document',0) "
+            "ON CONFLICT DO NOTHING",
+            (self._user(), version["course_id"], version["material_version_id"]),
+        )
+        for ordinal, chunk in enumerate(chunks):
+            locator = chunk_locator(version, chunk, ordinal)
+            cursor.execute(
+                "INSERT INTO material_locators(user_id,course_id,material_version_id,"
+                "locator_id,locator_kind,ordinal,data) VALUES (%s,%s,%s,%s,%s,%s,%s) "
+                "ON CONFLICT (user_id,material_version_id,locator_id) "
+                "DO UPDATE SET data=EXCLUDED.data",
+                (self._user(), locator["course_id"], locator["material_version_id"],
+                 locator["locator_id"], locator["locator_kind"], locator["ordinal"],
+                 Jsonb(locator["data"])),
+            )
+
+    def list_material_chunks(self, document_id: str) -> list[dict]:
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT data FROM document_chunks WHERE user_id=%s AND document_id=%s",
+                (self._user(), document_id),
+            )
+            rows = [row["data"] for row in cursor.fetchall()]
+        return sorted(rows, key=lambda row: (row.get("chunk_ordinal", 2**31), row["chunk_id"]))
+
+    def ensure_material_source(self, document: dict) -> dict:
+        """Backfill locator rows for ready material indexed before M1-05."""
+        version = material_version(document)
+        chunks = self.list_material_chunks(document["document_id"])
+        with self.connection.transaction():
+            with self.connection.cursor() as cursor:
+                self._persist_material_source(cursor, document, chunks)
+        self._commit()
+        return version
 
     def retry_material_job(self, job_id: str) -> dict | None:
         with self.connection.transaction():

@@ -10,8 +10,13 @@ import type { Course } from "./workbench-api";
 type Page = "home" | "workbench" | "materials" | "quiz" | "report";
 const navigation: [Page, string, string][] = [["home", "▢", "AI 对话"], ["workbench", "◫", "课程与考试"], ["materials", "▱", "我的资料"], ["quiz", "✎", "模拟测验"], ["report", "▥", "学习报告"]];
 function App() {
-  const [page, setPage] = useState<Page>("workbench");
+  const [page, setPage] = useState<Page>(window.location.hash.startsWith("#materials/") ? "materials" : "workbench");
   const [course, setCourse] = useState<Course | null>(null);
+  useEffect(() => {
+    const onHashChange = () => { if (window.location.hash.startsWith("#materials/")) setPage("materials"); };
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
   const onSelectCourse = useCallback((value: Course | null) => setCourse(value), []);
   return <div className="shell"><aside><div className="brand"><span>✦</span><div><b>考前笔记</b><small>让努力，更有方向。</small></div></div><button className="course course-button" onClick={() => setPage("workbench")}><small>当前课程</small><strong>{course?.name ?? "选择课程"}</strong><em>⌄</em></button><nav>{navigation.map(([id, icon, text]) => <button className={page === id ? "active" : ""} onClick={() => setPage(id)} key={id}><i>{icon}</i>{text}</button>)}</nav><p className="quote">复习不是把资料看完，<br />是把会考的写出来。</p><small className="sign">— 考前笔记</small></aside><main className={page === "home" ? "dialog-main" : ""}>{page !== "home" && <Topbar />}{page === "home" && <Home courseId={course?.status === "deleted" ? null : course?.course_id ?? null} />}{page === "workbench" && <Workbench selectedId={course?.course_id ?? null} onSelect={onSelectCourse} />}{page === "materials" && <Materials selectedCourse={course} />}{page === "quiz" && <Quiz />}{page === "report" && <Report />}</main><div className="mobile-nav">{navigation.map(([id, icon, text]) => <button className={page === id ? "active" : ""} key={id} onClick={() => setPage(id)}><span>{icon}</span>{text}</button>)}</div></div>;
 }

@@ -11,6 +11,7 @@ from .material_conversion import IMAGE_FORMATS, convert_upload
 from .postgres import PostgresStore
 from .rag import KnowledgeBase
 from .schemas import MaterialInput
+from .source_locators import located_sections, material_version
 
 logger = logging.getLogger(__name__)
 
@@ -26,11 +27,16 @@ def process_material_job(store, kb: KnowledgeBase, job: dict, max_bytes: int) ->
         if course and course.get("status") in {"deleted", "purged"}:
             raise ValueError("课程已删除，资料处理已停止")
         path = Path(document["file_path"])
+        if not path.is_absolute():
+            # Older records stored paths relative to the API's project directory.
+            path = Path(__file__).resolve().parents[2] / path
         if not path.is_file():
             raise ValueError("原始文件不存在，请重新上传")
         if path.suffix.lower() in IMAGE_FORMATS:
             store.update_material_job(job["job_id"], job["attempts"], stage="ocr")
-        markdown = convert_upload(path.read_bytes(), document["file_name"], max_bytes)
+        content = path.read_bytes()
+        markdown = convert_upload(content, document["file_name"], max_bytes)
+        sections = located_sections(content, document["file_name"])
         material = MaterialInput(
             document_id=document["document_id"], course_id=document["course_id"],
             title=document["title"], source_type=document["source_type"],
@@ -38,11 +44,13 @@ def process_material_job(store, kb: KnowledgeBase, job: dict, max_bytes: int) ->
         )
         prepared, chunks = kb.prepare(
             material, source_origin="user_upload",
+            sections=sections,
             stage_callback=lambda stage: store.update_material_job(
                 job["job_id"], job["attempts"], stage=stage
             ),
         )
         ready = {**document, **prepared, "parse_status": "ready"}
+        ready["material_version_id"] = material_version(ready)["material_version_id"]
         ready.pop("parse_error", None)
         store.publish_material_job(job["job_id"], job["attempts"], ready, chunks)
     except ValueError as exc:

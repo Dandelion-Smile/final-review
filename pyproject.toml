@@ -14,6 +14,7 @@ dependencies = [
   "langchain-text-splitters>=1,<2", "markitdown[pdf,pptx,docx]>=0.1,<1",
   "psycopg[binary]>=3.2,<4", "argon2-cffi>=23.1,<26",
   "Pillow>=11,<13",
+  "pdfplumber>=0.11,<1", "python-pptx>=1,<2",
 ]
 
 [dependency-groups]

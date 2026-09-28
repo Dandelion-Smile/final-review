@@ -117,7 +117,60 @@ def test_material_job_claim_publish_and_ready_only_search(database_url):
         assert store.get_material_job("job-1")["status"] == "succeeded"
         assert store.get("document", "material-1")["parse_status"] == "ready"
         assert len(store.search([1.0, 0.0, 0.0], "course-1", "", 5)) == 1
+        version = store.ensure_material_source(ready)
+        assert store.list_material_chunks("material-1")[0]["chunk_id"] == "chunk-1"
+        with store.connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT locator_id FROM material_locators WHERE user_id=%s "
+                "AND material_version_id=%s ORDER BY locator_id",
+                (USER, version["material_version_id"]),
+            )
+            assert {row["locator_id"] for row in cursor.fetchall()} == {"document", "chunk-1"}
+        other = store.bind_user(str(SECOND_USER))
+        try:
+            assert store.list_material_chunks("material-1") == []
+            assert store.get("material_version", version["material_version_id"]) is None
+        finally:
+            store.reset_user(other)
         assert not store.publish_material_job("job-1", 1, ready, [chunk])
+    finally:
+        store.reset_user(token)
+        store.close()
+
+
+def test_material_metadata_edit_updates_pgvector_chunk_metadata(database_url):
+    apply_migrations(database_url)
+    with psycopg.connect(database_url) as connection:
+        _seed_course(connection)
+    store = PostgresStore(database_url)
+    token = store.bind_user(str(USER))
+    try:
+        store.ingest(
+            {
+                "document_id": "edit-1", "course_id": "course-1", "user_id": str(USER),
+                "title": "旧标题", "chapter": "旧章节", "source_type": "homework",
+                "parse_status": "ready", "updated_at": "2026-01-01T00:00:00+00:00",
+            },
+            [{
+                "chunk_id": "edit-chunk", "document_id": "edit-1", "course_id": "course-1",
+                "title": "旧标题", "chapter": "旧章节", "source_type": "homework",
+                "content": "网络知识", "embedding": [1.0, 0.0, 0.0],
+            }],
+        )
+        updated = store.update_material_metadata("edit-1", {
+            "title": "新标题", "chapter": "新章节", "source_type": "teacher_ppt",
+            "expected_updated_at": "2026-01-01T00:00:00+00:00",
+        })
+        assert updated["title"] == "新标题"
+        assert store.update_material_metadata("edit-1", {
+            "title": "过期修改", "chapter": "", "source_type": "homework",
+            "expected_updated_at": "2026-01-01T00:00:00+00:00",
+        }) is None
+        hits = store.search([1.0, 0.0, 0.0], "course-1", "新章节", 5)
+        assert len(hits) == 1
+        assert hits[0]["title"] == "新标题"
+        assert hits[0]["source_type"] == "teacher_ppt"
+        assert store.search([1.0, 0.0, 0.0], "course-1", "旧章节", 5) == []
     finally:
         store.reset_user(token)
         store.close()
@@ -372,7 +425,7 @@ def test_postgres_owner_predicate_and_confirmation_consumption_are_atomic(databa
         other.close()
 
 
-def test_database_api_returns_404_for_another_users_course(database_url):
+def test_database_api_returns_404_for_another_users_course(database_url, tmp_path):
     apply_migrations(database_url)
     settings = Settings(
         _env_file=None,
@@ -382,6 +435,7 @@ def test_database_api_returns_404_for_another_users_course(database_url):
         llm_api_key="test-key",
         embedding_api_key="test-key",
         embedding_dimensions=3,
+        uploads_dir=str(tmp_path / "uploads"),
     )
     with TestClient(create_app(settings)) as owner, TestClient(create_app(settings)) as other:
         assert (
@@ -392,6 +446,35 @@ def test_database_api_returns_404_for_another_users_course(database_url):
             == 200
         )
         course = owner.post("/api/courses", json={"name": "private course"}).json()
+        owner_id = owner.get("/api/auth/me").json()["id"]
+        source = tmp_path / "uploads" / "lecture.md"
+        source.parent.mkdir()
+        source.write_text("private excerpt", encoding="utf-8")
+        material_store = PostgresStore(database_url)
+        owner_token = material_store.bind_user(owner_id)
+        try:
+            material_store.ingest(
+                {
+                    "document_id": "private-material", "course_id": course["course_id"],
+                    "user_id": owner_id, "title": "private lecture",
+                    "file_name": "lecture.md", "file_path": str(source),
+                    "source_type": "homework", "cleaned_markdown": "private excerpt",
+                    "parse_status": "ready",
+                },
+                [{
+                    "chunk_id": "private-chunk", "document_id": "private-material",
+                    "course_id": course["course_id"], "title": "private lecture",
+                    "chapter": "", "source_type": "homework",
+                    "content": "private excerpt", "embedding": [1.0, 0.0, 0.0],
+                }],
+            )
+        finally:
+            material_store.reset_user(owner_token)
+            material_store.close()
+        material_base = f"/api/courses/{course['course_id']}/documents/private-material"
+        assert owner.get(material_base + "/chunks").status_code == 200
+        assert owner.get(material_base + "/chunks/private-chunk").status_code == 200
+        assert owner.get(material_base + "/download").content == b"private excerpt"
         assert (
             other.post(
                 "/api/auth/sign-up",
@@ -400,6 +483,9 @@ def test_database_api_returns_404_for_another_users_course(database_url):
             == 200
         )
         assert other.post(f"/api/courses/{course['course_id']}/deletion-preview").status_code == 404
+        assert other.get(material_base + "/chunks").status_code == 404
+        assert other.get(material_base + "/chunks/private-chunk").status_code == 404
+        assert other.get(material_base + "/download").status_code == 404
 
 
 def test_course_and_exams_work_without_model_keys(database_url):
@@ -498,9 +584,25 @@ def test_postgres_snapshot_delete_removes_retrieval_chunks(database_url):
         )
         domain.confirm_revision(created["asset"]["asset_id"], created["revision"]["revision_id"])
         preview = domain.material_deletion_preview("document-1")
+        with pytest.raises(DomainConflict, match="资料仍被正式资产引用"):
+            domain.delete_material("document-1", preview["confirmation_id"], "block")
+        assert store.get("document", "document-1")["parse_status"] == "ready"
+        preview = domain.material_deletion_preview("document-1")
         assert domain.delete_material(
             "document-1", preview["confirmation_id"], "retain_source_snapshot"
         ) == {"deleted": True, "retained_source_snapshot": True}
+        # The API removes the original file after this returns. Another connection
+        # must already see the deletion; otherwise a later rollback leaves a
+        # searchable document pointing to a missing file.
+        observer = PostgresStore(database_url)
+        observer_token = observer.bind_user(str(USER))
+        try:
+            assert observer.get("document", "document-1")["parse_status"] == "deleted"
+            assert observer.scan("source_snapshot", {"course_id": "course-1"})
+            assert observer.search([1.0, 0.0, 0.0], "course-1", "", 1) == []
+        finally:
+            observer.reset_user(observer_token)
+            observer.close()
         assert store.scan("source_snapshot", {"course_id": "course-1"})
         assert store.get("document", "document-1")["parse_status"] == "deleted"
         assert store.search([1.0, 0.0, 0.0], "course-1", "", 1) == []

@@ -50,7 +50,8 @@ class KnowledgeBase:
             separators=["\n## ", "\n\n", "\n", "。", "；", " ", ""],
         )
 
-    def ingest(self, material: MaterialInput, *, source_origin: str = "user_entry") -> dict:
+    def ingest(self, material: MaterialInput, *, source_origin: str = "user_entry",
+               user_id: str | None = None) -> dict:
         if material.document_id is not None:
             existing = self.store.get("document", material.document_id)
             if existing and existing.get("parse_status") == "ready":
@@ -66,12 +67,16 @@ class KnowledgeBase:
             if existing:
                 return {"document_id": key, "chunks": existing["chunk_count"], "cached": True}
         document, chunks = self.prepare(material, source_origin=source_origin)
+        if user_id is not None:
+            document["user_id"] = user_id
+            document["parse_status"] = "ready"
         self.store.ingest(document, chunks)
         return {"document_id": document["document_id"], "chunks": len(chunks), "cached": False}
 
     def prepare(
         self, material: MaterialInput, *, source_origin: str = "user_entry",
         stage_callback: Callable[[str], None] | None = None,
+        sections: list[dict] | None = None,
     ) -> tuple[dict, list[dict]]:
         if stage_callback:
             stage_callback("clean")
@@ -83,7 +88,31 @@ class KnowledgeBase:
             material.source_type.value,
             sha256(cleaned.encode()).hexdigest(),
         )
-        texts = list(dict.fromkeys(self.splitter.split_text(cleaned)))
+        units = []
+        if sections:
+            for section in sections:
+                source_text = clean_markdown(section["text"]) if section["text"].strip() else ""
+                if not source_text:
+                    continue
+                cursor = 0
+                for text in self.splitter.split_text(source_text):
+                    start = source_text.find(text, cursor)
+                    if start < 0:
+                        start = source_text.find(text)
+                    units.append((text, section["position_kind"], section["position"],
+                                  start if start >= 0 else None,
+                                  start + len(text) if start >= 0 else None))
+                    cursor = start + max(1, len(text) - 150) if start >= 0 else 0
+        else:
+            cursor = 0
+            for text in self.splitter.split_text(cleaned):
+                start = cleaned.find(text, cursor)
+                if start < 0:
+                    start = cleaned.find(text)
+                units.append((text, "document", None, start if start >= 0 else None,
+                              start + len(text) if start >= 0 else None))
+                cursor = start + max(1, len(text) - 150) if start >= 0 else 0
+        texts = [unit[0] for unit in units]
         if stage_callback:
             stage_callback("index")
         vectors = []
@@ -98,7 +127,12 @@ class KnowledgeBase:
                 **metadata,
                 "document_id": document_id,
                 "chunk_id": stable_key(document_id, str(i)),
+                "chunk_ordinal": i,
                 "content": content,
+                "position_kind": units[i][1],
+                "position": units[i][2],
+                "text_start": units[i][3],
+                "text_end": units[i][4],
                 "embedding": vectors[i],
             }
             for i, content in enumerate(texts)

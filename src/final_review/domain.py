@@ -5,7 +5,8 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from uuid import uuid4
 
-from .storage import Store, stable_key
+from .source_locators import material_version
+from .storage import Store
 
 
 class DomainNotFound(KeyError):
@@ -240,21 +241,12 @@ class DomainService:
         return self._put("exam", exam_id, exam)
 
     def _material_version(self, document: dict) -> dict:
-        key = stable_key(document["document_id"], document.get("cleaned_markdown", ""))
+        version = material_version({**document, "user_id": self.user_id})
+        key = version["material_version_id"]
         existing = self.store.get("material_version", key)
         if existing:
             return existing
-        version = {
-            "material_version_id": key,
-            "document_id": document["document_id"],
-            "course_id": document["course_id"],
-            "user_id": self.user_id,
-            "file_name": document.get("file_name", document["title"]),
-            "source_type": document["source_type"],
-            "source_origin": document.get("source_origin", "legacy_upload"),
-            "content_hash": stable_key(document.get("cleaned_markdown", "")),
-            "created_at": _now(),
-        }
+        version["created_at"] = version.get("created_at") or _now()
         self.store.put("material_version", key, version)
         return version
 
@@ -293,26 +285,28 @@ class DomainService:
         return {"asset": asset, "revision": revision}
 
     def _references(self, revision: dict, document_ids: list[str]) -> None:
-        for document_id in document_ids:
-            document = self._owned("document", document_id)
-            if (
-                document.get("course_id") != revision["course_id"]
-                or document.get("parse_status") != "ready"
-            ):
-                raise DomainConflict("来源资料不可用于该资产")
-            version = self._material_version(document)
-            reference = {
-                "source_reference_id": _id("source"),
-                "course_id": revision["course_id"],
-                "user_id": self.user_id,
-                "revision_id": revision["revision_id"],
-                "asset_revision_id": revision["revision_id"],
-                "document_id": document_id,
-                "material_version_id": version["material_version_id"],
-                "locator_id": "document",
-                "created_at": _now(),
-            }
-            self.store.put("source_reference", reference["source_reference_id"], reference)
+        with self._transaction():
+            locked_get = getattr(self.store, "get_for_update", None)
+            for document_id in sorted(document_ids):
+                document = (locked_get("document", document_id) if locked_get
+                            else self._owned("document", document_id))
+                if (document is None or document.get("user_id") != self.user_id
+                        or document.get("course_id") != revision["course_id"]
+                        or document.get("parse_status") != "ready"):
+                    raise DomainConflict("来源资料不可用于该资产")
+                version = self._material_version(document)
+                reference = {
+                    "source_reference_id": _id("source"),
+                    "course_id": revision["course_id"],
+                    "user_id": self.user_id,
+                    "revision_id": revision["revision_id"],
+                    "asset_revision_id": revision["revision_id"],
+                    "document_id": document_id,
+                    "material_version_id": version["material_version_id"],
+                    "locator_id": "document",
+                    "created_at": _now(),
+                }
+                self.store.put("source_reference", reference["source_reference_id"], reference)
 
     def create_revision(self, asset_id: str, payload: dict) -> dict:
         asset = self._owned("learning_asset", asset_id)
@@ -347,23 +341,34 @@ class DomainService:
         return revision
 
     def confirm_revision(self, asset_id: str, revision_id: str) -> dict:
-        asset, revision = (
-            self._owned("learning_asset", asset_id),
-            self._owned("asset_revision", revision_id),
-        )
-        if revision.get("asset_id") != asset_id or revision.get("state") != "draft":
-            raise DomainConflict("只能确认该资产的草稿版本")
-        previous = asset.get("current_revision_id")
-        revision.update({"state": "confirmed", "confirmed_at": _now()})
-        self._put("asset_revision", revision_id, revision)
-        asset.update({"status": "confirmed", "current_revision_id": revision_id})
-        saved_asset = self._put("learning_asset", asset_id, asset)
-        if previous:
-            old = self._owned("asset_revision", previous)
-            old["state"] = "superseded"
-            self._put("asset_revision", previous, old)
-        self._audit(asset["course_id"], "asset.confirmed", "learning_asset", asset_id)
-        return {"asset": saved_asset, "revision": revision}
+        with self._transaction():
+            asset, revision = (
+                self._owned("learning_asset", asset_id),
+                self._owned("asset_revision", revision_id),
+            )
+            if revision.get("asset_id") != asset_id or revision.get("state") != "draft":
+                raise DomainConflict("只能确认该资产的草稿版本")
+            references = [row for row in self.store.scan(
+                "source_reference", {"course_id": asset["course_id"]}
+            ) if row.get("revision_id") == revision_id]
+            locked_get = getattr(self.store, "get_for_update", None)
+            for document_id in sorted({row["document_id"] for row in references}):
+                document = (locked_get("document", document_id) if locked_get
+                            else self._owned("document", document_id))
+                if (document is None or document.get("user_id") != self.user_id
+                        or document.get("parse_status") != "ready"):
+                    raise DomainConflict("来源资料已不可用，不能确认该版本")
+            previous = asset.get("current_revision_id")
+            revision.update({"state": "confirmed", "confirmed_at": _now()})
+            self._put("asset_revision", revision_id, revision)
+            asset.update({"status": "confirmed", "current_revision_id": revision_id})
+            saved_asset = self._put("learning_asset", asset_id, asset)
+            if previous:
+                old = self._owned("asset_revision", previous)
+                old["state"] = "superseded"
+                self._put("asset_revision", previous, old)
+            self._audit(asset["course_id"], "asset.confirmed", "learning_asset", asset_id)
+            return {"asset": saved_asset, "revision": revision}
 
     def archive_asset(self, asset_id: str) -> dict:
         asset = self._owned("learning_asset", asset_id)
@@ -388,21 +393,46 @@ class DomainService:
             purged.append(course["course_id"])
         return purged
 
-    def material_deletion_preview(self, document_id: str) -> dict:
+    def update_material(self, document_id: str, course_id: str, changes: dict) -> dict:
+        self.course(course_id, writable=True)
         document = self._owned("document", document_id)
+        if document.get("course_id") != course_id:
+            raise DomainNotFound(document_id)
+        if document.get("parse_status") not in {"ready", "failed"}:
+            raise DomainConflict("资料处理中或已删除，暂不能编辑")
+        updated = self.store.update_material_metadata(document_id, changes)
+        if updated is None:
+            raise DomainConflict("资料状态或内容已变化，请刷新后重试")
+        self._audit(course_id, "material.updated", "material", document_id)
+        return updated
+
+    def material_deletion_preview(self, document_id: str, course_id: str | None = None) -> dict:
+        document = self._owned("document", document_id)
+        if course_id is not None and document.get("course_id") != course_id:
+            raise DomainNotFound(document_id)
+        self.course(document["course_id"], writable=True)
+        if document.get("parse_status") == "deleted":
+            raise DomainConflict("资料已删除")
         blocking = self._blocking_references(document)
-        payload = {
-            "blocking_references": len(blocking),
-            "retain_source_snapshot_allowed": bool(blocking),
-        }
+        payload = self._material_delete_impact(blocking)
         confirmation = self._confirmation(
             document["course_id"], "material.delete", "material", document_id, payload
         )
         return {
-            **payload,
+            "blocking_references": len(blocking),
+            "affected_assets": len({row["asset_id"] for row in self._reference_assets(blocking)}),
+            "retain_source_snapshot_allowed": bool(blocking),
             "confirmation_id": confirmation["confirmation_id"],
             "expires_at": confirmation["expires_at"],
         }
+
+    def _reference_assets(self, references: list[dict]) -> list[dict]:
+        return [self._owned("asset_revision", row["revision_id"])
+                for row in references]
+
+    @staticmethod
+    def _material_delete_impact(references: list[dict]) -> dict:
+        return {"reference_ids": sorted(row["source_reference_id"] for row in references)}
 
     def _blocking_references(self, document: dict) -> list[dict]:
         blocking = []
@@ -416,12 +446,16 @@ class DomainService:
 
     def delete_material(self, document_id: str, confirmation_id: str, mode: str) -> dict:
         with self._transaction():
-            document = self._owned("document", document_id)
+            locked_get = getattr(self.store, "get_for_update", None)
+            document = (locked_get("document", document_id) if locked_get
+                        else self._owned("document", document_id))
+            if document is None or document.get("user_id") != self.user_id:
+                raise DomainNotFound(document_id)
+            self.course(document["course_id"], writable=True)
+            if document.get("parse_status") == "deleted":
+                raise DomainConflict("资料已删除")
             blocking = self._blocking_references(document)
-            payload = {
-                "blocking_references": len(blocking),
-                "retain_source_snapshot_allowed": bool(blocking),
-            }
+            payload = self._material_delete_impact(blocking)
             self._consume(
                 confirmation_id,
                 action="material.delete",
@@ -429,31 +463,35 @@ class DomainService:
                 resource_id=document_id,
                 payload=payload,
             )
-            if payload["blocking_references"] and mode != "retain_source_snapshot":
+            if blocking and mode != "retain_source_snapshot":
                 raise DomainConflict("资料仍被正式资产引用")
-            if payload["blocking_references"]:
-                for reference in self.store.scan(
-                    "source_reference", {"course_id": document["course_id"]}
-                ):
-                    if reference.get("document_id") == document_id:
-                        snapshot = {
-                            "snapshot_id": _id("snapshot"),
-                            "course_id": document["course_id"],
-                            "user_id": self.user_id,
-                            "document_id": document_id,
-                            "revision_id": reference["revision_id"],
-                            "display_file_name": document.get("file_name", document["title"]),
-                            "source_type": document["source_type"],
-                            "source_origin": document.get("source_origin", "legacy_upload"),
-                            "excerpt": document.get("cleaned_markdown", "")[:1500],
-                            "created_at": _now(),
-                        }
-                        self.store.put("source_snapshot", snapshot["snapshot_id"], snapshot)
+            if blocking:
+                for reference in blocking:
+                    version = self._owned("material_version", reference["material_version_id"])
+                    snapshot = {
+                        "snapshot_id": _id("snapshot"),
+                        "course_id": document["course_id"],
+                        "user_id": self.user_id,
+                        "document_id": document_id,
+                        "revision_id": reference["revision_id"],
+                        "material_version_id": reference["material_version_id"],
+                        "locator_id": reference.get("locator_id", "document"),
+                        "display_file_name": version.get(
+                            "file_name", document.get("file_name", document["title"])
+                        ),
+                        "source_type": version.get("source_type", document["source_type"]),
+                        "source_origin": version.get(
+                            "source_origin", document.get("source_origin", "legacy_upload")
+                        ),
+                        "excerpt": document.get("cleaned_markdown", "")[:1500],
+                        "created_at": _now(),
+                    }
+                    self.store.put("source_snapshot", snapshot["snapshot_id"], snapshot)
             self.store.deindex_document(document_id)
             document.update({"parse_status": "deleted", "deleted_at": _now()})
             self._put("document", document_id, document)
             self._audit(document["course_id"], "material.deleted", "material", document_id)
             return {
                 "deleted": True,
-                "retained_source_snapshot": bool(payload["blocking_references"]),
+                "retained_source_snapshot": bool(blocking),
             }

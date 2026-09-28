@@ -28,6 +28,21 @@ def _run_queued_job(system):
     return system.store.get_material_job(job["job_id"])
 
 
+def test_upload_survives_worker_with_different_working_directory(system, tmp_path, monkeypatch):
+    system.settings.uploads_dir = str(tmp_path / "uploads")
+    with TestClient(create_app(system.settings, system)) as client:
+        response = client.post(
+            "/knowledge/upload",
+            data={"course_id": "net", "title": "课程笔记", "source_type": "homework"},
+            files={"file": ("notes.md", "网络协议与三次握手".encode())},
+        )
+        assert response.status_code == 202
+        document = system.store.get("document", response.json()["document_id"])
+        assert Path(document["file_path"]).is_absolute()
+        monkeypatch.chdir(tmp_path.parent)
+        assert _run_queued_job(system)["status"] == "succeeded"
+
+
 @pytest.mark.parametrize(
     ("suffix", "format_name"),
     [("png", "PNG"), ("jpg", "JPEG"), ("jpeg", "JPEG"), ("webp", "WEBP")],
@@ -80,6 +95,32 @@ def test_bad_image_has_explainable_failure_and_no_chunks(system, tmp_path):
         assert not any(
             chunk["document_id"] == document["document_id"] for chunk in system.store.chunks
         )
+
+
+def test_picture_only_ppt_has_explainable_failure_and_no_chunks(system, tmp_path):
+    from pptx import Presentation
+    from pptx.util import Inches
+
+    system.settings.uploads_dir = str(tmp_path / "uploads")
+    picture = BytesIO(_image("PNG"))
+    slides = Presentation()
+    slide = slides.slides.add_slide(slides.slide_layouts[6])
+    slide.shapes.add_picture(picture, Inches(1), Inches(1))
+    ppt = BytesIO()
+    slides.save(ppt)
+    with TestClient(create_app(system.settings, system)) as client:
+        response = client.post(
+            "/knowledge/upload",
+            data={"course_id": "net", "title": "图片课件", "source_type": "teacher_ppt"},
+            files={"file": ("pictures.pptx", ppt.getvalue())},
+        )
+        assert response.status_code == 202
+        job = _run_queued_job(system)
+        assert job["status"] == "failed"
+        assert "图片单独上传" in job["error_message"]
+        document_id = response.json()["document_id"]
+        assert client.get(f"/api/courses/net/documents/{document_id}/chunks").status_code == 404
+        assert not any(chunk["document_id"] == document_id for chunk in system.store.chunks)
 
 
 @pytest.mark.parametrize(

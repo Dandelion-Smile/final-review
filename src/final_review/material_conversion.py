@@ -181,4 +181,9 @@ def convert_upload(content: bytes, filename: str, max_bytes: int) -> str:
             raise ValueError("文件文字提取失败，请检查格式和可读性") from exc
         if not markdown.strip():
             raise ValueError("文件没有可检索文字；扫描版 PDF 暂不支持 OCR")
+        if suffix in {".ppt", ".pptx"}:
+            visible = re.sub(r"<!--.*?-->", "", markdown, flags=re.S)
+            visible = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", visible)
+            if not re.search(r"\w", visible):
+                raise ValueError("PPT 中没有可提取文字；请将图片单独上传以进行 OCR")
         return markdown
