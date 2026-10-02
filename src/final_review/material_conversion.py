@@ -6,8 +6,13 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+import unicodedata
+from dataclasses import dataclass
+from difflib import SequenceMatcher
 from io import BytesIO
 from pathlib import Path
+from typing import Callable
 from zipfile import BadZipFile, ZipFile
 
 from markitdown import MarkItDown
@@ -28,8 +33,16 @@ SUPPORTED_SUFFIXES = {
 }
 IMAGE_FORMATS = {".png": "PNG", ".jpg": "JPEG", ".jpeg": "JPEG", ".webp": "WEBP"}
 MAX_IMAGE_PIXELS = 20_000_000
+MAX_PRESENTATION_SLIDES = 80
+PRESENTATION_TIMEOUT_SECONDS = 600
 CONVERSION_TIMEOUT_SECONDS = 45
 LEGACY_OFFICE_TIMEOUT_SECONDS = 120
+
+
+@dataclass
+class ConvertedMaterial:
+    markdown: str
+    sections: list[dict] | None = None
 
 
 def _find_executable(names: tuple[str, ...], windows_relative_path: str) -> str | None:
@@ -112,7 +125,7 @@ def _convert_legacy(path: Path, directory: Path) -> Path:
     return converted
 
 
-def _ocr_image(path: Path, content: bytes, suffix: str) -> str:
+def _ocr_image(path: Path, content: bytes, suffix: str, *, allow_empty: bool = False) -> str:
     try:
         with Image.open(BytesIO(content)) as image:
             if (
@@ -148,12 +161,133 @@ def _ocr_image(path: Path, content: bytes, suffix: str) -> str:
     if result.returncode:
         raise ValueError("图片 OCR 失败，请检查中文和英文语言包")
     markdown = re.sub(r"(?<=[\u4e00-\u9fff])[ \t]+(?=[\u4e00-\u9fff])", "", result.stdout)
-    if not markdown.strip():
+    if not markdown.strip() and not allow_empty:
         raise ValueError("图片中没有识别到可检索文字")
     return markdown
 
 
-def convert_upload(content: bytes, filename: str, max_bytes: int) -> str:
+def _convert_presentation_to_pdf(path: Path, directory: Path) -> Path:
+    executable = _find_executable(
+        ("libreoffice", "soffice"), "LibreOffice/program/soffice.com"
+    )
+    if not executable:
+        raise ValueError("PPT 转 PDF 服务不可用，请安装 LibreOffice")
+    pdf = path.with_suffix(".pdf")
+    _run(
+        [executable, f"-env:UserInstallation={(directory / 'pdf-profile').as_uri()}",
+         "--headless", "--convert-to", "pdf", "--outdir", str(directory), str(path)],
+        "PPT 转 PDF", LEGACY_OFFICE_TIMEOUT_SECONDS,
+    )
+    if not pdf.is_file() or not pdf.stat().st_size:
+        raise ValueError("PPT 转 PDF 未生成可读文件")
+    return pdf
+
+
+def _normalise_line(line: str) -> str:
+    return "".join(
+        char.casefold() for char in unicodedata.normalize("NFKC", line)
+        if char.isalnum()
+    )
+
+
+def _new_lines(existing: str, candidate: str) -> str:
+    """Keep new OCR/native lines while suppressing repeated slide text."""
+    accepted = [line.strip() for line in existing.splitlines() if line.strip()]
+    initial_count = len(accepted)
+    known = [_normalise_line(line) for line in accepted]
+    for line in candidate.splitlines():
+        line = line.strip()
+        key = _normalise_line(line)
+        if not key:
+            continue
+        duplicate = any(
+            key == old or (len(key) >= 4 and key in old)
+            or (len(key) >= 6 and len(old) >= 6
+                and SequenceMatcher(None, key, old).ratio() >= 0.9)
+            for old in known
+        )
+        if not duplicate:
+            accepted.append(line)
+            known.append(key)
+    return "\n".join(accepted[initial_count:])
+
+
+def _markitdown_slides(markdown: str, count: int) -> list[str]:
+    markers = list(re.finditer(r"<!--\s*Slide number:\s*(\d+)\s*-->", markdown))
+    if (len(markers) != count
+            or [int(match.group(1)) for match in markers] != list(range(1, count + 1))):
+        return [""] * count
+    slides = []
+    for i, match in enumerate(markers):
+        slide = markdown[match.end():markers[i + 1].start() if i + 1 < count else len(markdown)]
+        slide = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", slide)
+        slides.append(slide.strip())
+    return slides
+
+
+def _convert_presentation(
+    path: Path, directory: Path, *, stage_callback: Callable[[str], None] | None = None,
+) -> ConvertedMaterial:
+    import pdfplumber
+    from pptx import Presentation
+
+    from .source_locators import _slide_sections
+
+    started = time.monotonic()
+    try:
+        native = _slide_sections(Presentation(path))
+        markdown = MarkItDown(enable_plugins=False).convert(str(path)).text_content
+    except Exception as exc:
+        raise ValueError("PPT 文字提取失败，请检查格式和可读性") from exc
+    if not native or len(native) > MAX_PRESENTATION_SLIDES:
+        raise ValueError(f"PPT 页数为空或超过 {MAX_PRESENTATION_SLIDES} 页限制")
+    if stage_callback:
+        stage_callback("convert")
+    pdf = _convert_presentation_to_pdf(path, directory)
+    try:
+        with pdfplumber.open(pdf) as document:
+            pdf_pages = len(document.pages)
+    except Exception as exc:
+        raise ValueError("转换后的 PDF 无法读取") from exc
+    if pdf_pages != len(native):
+        raise ValueError("PPT 与转换后 PDF 页数不一致，无法可靠定位 OCR 内容")
+    renderer = _find_executable(("pdftoppm",), "")
+    if not renderer:
+        raise ValueError("PDF 页面渲染服务不可用，请安装 Poppler")
+    if stage_callback:
+        stage_callback("ocr")
+    markitdown_slides = _markitdown_slides(markdown, len(native))
+    sections = []
+    additions = []
+    for index, section in enumerate(native, 1):
+        if time.monotonic() - started > PRESENTATION_TIMEOUT_SECONDS:
+            raise ValueError("PPT 处理超时，请拆分后上传")
+        prefix = directory / f"slide-{index:03d}"
+        _run([renderer, "-f", str(index), "-l", str(index), "-singlefile",
+              "-scale-to", "2000", "-png", str(pdf), str(prefix)], "PDF 页面渲染")
+        image = prefix.with_suffix(".png")
+        if not image.is_file():
+            raise ValueError(f"第 {index} 页 PDF 渲染失败")
+        try:
+            md_extra = _new_lines(section["text"], markitdown_slides[index - 1])
+            base = "\n".join(part for part in (section["text"], md_extra) if part.strip())
+            ocr = _ocr_image(image, image.read_bytes(), ".png", allow_empty=True)
+            ocr_extra = _new_lines(base, ocr)
+            text = "\n".join(part for part in (base, ocr_extra) if part.strip())
+            sections.append({**section, "text": text})
+            if ocr_extra:
+                additions.append(f"\n\n<!-- Slide number: {index}; OCR -->\n{ocr_extra}")
+        finally:
+            image.unlink(missing_ok=True)
+    if not any(section["text"].strip() for section in sections):
+        raise ValueError("PPT 中没有识别到可检索文字")
+    return ConvertedMaterial(markdown=(markdown + "".join(additions)).strip(), sections=sections)
+
+
+def convert_material(
+    content: bytes, filename: str, max_bytes: int,
+    *, stage_callback: Callable[[str], None] | None = None,
+) -> ConvertedMaterial:
     suffix = Path(filename).suffix.lower()
     if suffix not in SUPPORTED_SUFFIXES:
         raise ValueError("不支持此文件格式；支持 md/txt/pdf/ppt/pptx/doc/docx/png/jpg/webp")
@@ -161,7 +295,7 @@ def convert_upload(content: bytes, filename: str, max_bytes: int) -> str:
         raise ValueError("文件为空或超过上传大小限制")
     if suffix in {".md", ".txt"}:
         try:
-            return content.decode("utf-8-sig")
+            return ConvertedMaterial(content.decode("utf-8-sig"))
         except UnicodeDecodeError as exc:
             raise ValueError("文本文件不是 UTF-8 编码") from exc
     if suffix in {".pptx", ".docx"}:
@@ -171,19 +305,21 @@ def convert_upload(content: bytes, filename: str, max_bytes: int) -> str:
         path = directory / f"material{suffix}"
         path.write_bytes(content)
         if suffix in IMAGE_FORMATS:
-            return _ocr_image(path, content, suffix)
+            return ConvertedMaterial(_ocr_image(path, content, suffix))
         if suffix in {".ppt", ".doc"}:
             path = _convert_legacy(path, directory)
             _check_office_archive(path.read_bytes(), max_bytes)
+        if suffix in {".ppt", ".pptx"}:
+            return _convert_presentation(path, directory, stage_callback=stage_callback)
         try:
             markdown = MarkItDown(enable_plugins=False).convert(str(path)).text_content
         except Exception as exc:
             raise ValueError("文件文字提取失败，请检查格式和可读性") from exc
         if not markdown.strip():
             raise ValueError("文件没有可检索文字；扫描版 PDF 暂不支持 OCR")
-        if suffix in {".ppt", ".pptx"}:
-            visible = re.sub(r"<!--.*?-->", "", markdown, flags=re.S)
-            visible = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", visible)
-            if not re.search(r"\w", visible):
-                raise ValueError("PPT 中没有可提取文字；请将图片单独上传以进行 OCR")
-        return markdown
+        return ConvertedMaterial(markdown)
+
+
+def convert_upload(content: bytes, filename: str, max_bytes: int) -> str:
+    """Compatibility API for callers that only need Markdown."""
+    return convert_material(content, filename, max_bytes).markdown

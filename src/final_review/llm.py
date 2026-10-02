@@ -13,6 +13,7 @@ from .rag import CourseRetriever, KnowledgeBase
 from .schemas import (
     Evidence,
     FastQuiz,
+    GeneratedNote,
     Grades,
     GroundedAnswer,
     KnowledgePlan,
@@ -61,6 +62,22 @@ class ReviewModel:
             "四类类型分别为 chapter、key_points、qa_cards、mnemonic。没有说出的字段留空；"
             "不要推测资料 ID、默认范围或默认时长。",
             {"message": request["message"]},
+        )
+
+    def note(self, data):
+        return self.structured(
+            GeneratedNote,
+            "只依据 evidence 所列的用户指定资料。"
+            "按 note_config 的类型、可选写作要求、时长、重点与水平生成可背诵的考点。"
+            "scope 是写作要求，不代表已验证的资料章节；不要仅凭 scope 给不相关内容冠上章节标题。"
+            "chapter 按章节逻辑组织精简结论；key_points 写逐条考点；"
+            "qa_cards 的 heading 写问题、content 写可背的答案；"
+            "mnemonic 的 heading 写口诀、content 写对应含义和使用条件。"
+            "优先保留核心定义、性质、标准方法、常见考法和易错点。"
+            "每个考点必须标记 provenance：单资料 source，多份资料综合改编 synthesis，"
+            "无资料支持且确有必要时 ai_supplement。source 和 synthesis 必须引用 evidence "
+            "中的真实 chunk_id，并逐字摘录 quote；AI 补充不写引用。不得伪造资料来源。",
+            data,
         )
 
     def retrieve(self, request, kb: KnowledgeBase, broaden=False):

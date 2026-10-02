@@ -151,7 +151,7 @@ def test_direct_chat_uses_selected_model_and_history(system, monkeypatch):
     system.settings.chat_models = [
         ChatModelConfig(
             id="deepseek", label="DeepSeek", model="deepseek-test",
-            base_url="https://example.invalid/v1", api_key="test-key",
+            base_url="https://api.deepseek.com", api_key="test-key",
         ),
         ChatModelConfig(
             id="gemini", label="Gemini", model="gemini-test",
@@ -164,7 +164,9 @@ def test_direct_chat_uses_selected_model_and_history(system, monkeypatch):
         def create(self, **kwargs):
             calls.append(kwargs)
             from types import SimpleNamespace
-            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="真实回复"))])
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="真实回复"))]
+            )
 
     class FakeOpenAI:
         def __init__(self, **kwargs):
@@ -181,9 +183,47 @@ def test_direct_chat_uses_selected_model_and_history(system, monkeypatch):
         assert result.json()["reply"] == "真实回复"
         assert result.json()["model"] == "Gemini"
         assert calls[0]["model"] == "gemini-test"
-        assert [item["role"] for item in calls[0]["messages"]] == [
+        assert [item["role"] for item in calls[0]["messages"]] == ["system", "user"]
+        continued = client.post("/api/chat", json={
+            "message": "继续", "model_id": "gemini", "mode": "direct",
+            "history": [{"role": "user", "content": "不可信的页面历史"}],
+        })
+        assert continued.status_code == 200
+        assert [item["role"] for item in calls[1]["messages"]] == [
             "system", "user", "assistant", "user"
         ]
+        assert calls[1]["messages"][1]["content"] == "你好"
+        deepseek_reply = client.post("/api/chat", json={
+            "message": "继续", "model_id": "deepseek", "mode": "direct",
+        })
+        assert deepseek_reply.status_code == 200
+        assert calls[2]["extra_body"] == {"thinking": {"type": "disabled"}}
+        assert "extra_body" not in calls[1]
+        conversations = client.get(
+            "/api/courses/software-engineering-basics/conversations"
+        ).json()["items"]
+        assert conversations[0]["title"] == "你好"
+        renamed = client.patch(
+            "/api/courses/software-engineering-basics/conversations/default",
+            json={"title": "  期末复习重点  "},
+        )
+        assert renamed.status_code == 200
+        assert renamed.json()["title"] == "期末复习重点"
+        assert client.get(
+            "/api/courses/software-engineering-basics/conversations"
+        ).json()["items"][0]["title"] == "期末复习重点"
+        assert client.patch(
+            "/api/courses/software-engineering-basics/conversations/default",
+            json={"title": "   "},
+        ).status_code == 422
+        other_course = client.post("/api/courses", json={"name": "Other"}).json()["course_id"]
+        assert (
+            client.get(f"/api/courses/{other_course}/conversations/default/messages").status_code
+            == 404
+        )
+        assert client.patch(
+            f"/api/courses/{other_course}/conversations/default", json={"title": "不可改"}
+        ).status_code == 404
 
 
 def test_real_pptx_conversion(system, tmp_path):

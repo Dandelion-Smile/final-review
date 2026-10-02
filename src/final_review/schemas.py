@@ -97,6 +97,10 @@ class ConversationCreate(Model):
     title: Annotated[str, Field(min_length=1, max_length=100)]
 
 
+class ConversationRename(Model):
+    title: Annotated[str, Field(min_length=1, max_length=100)]
+
+
 class Credentials(Model):
     email: Annotated[str, Field(min_length=3, max_length=320)]
     password: Annotated[str, Field(min_length=8, max_length=128)]
@@ -164,6 +168,11 @@ class ResumeNoteRequest(Model):
     course_id: Identifier
     session_id: Identifier
     note_input: NoteInput = Field(default_factory=NoteInput)
+
+
+class CancelNoteRequest(Model):
+    course_id: Identifier
+    session_id: Identifier
 
 
 class Submission(Model):
@@ -290,6 +299,18 @@ class NoteExtraction(Model):
     source_types: list[SourceType] = Field(default_factory=list)
 
 
+class NotePoint(Model):
+    heading: Annotated[str, Field(min_length=1, max_length=200)]
+    content: Annotated[str, Field(min_length=1, max_length=4000)]
+    provenance: Literal["source", "synthesis", "ai_supplement"]
+    citations: list[Citation] = Field(default_factory=list, max_length=8)
+
+
+class GeneratedNote(Model):
+    title: Annotated[str, Field(min_length=1, max_length=200)]
+    points: list[NotePoint] = Field(min_length=1, max_length=20)
+
+
 class AgentResponse(Model):
     session_id: str
     status: Literal[
@@ -303,6 +324,7 @@ class AgentResponse(Model):
     suggestions: list[str] = Field(default_factory=list)
     prompt: dict | None = None
     note_config: dict | None = None
+    draft: dict | None = None
 
     @model_validator(mode="after")
     def public_questions(self):

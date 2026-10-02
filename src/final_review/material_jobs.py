@@ -7,7 +7,7 @@ from pathlib import Path
 from langchain_openai import OpenAIEmbeddings
 
 from .config import Settings
-from .material_conversion import IMAGE_FORMATS, convert_upload
+from .material_conversion import IMAGE_FORMATS, convert_material
 from .postgres import PostgresStore
 from .rag import KnowledgeBase
 from .schemas import MaterialInput
@@ -35,8 +35,14 @@ def process_material_job(store, kb: KnowledgeBase, job: dict, max_bytes: int) ->
         if path.suffix.lower() in IMAGE_FORMATS:
             store.update_material_job(job["job_id"], job["attempts"], stage="ocr")
         content = path.read_bytes()
-        markdown = convert_upload(content, document["file_name"], max_bytes)
-        sections = located_sections(content, document["file_name"])
+        converted = convert_material(
+            content, document["file_name"], max_bytes,
+            stage_callback=lambda stage: store.update_material_job(
+                job["job_id"], job["attempts"], stage=stage
+            ),
+        )
+        markdown = converted.markdown
+        sections = converted.sections or located_sections(content, document["file_name"])
         material = MaterialInput(
             document_id=document["document_id"], course_id=document["course_id"],
             title=document["title"], source_type=document["source_type"],

@@ -8,7 +8,7 @@
 
 | 能力 | 实现 |
 | --- | --- |
-| 资料处理 | PDF/PPTX/DOCX 用 MarkItDown；旧版 PPT/DOC 经 LibreOffice 转换；PNG/JPG/WebP 经中英文 OCR；随后清洗、分块、Embedding、事务入库 |
+| 资料处理 | PDF/DOCX 用 MarkItDown；PPT/PPTX 保留原生文字并逐页转 PDF、渲染图片补充中英文 OCR；旧版 DOC 经 LibreOffice 转换；PNG/JPG/WebP 经 OCR；随后清洗、分块、Embedding、事务入库 |
 | RAG | 课程/章节过滤 → PostgreSQL/pgvector 召回 → 相关性阈值 → 题源加权重排 |
 | 认证与隔离 | FastAPI 自管 Argon2id 密码、HttpOnly Session Cookie；所有业务查询绑定 Session 的 user_id |
 | Tool Calling | 模型调用 search_course_material，实际执行 LangChain Retriever，并接收 ToolMessage；最多两轮 |
@@ -44,7 +44,7 @@ flowchart TD
 
 课程与考试工作台需要 Python 3.11+、[uv](https://docs.astral.sh/uv/) 和 Docker（或本机 PostgreSQL + pgvector）。AI 资料问答与生成另需支持 Tool Calling 的聊天模型和 Embedding 模型；两个模型可来自不同的 OpenAI 兼容提供商。
 
-本机处理旧版 PPT/DOC 需安装 LibreOffice；图片 OCR 需安装 Tesseract 及 `chi_sim`、`eng` 语言包。使用 Docker Compose 启动 Agent 时，这些依赖由镜像安装。缺少工具或语言包时，上传会显示明确失败原因。
+本机处理 PPT/PPTX/DOC 需安装 LibreOffice；PPT 页面渲染需安装 Poppler 的 `pdftoppm`；图片 OCR 需安装 Tesseract 及 `chi_sim`、`eng` 语言包。使用 Docker Compose 启动 Agent 时，这些依赖由镜像安装。缺少工具或语言包时，上传会显示明确失败原因。PPT 最多处理 80 页；原生文字和 OCR 文字按幻灯片合并并去重，检索结果保留幻灯片位置。
 
 ```powershell
 uv sync --frozen
@@ -74,6 +74,9 @@ docker compose up --build -d
 `GET /api/courses/{course_id}/material-jobs/{job_id}` 查询进度，失败后通过对应的
 `POST .../retry` 重新排队。相同上传可携带 `Idempotency-Key` 防止重复建档。
 `/knowledge/ingest` 的直接 Markdown 入库接口仍同步执行。
+
+在 AI 对话中生成笔记时，用户须从当前课程明确选择至少一份可检索资料，可单选、多选或选择全部；写作要求可留空。笔记只从所选资料取证据，并保留每条内容的来源片段。若要求明确章节但所选资料找不到对应内容，系统会提示修改资料或要求，不会用其他章节凑数。
+笔记配置在独立弹层中完成，不改变聊天输入框的位置；笔记类型使用与页面一致的选择菜单。生成前可取消配置，取消记录保留在对话中，旧笔记任务不能再继续，用户可在同一对话重新发起。
 
 | 配置 | 含义 |
 | --- | --- |

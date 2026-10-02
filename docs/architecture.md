@@ -12,7 +12,7 @@ LangChain 负责模型、PromptTemplate、Tool、Retriever、结构化结果；L
 
 ## 数据流
 
-文件上传入库：API 校验并保存原文件，事务创建资料占位记录与 `material_jobs`，立即返回 `202`。独立 worker 用 PostgreSQL 行锁领取 Job，执行 MD/TXT 读取、MarkItDown 或 LibreOffice 转换、图片 OCR、Markdown 清洗、分块与 Embedding。完整资料、全部片段和 Job 成功状态在同一事务发布；失败记录阶段及原因，检索只读取 `ready` 资料。worker 中断后租约到期可重新领取，最多尝试 3 次。直接调用 `/knowledge/ingest` 仍同步入库。
+文件上传入库：API 校验并保存原文件，事务创建资料占位记录与 `material_jobs`，立即返回 `202`。独立 worker 用 PostgreSQL 行锁领取 Job，执行 MD/TXT 读取、MarkItDown 或 LibreOffice 转换、图片 OCR、Markdown 清洗、分块与 Embedding。PPT/PPTX 先保留原生文字，再转换为 PDF、逐页渲染并 OCR；合并去重后的文字以幻灯片为单位进入索引。完整资料、全部片段和 Job 成功状态在同一事务发布；失败记录阶段及原因，检索只读取 `ready` 资料。worker 中断后租约到期可重新领取，最多尝试 3 次。直接调用 `/knowledge/ingest` 仍同步入库。
 
 直接调用 `/knowledge/ingest` 的文档键由课程、标题、章节、题源、清洗内容哈希构成，可以复用已入库内容。文件上传使用独立的资料 ID，并保留上传文件及状态；重复上传同一文件会生成新的资料记录。
 
@@ -50,6 +50,8 @@ checkpoint 是恢复的事实来源；review_session 是业务快照，两者职
 - 确定性验证引用 ID、原文、题型、题量，再让模型核对语义。最多修复 MAX_REPAIRS 次，失败返回资料不足。
 - 故障保留检查点，recover 从未完成节点继续。该节点内模型调用可能重跑并产生费用。
 - 等待作答时不返回参考答案、评分规则或证据正文。评分完成后才返回完整解析。
+- 笔记生成必须显式提供 `source_document_ids`；后端核验用户、课程和资料状态，只从已选资料取片段。可选的 `scope` 是写作要求，明确章节无匹配时提示用户修改；多文件候选片段按相关性排序并轮流选取，避免内部资料 ID 决定来源。
+- 笔记配置处于 `note_config` 中断状态时可取消。取消会标记对应 Agent 会话、清除对话的 `active_note`，并写入一条取消消息；再次恢复旧会话会被拒绝，新的笔记请求使用新会话 ID。
 
 ## Skill 映射
 

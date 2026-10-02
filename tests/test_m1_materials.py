@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -97,15 +98,37 @@ def test_bad_image_has_explainable_failure_and_no_chunks(system, tmp_path):
         )
 
 
-def test_picture_only_ppt_has_explainable_failure_and_no_chunks(system, tmp_path):
+def test_ppt_images_are_ocr_searchable_with_slide_locations_and_no_duplicate_text(
+    system, tmp_path, monkeypatch
+):
+    import pdfplumber
     from pptx import Presentation
     from pptx.util import Inches
 
+    from final_review import material_conversion
+
     system.settings.uploads_dir = str(tmp_path / "uploads")
+    monkeypatch.setattr(material_conversion, "_convert_presentation_to_pdf",
+                        lambda _path, directory: directory / "material.pdf")
+    monkeypatch.setattr(pdfplumber, "open", lambda _path: nullcontext(
+        SimpleNamespace(pages=[None, None])))
+    monkeypatch.setattr(material_conversion, "_find_executable", lambda *_args: "pdftoppm")
+    monkeypatch.setattr(material_conversion, "_run", lambda command, *_args: (
+        Path(command[-1]).with_suffix(".png").write_bytes(_image("PNG"))))
+    monkeypatch.setattr(
+        material_conversion, "_ocr_image",
+        lambda path, *_args, **_kwargs: (
+            "图片中的网络拓扑" if "slide-001" in path.name
+            else "网络三次握手\n图片中的握手时序"
+        ),
+    )
     picture = BytesIO(_image("PNG"))
     slides = Presentation()
     slide = slides.slides.add_slide(slides.slide_layouts[6])
     slide.shapes.add_picture(picture, Inches(1), Inches(1))
+    slide = slides.slides.add_slide(slides.slide_layouts[6])
+    slide.shapes.add_textbox(Inches(1), Inches(1), Inches(5), Inches(1)).text = "网络三次握手"
+    slide.shapes.add_picture(BytesIO(_image("PNG")), Inches(1), Inches(2))
     ppt = BytesIO()
     slides.save(ppt)
     with TestClient(create_app(system.settings, system)) as client:
@@ -116,11 +139,19 @@ def test_picture_only_ppt_has_explainable_failure_and_no_chunks(system, tmp_path
         )
         assert response.status_code == 202
         job = _run_queued_job(system)
-        assert job["status"] == "failed"
-        assert "图片单独上传" in job["error_message"]
+        assert job["status"] == "succeeded", job["error_message"]
         document_id = response.json()["document_id"]
-        assert client.get(f"/api/courses/net/documents/{document_id}/chunks").status_code == 404
-        assert not any(chunk["document_id"] == document_id for chunk in system.store.chunks)
+        listing = client.get(f"/api/courses/net/documents/{document_id}/chunks").json()
+        assert {(item["position_kind"], item["position"]) for item in listing["items"]} == {
+            ("slide", 1), ("slide", 2)
+        }
+        document = system.store.get("document", document_id)
+        assert "图片中的网络拓扑" in document["cleaned_markdown"]
+        assert "图片中的握手时序" in document["cleaned_markdown"]
+        second_slide = "\n".join(item["content"] for item in system.store.chunks
+                                 if item["document_id"] == document_id and item["position"] == 2)
+        assert second_slide.count("网络三次握手") == 1
+        assert "图片中的握手时序" in second_slide
 
 
 @pytest.mark.parametrize(
@@ -226,6 +257,11 @@ def test_legacy_office_conversion_uses_bounded_local_tool(
         slide.shapes.title.text = "网络三次握手"
         converted = tmp_path / "sample.pptx"
         office.save(converted)
+        def converted_presentation(path, _directory, **_kwargs):
+            assert path.suffix == ".pptx"
+            assert path.read_bytes() == converted.read_bytes()
+            return material_conversion.ConvertedMaterial("网络三次握手")
+        monkeypatch.setattr(material_conversion, "_convert_presentation", converted_presentation)
     monkeypatch.setattr(material_conversion.shutil, "which", lambda name: "soffice")
 
     def run(command, **kwargs):

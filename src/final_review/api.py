@@ -27,10 +27,12 @@ from .schemas import (
     AgentResponse,
     AssetCreate,
     AssetRevisionCreate,
+    CancelNoteRequest,
     ChatRequest,
     ChatResponse,
     ConfirmationConsume,
     ConversationCreate,
+    ConversationRename,
     CourseCreate,
     CourseUpdate,
     Credentials,
@@ -177,6 +179,66 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
             raise HTTPException(503, "课程数据服务尚未配置")
         return store
 
+    def note_conversation(course_id: str, conversation_id: str, user: CurrentUser,
+                          *, title: str | None = None) -> dict:
+        store = conversation_store()
+        key = stable_key(course_id, conversation_id)
+        item = store.get("conversation", key)
+        if item is None:
+            if title is None:
+                raise HTTPException(404, "对话不存在")
+            now = datetime.now(UTC).isoformat()
+            item = {
+                "conversation_id": conversation_id, "course_id": course_id,
+                "user_id": user.id, "title": title.strip()[:40] or "笔记对话",
+                "created_at": now, "updated_at": now,
+            }
+            store.put("conversation", key, item)
+        elif item.get("user_id") != user.id or item.get("course_id") != course_id:
+            raise HTTPException(404, "对话不存在")
+        return item
+
+    def note_message(course_id: str, conversation_id: str, user: CurrentUser,
+                     event_id: str, role: str, content: str, *, draft: dict | None = None):
+        store = conversation_store()
+        key = stable_key(course_id, conversation_id, "note", event_id)
+        if store.get("message", key) is not None:
+            return
+        item = {
+            "conversation_id": conversation_id, "course_id": course_id,
+            "user_id": user.id, "role": role, "content": content,
+            "created_at": datetime.now(UTC).isoformat(),
+        }
+        if draft:
+            item["draft"] = draft
+        store.put("message", key, item)
+
+    def note_state(course_id: str, conversation_id: str, user: CurrentUser,
+                   active_note: dict | None):
+        store = conversation_store()
+        key = stable_key(course_id, conversation_id)
+        item = note_conversation(course_id, conversation_id, user)
+        store.put("conversation", key, {
+            **item, "active_note": active_note,
+            "updated_at": datetime.now(UTC).isoformat(),
+        })
+
+    def record_note_result(course_id: str, conversation_id: str, user: CurrentUser,
+                           session_id: str, event_id: str, result: AgentResponse):
+        content = (result.prompt or {}).get("message") if result.status == "needs_input" else None
+        note_message(
+            course_id, conversation_id, user, f"{event_id}-assistant", "assistant",
+            content or result.answer or "笔记任务已完成", draft=result.draft,
+        )
+        previous = note_conversation(course_id, conversation_id, user).get("active_note") or {}
+        active_note = None
+        if result.status == "needs_input":
+            active_note = {"session_id": session_id, "status": "needs_input",
+                           "prompt": result.prompt, "event_id": event_id}
+            if previous.get("note_input"):
+                active_note["note_input"] = previous["note_input"]
+        note_state(course_id, conversation_id, user, active_note)
+
     def require_course(course_id: str, user: CurrentUser):
         """Reject guessed course IDs before the Agent or storage layer sees them."""
         course = conversation_store().get("course", course_id)
@@ -276,6 +338,22 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
     @app.post("/api/chat", response_model=ChatResponse, dependencies=[Depends(authorize)])
     def chat(request: ChatRequest, user: CurrentUser = Depends(authorize)):
         require_course(request.course_id, user)
+        store = conversation_store()
+        conversation_key = stable_key(request.course_id, request.conversation_id)
+        existing_conversation = store.get("conversation", conversation_key)
+        saved_messages = (
+            store.scan(
+                "message",
+                {"conversation_id": request.conversation_id, "course_id": request.course_id},
+            )
+            if existing_conversation
+            else []
+        )
+        recent_history = [
+            {"role": item["role"], "content": item["content"]}
+            for item in sorted(saved_messages, key=lambda item: item.get("created_at", ""))[-20:]
+            if item.get("role") in {"user", "assistant"}
+        ]
         try:
             selected_model = settings.get_chat_model(request.model_id)
         except ValueError as exc:
@@ -290,7 +368,7 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
                         "当前没有足够的课程资料依据时，可以使用通用知识回答，但不要声称答案来自课程资料。"
                     ),
                 },
-                *[item.model_dump() for item in request.history],
+                *recent_history,
                 {"role": "user", "content": request.message},
             ]
             client = OpenAI(
@@ -299,7 +377,12 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
                 timeout=settings.model_timeout,
             )
             completion = client.chat.completions.create(
-                model=selected_model.model, messages=messages, max_tokens=1200
+                model=selected_model.model,
+                messages=messages,
+                max_tokens=1200,
+                **({"extra_body": {"thinking": {"type": "disabled"}}}
+                   if selected_model.base_url.rstrip("/") == "https://api.deepseek.com"
+                   else {}),
             )
             if not completion.choices[0].message.content:
                 raise HTTPException(502, "模型未返回可显示的内容")
@@ -339,10 +422,8 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
             reply = ordinary_reply()
             citations, model_name = [], selected_model.label
 
-        store = conversation_store()
-        conversation_key = stable_key(request.course_id, request.conversation_id)
         created_at = datetime.now(UTC).isoformat()
-        existing_conversation = store.get("conversation", conversation_key) or {}
+        existing_conversation = existing_conversation or {}
         store.put(
             "conversation",
             conversation_key,
@@ -351,7 +432,9 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
                 "conversation_id": request.conversation_id,
                 "course_id": request.course_id,
                 "user_id": user.id,
-                "title": existing_conversation.get("title") or "未命名对话",
+                "title": (request.message.strip()[:40]
+                          if existing_conversation.get("title") in {None, "", "未命名对话"}
+                          else existing_conversation["title"]),
                 "created_at": existing_conversation.get("created_at", created_at),
                 "updated_at": created_at,
             },
@@ -496,6 +579,12 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
     ):
         return domain(user).create_asset(course_id, request.model_dump())
 
+    @app.get("/api/assets/{asset_id}/revisions/{revision_id}", dependencies=[Depends(authorize)])
+    def read_note_draft(
+        asset_id: Identifier, revision_id: Identifier, user: CurrentUser = Depends(authorize)
+    ):
+        return domain(user).note_draft(asset_id, revision_id)
+
     @app.post("/api/assets/{asset_id}/revisions", dependencies=[Depends(authorize)])
     def create_asset_revision(
         asset_id: Identifier, request: AssetRevisionCreate, user: CurrentUser = Depends(authorize)
@@ -638,6 +727,29 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
         store.put("conversation", stable_key(course_id, conversation_id), item)
         return item
 
+    @app.patch(
+        "/api/courses/{course_id}/conversations/{conversation_id}",
+        dependencies=[Depends(authorize)],
+    )
+    def rename_conversation(
+        course_id: Identifier,
+        conversation_id: Identifier,
+        request: ConversationRename,
+        user: CurrentUser = Depends(authorize),
+    ):
+        require_course(course_id, user)
+        title = request.title.strip()
+        if not title:
+            raise HTTPException(422, "对话名称不能为空")
+        store = conversation_store()
+        key = stable_key(course_id, conversation_id)
+        item = store.get("conversation", key)
+        if item is None or item.get("user_id") != user.id:
+            raise HTTPException(404, "对话不存在")
+        renamed = {**item, "title": title, "updated_at": datetime.now(UTC).isoformat()}
+        store.put("conversation", key, renamed)
+        return renamed
+
     @app.get(
         "/api/courses/{course_id}/conversations/{conversation_id}/messages",
         dependencies=[Depends(authorize)],
@@ -646,10 +758,14 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
         course_id: Identifier, conversation_id: Identifier, user: CurrentUser = Depends(authorize)
     ):
         require_course(course_id, user)
+        conversation = note_conversation(course_id, conversation_id, user)
         rows = conversation_store().scan(
             "message", {"conversation_id": conversation_id, "course_id": course_id}
         )
-        return {"items": sorted(rows, key=lambda item: item.get("created_at", ""))}
+        return {
+            "items": sorted(rows, key=lambda item: item.get("created_at", "")),
+            "active_note": conversation.get("active_note"),
+        }
 
     @app.post("/knowledge/ingest", dependencies=[Depends(authorize)])
     def ingest(request: MaterialInput, user: CurrentUser = Depends(authorize)):
@@ -933,9 +1049,41 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
         return result
 
     @app.post("/agent/invoke", response_model=AgentResponse, dependencies=[Depends(authorize)])
-    def invoke(request: AgentRequest, user: CurrentUser = Depends(authorize)):
+    def invoke(request: AgentRequest, conversation_id: Identifier | None = None,
+               user: CurrentUser = Depends(authorize)):
         require_course(request.course_id, user)
-        return runtime().invoke(request, user.id)
+        if conversation_id is None:
+            return runtime().invoke(request, user.id)
+        if request.intent != "note":
+            raise HTTPException(422, "对话记录仅支持笔记任务")
+        event_id = f"{request.session_id}-start"
+        if conversation_store().get(
+            "message", stable_key(request.course_id, conversation_id, "note",
+                                  f"{event_id}-assistant")
+        ):
+            note_conversation(request.course_id, conversation_id, user)
+            return runtime().read(request.course_id, request.session_id)
+        conversation = note_conversation(
+            request.course_id, conversation_id, user, title=request.message
+        )
+        active = conversation.get("active_note")
+        if active and active["session_id"] != request.session_id:
+            raise HTTPException(409, "请先完成当前对话中的笔记任务")
+        note_message(request.course_id, conversation_id, user,
+                     f"{request.session_id}-start-user", "user", request.message)
+        note_state(request.course_id, conversation_id, user,
+                   {"session_id": request.session_id, "status": "running",
+                    "event_id": event_id, "request_message": request.message})
+        try:
+            result = runtime().invoke(request, user.id)
+        except Exception:
+            note_state(request.course_id, conversation_id, user,
+                       {"session_id": request.session_id, "status": "failed",
+                        "event_id": event_id, "request_message": request.message})
+            raise
+        record_note_result(request.course_id, conversation_id, user,
+                           request.session_id, event_id, result)
+        return result
 
     @app.post("/agent/resume", response_model=AgentResponse, dependencies=[Depends(authorize)])
     def resume(request: ResumeRequest, user: CurrentUser = Depends(authorize)):
@@ -943,9 +1091,75 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
         return runtime().resume_profile(request)
 
     @app.post("/agent/resume-note", response_model=AgentResponse, dependencies=[Depends(authorize)])
-    def resume_note(request: ResumeNoteRequest, user: CurrentUser = Depends(authorize)):
+    def resume_note(request: ResumeNoteRequest, conversation_id: Identifier | None = None,
+                    event_id: Identifier | None = None,
+                    user: CurrentUser = Depends(authorize)):
         require_course(request.course_id, user)
-        return runtime().resume_note(request, user.id)
+        if conversation_id is None:
+            return runtime().resume_note(request, user.id)
+        event_id = event_id or uuid4().hex
+        if conversation_store().get(
+            "message", stable_key(request.course_id, conversation_id, "note",
+                                  f"{event_id}-assistant")
+        ):
+            note_conversation(request.course_id, conversation_id, user)
+            return runtime().read(request.course_id, request.session_id)
+        conversation = note_conversation(request.course_id, conversation_id, user)
+        active = conversation.get("active_note")
+        if not active or active["session_id"] != request.session_id:
+            raise HTTPException(409, "当前对话没有等待补充的笔记任务")
+        note_input = request.note_input
+        names = []
+        for document_id in note_input.source_document_ids:
+            document = conversation_store().get("document", document_id)
+            names.append((document or {}).get("file_name") or (document or {}).get("title")
+                         or document_id)
+        names = [f"{name}（{document_id[:8]}）" if names.count(name) > 1 else name
+                 for name, document_id in zip(names, note_input.source_document_ids, strict=True)]
+        summary = (f"补充笔记要求：指定资料 {'、'.join(names) or '未选择'}；"
+                   f"笔记类型 {note_input.note_type or '默认'}；"
+                   f"写作要求 {note_input.scope or '无'}；"
+                   f"阅读时长 {note_input.duration_minutes or '未指定'} 分钟")
+        note_message(request.course_id, conversation_id, user,
+                     f"{event_id}-user", "user", summary)
+        note_state(request.course_id, conversation_id, user,
+                   {"session_id": request.session_id, "status": "running",
+                    "event_id": event_id,
+                    "note_input": note_input.model_dump(mode="json")})
+        try:
+            result = runtime().resume_note(request, user.id)
+        except Exception:
+            note_state(request.course_id, conversation_id, user,
+                       {"session_id": request.session_id, "status": "failed",
+                        "event_id": event_id,
+                        "note_input": note_input.model_dump(mode="json")})
+            raise
+        record_note_result(request.course_id, conversation_id, user,
+                           request.session_id, event_id, result)
+        return result
+
+    @app.post("/agent/cancel-note", dependencies=[Depends(authorize)])
+    def cancel_note(request: CancelNoteRequest, conversation_id: Identifier,
+                    user: CurrentUser = Depends(authorize)):
+        require_course(request.course_id, user)
+        conversation = note_conversation(request.course_id, conversation_id, user)
+        active = conversation.get("active_note")
+        if active is None:
+            cancelled_message = conversation_store().get(
+                "message", stable_key(request.course_id, conversation_id, "note",
+                                      f"{request.session_id}-cancel-assistant")
+            )
+            if cancelled_message:
+                return {"cancelled": True}
+        if (not active or active.get("session_id") != request.session_id
+                or active.get("status") != "needs_input"):
+            raise HTTPException(409, "当前笔记任务尚不能取消配置")
+        runtime().cancel_note(request.course_id, request.session_id, user.id)
+        note_message(request.course_id, conversation_id, user,
+                     f"{request.session_id}-cancel-assistant", "assistant",
+                     "已取消笔记生成。你可以继续聊天，或重新发起笔记任务。")
+        note_state(request.course_id, conversation_id, user, None)
+        return {"cancelled": True}
 
     @app.post(
         "/assessment/evaluate", response_model=AgentResponse, dependencies=[Depends(authorize)]
@@ -1051,10 +1265,43 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
 
     @app.post("/agent/recover", response_model=AgentResponse, dependencies=[Depends(authorize)])
     def recover(
-        course_id: Identifier, session_id: Identifier, user: CurrentUser = Depends(authorize)
+        course_id: Identifier, session_id: Identifier,
+        conversation_id: Identifier | None = None,
+        user: CurrentUser = Depends(authorize)
     ):
         require_course(course_id, user)
-        return runtime().recover(course_id, session_id)
+        if conversation_id is None:
+            return runtime().recover(course_id, session_id)
+        conversation = note_conversation(course_id, conversation_id, user)
+        active = conversation.get("active_note")
+        if not active:
+            started = conversation_store().get(
+                "message", stable_key(course_id, conversation_id, "note",
+                                      f"{session_id}-start-user")
+            )
+            if not started:
+                raise HTTPException(409, "当前对话没有此笔记任务")
+            return runtime().read(course_id, session_id)
+        if active["session_id"] != session_id:
+            raise HTTPException(409, "当前对话没有待恢复的笔记任务")
+        try:
+            result = runtime().recover(course_id, session_id)
+        except KeyError:
+            if not active.get("request_message"):
+                raise
+            result = runtime().invoke(
+                AgentRequest(course_id=course_id, session_id=session_id,
+                             message=active["request_message"], intent="note"), user.id
+            )
+        if (result.status == "needs_input" and active["status"] == "failed"
+                and active.get("note_input")):
+            result = runtime().resume_note(
+                ResumeNoteRequest(course_id=course_id, session_id=session_id,
+                                  note_input=active["note_input"]), user.id
+            )
+        record_note_result(course_id, conversation_id, user, session_id,
+                           active["event_id"], result)
+        return result
 
     @app.get("/agent/session", response_model=AgentResponse, dependencies=[Depends(authorize)])
     def session(

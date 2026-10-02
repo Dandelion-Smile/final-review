@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from copy import deepcopy
 from math import sqrt
 from threading import RLock
@@ -19,6 +20,16 @@ class MemoryStore:
         self.chunks = []
         self.lock = RLock()
         self.job_user = "local-user"
+
+    @contextmanager
+    def transaction(self):
+        with self.lock:
+            tables, chunks = deepcopy(self.tables), deepcopy(self.chunks)
+            try:
+                yield
+            except Exception:
+                self.tables, self.chunks = tables, chunks
+                raise
 
     def put(self, table, key, data):
         with self.lock:
@@ -51,10 +62,14 @@ class MemoryStore:
 
     def update_material_metadata(self, key, changes):
         from datetime import UTC, datetime
+
         with self.lock:
             document = self.tables.get("document", {}).get(key)
-            if (document is None or document.get("parse_status") not in {"ready", "failed"}
-                    or document.get("updated_at") != changes["expected_updated_at"]):
+            if (
+                document is None
+                or document.get("parse_status") not in {"ready", "failed"}
+                or document.get("updated_at") != changes["expected_updated_at"]
+            ):
                 return None
             for field in ("title", "chapter", "source_type"):
                 document[field] = changes[field]
@@ -103,15 +118,28 @@ class MemoryStore:
                 if existing:
                     return existing
             self.put("document", document["document_id"], document)
-            row = {**job, "user_id": self.job_user, "status": "queued", "stage": None,
-                   "attempts": 0, "max_attempts": 3, "error_code": None,
-                   "error_message": None}
+            row = {
+                **job,
+                "user_id": self.job_user,
+                "status": "queued",
+                "stage": None,
+                "attempts": 0,
+                "max_attempts": 3,
+                "error_code": None,
+                "error_message": None,
+            }
             self.put("material_job", job["job_id"], row)
             return deepcopy(row)
 
     def find_material_job(self, course_id, key):
-        return next((deepcopy(job) for job in self.tables.get("material_job", {}).values()
-                     if job["course_id"] == course_id and job["idempotency_key"] == key), None)
+        return next(
+            (
+                deepcopy(job)
+                for job in self.tables.get("material_job", {}).values()
+                if job["course_id"] == course_id and job["idempotency_key"] == key
+            ),
+            None,
+        )
 
     def get_material_job(self, job_id):
         return self.get("material_job", job_id)
@@ -139,8 +167,9 @@ class MemoryStore:
             job = self.tables["material_job"][job_id]
             if job["status"] != "running" or job["attempts"] != attempt:
                 return False
-            job.update(status="queued" if retry else "failed", error_code=code,
-                       error_message=message)
+            job.update(
+                status="queued" if retry else "failed", error_code=code, error_message=message
+            )
             document = self.tables["document"].get(job["document_id"])
             if document and document.get("parse_status") != "deleted":
                 document.update(parse_status=job["status"], parse_error=message)
@@ -152,8 +181,7 @@ class MemoryStore:
             if job["status"] != "running" or job["attempts"] != attempt:
                 return False
             if self.tables["document"][job["document_id"]].get("parse_status") == "deleted":
-                job.update(status="failed", error_code="source_removed",
-                           error_message="资料已删除")
+                job.update(status="failed", error_code="source_removed", error_message="资料已删除")
                 return False
             self.ingest(document, chunks)
             self.ensure_material_source(document)
@@ -183,8 +211,7 @@ class MemoryStore:
                 return None
             if self.tables["document"][job["document_id"]].get("parse_status") == "deleted":
                 return None
-            job.update(status="queued", attempts=0, stage=None, error_code=None,
-                       error_message=None)
+            job.update(status="queued", attempts=0, stage=None, error_code=None, error_message=None)
             document = self.tables["document"][job["document_id"]]
             document["parse_status"] = "queued"
             document.pop("parse_error", None)
@@ -222,8 +249,30 @@ class ScriptedModel:
         return "note" if "笔记" in request["message"] else "ask"
 
     def note_request(self, request):
-        return {"note_type": None, "scope": "", "duration_minutes": None,
-                "emphasis": [], "audience_level": None, "source_types": []}
+        return {
+            "note_type": None,
+            "scope": "",
+            "duration_minutes": None,
+            "emphasis": [],
+            "audience_level": None,
+            "source_types": [],
+        }
+
+    def note(self, data):
+        evidence = data["evidence"][0]
+        return {
+            "title": "TCP 复习笔记",
+            "points": [
+                {
+                    "heading": "三次握手",
+                    "content": "同步双方初始序列号并确认收发能力。",
+                    "provenance": "source",
+                    "citations": [
+                        {"chunk_id": evidence["chunk_id"], "quote": evidence["content"][:30]}
+                    ],
+                }
+            ],
+        }
 
     def retrieve(self, request, kb, broaden=False):
         self.retrieval_calls += 1

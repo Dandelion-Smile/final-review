@@ -1,6 +1,10 @@
+from contextlib import nullcontext
 from io import BytesIO
+from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
+from PIL import Image
 from pptx import Presentation
 from pptx.util import Inches
 
@@ -56,8 +60,24 @@ def test_pdf_pages_and_ppt_slides_keep_real_ordinals():
         (1, "First slide"), (2, "Second slide")]
 
 
-def test_pdf_and_pptx_jobs_publish_positioned_chunks(system, tmp_path):
+def test_pdf_and_pptx_jobs_publish_positioned_chunks(system, tmp_path, monkeypatch):
+    import pdfplumber
+
+    from final_review import material_conversion
+
     system.settings.uploads_dir = str(tmp_path / "uploads")
+    monkeypatch.setattr(material_conversion, "_convert_presentation_to_pdf",
+                        lambda _path, directory: directory / "material.pdf")
+    real_pdf_open = pdfplumber.open
+    monkeypatch.setattr(pdfplumber, "open", lambda source: (
+        nullcontext(SimpleNamespace(pages=[None, None])) if isinstance(source, Path)
+        else real_pdf_open(source)))
+    monkeypatch.setattr(material_conversion, "_find_executable", lambda *_args: "pdftoppm")
+    picture = BytesIO()
+    Image.new("RGB", (80, 40), "white").save(picture, format="PNG")
+    monkeypatch.setattr(material_conversion, "_run", lambda command, *_args: (
+        Path(command[-1]).with_suffix(".png").write_bytes(picture.getvalue())))
+    monkeypatch.setattr(material_conversion, "_ocr_image", lambda *_args, **_kwargs: "")
     presentation = Presentation()
     for text in ("First slide", "Second slide"):
         slide = presentation.slides.add_slide(presentation.slide_layouts[6])

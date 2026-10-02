@@ -8,7 +8,7 @@ type MaterialJob = { job_id: string; document_id: string; status: "queued" | "ru
 type DeletePreview = { blocking_references: number; affected_assets: number; confirmation_id: string; expires_at: string };
 type SourceChunk = { chunk_id: string; locator_id: string; position_kind: string; position: number | null; text_start: number | null; text_end: number | null; excerpt: string; content?: string };
 type SourcePreview = { document_id: string; material_version_id: string; file_name: string; source_type: SourceType; items: SourceChunk[] };
-const stageLabel: Record<string, string> = { parse: "解析", ocr: "文字识别", clean: "清洗", index: "建立索引" };
+const stageLabel: Record<string, string> = { parse: "解析", convert: "转换 PDF", ocr: "文字识别", clean: "清洗", index: "建立索引" };
 
 const sourceOptions: [SourceType, string][] = [
   ["past_exam", "历年真题"], ["teacher_ppt", "老师 PPT"], ["homework", "平时作业"],
@@ -76,7 +76,8 @@ export default function Materials({ selectedCourse }: { selectedCourse: Course |
         const available = data.items.filter(item => item.status !== "deleted");
         setCourses(available);
         const linkedCourse = window.location.hash.startsWith("#materials/") ? decodeURIComponent(window.location.hash.split("/")[1] || "") : "";
-        setCourseId(current => linkedCourse || current || available.find(item => item.course_id === selectedCourse?.course_id)?.course_id || available[0]?.course_id || "");
+        setCourseId(available.find(item => item.course_id === linkedCourse)?.course_id
+          ?? available.find(item => item.course_id === selectedCourse?.course_id)?.course_id ?? available[0]?.course_id ?? "");
       })
       .catch(error => setMessage(error instanceof Error ? error.message : "课程加载失败"));
   }, [selectedCourse?.course_id]);

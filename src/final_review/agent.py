@@ -1,3 +1,4 @@
+import re
 from collections import Counter, defaultdict
 from threading import Lock
 from typing import TypedDict
@@ -8,12 +9,14 @@ from langgraph.types import Command, interrupt
 
 from .checkpoints import SurrealSaver
 from .config import Settings
+from .domain import DomainService
 from .llm import ModelError
 from .policy import SOURCE_PRIORITY
 from .schemas import (
     AgentRequest,
     AgentResponse,
     ExamProfile,
+    GeneratedNote,
     Grades,
     GroundedAnswer,
     KnowledgePlan,
@@ -28,6 +31,34 @@ from .storage import stable_key
 
 class SessionConflict(ValueError):
     pass
+
+
+def _chapter_requirement(scope: str) -> tuple[str, str] | None:
+    match = re.search(r"第\s*([一二三四五六七八九十\d]+)\s*章", scope.lower())
+    if not match:
+        return None
+    chapter = match.group(0).replace(" ", "")
+    number = match.group(1)
+    chinese_numbers = "一二三四五六七八九十"
+    if number in chinese_numbers:
+        number = str(chinese_numbers.index(number) + 1)
+    return chapter, number
+
+
+def _file_matches_chapter(file_name: str, chapter_field: str,
+                          chapter: str, number: str) -> bool:
+    metadata = f"{file_name} {chapter_field}".lower()
+    return chapter in metadata.replace(" ", "") or bool(
+        re.match(rf"^{re.escape(number)}[.、_-]", metadata)
+    )
+
+
+def _focus_terms(scope: str) -> list[str]:
+    simplified = re.sub(
+        r"侧重|重点|请|按照|按|关于|以及|和|与|整理|生成|笔记|内容|相关|的|得分点",
+        " ", scope.lower(),
+    )
+    return re.findall(r"[\u4e00-\u9fff]{2,}|[a-z0-9]{2,}", simplified)
 
 
 class ReviewState(TypedDict, total=False):
@@ -78,6 +109,7 @@ class FinalReviewAgent:
             "exam_profile": self._profile,
             "note_parse": self._note_parse,
             "note_config": self._note_config,
+            "note_generate": self._note_generate,
             "retrieve": self._retrieve,
             "generate": self._generate,
             "verify": self._verify,
@@ -95,7 +127,8 @@ class FinalReviewAgent:
         )
         graph.add_edge("exam_profile", "retrieve")
         graph.add_edge("note_parse", "note_config")
-        graph.add_edge("note_config", END)
+        graph.add_edge("note_config", "note_generate")
+        graph.add_edge("note_generate", END)
         graph.add_conditional_edges(
             "retrieve", lambda s: "generate" if s["evidence"] else "refuse", ["generate", "refuse"]
         )
@@ -123,6 +156,7 @@ class FinalReviewAgent:
     def invoke(self, request: AgentRequest, user_id: str | None = None) -> AgentResponse:
         key = self._key(request.course_id, request.session_id)
         with self._lock(key):
+            self._require_not_cancelled(key)
             snapshot = self.graph.get_state(self._config(key))
             if snapshot.next:
                 raise SessionConflict("此会话有未完成任务，请补充信息、提交答案或恢复任务")
@@ -160,6 +194,7 @@ class FinalReviewAgent:
     def resume_note(self, request: ResumeNoteRequest, user_id: str | None = None):
         key = self._key(request.course_id, request.session_id)
         with self._lock(key):
+            self._require_not_cancelled(key)
             self._pending(key, "note_config")
             snapshot = self.graph.get_state(self._config(key))
             original = snapshot.values["request"]
@@ -168,10 +203,32 @@ class FinalReviewAgent:
             additions = request.note_input.model_dump(mode="json", exclude_unset=True)
             combined = {**snapshot.values["note_input"], **additions}
             note = NoteInput.model_validate(combined)
-            missing, _ = self._note_boundaries(original, note)
+            try:
+                missing, _ = self._note_boundaries(original, note)
+            except ValueError as exc:
+                if not str(exc).startswith("所选资料中未找到"):
+                    raise
+                return AgentResponse(
+                    session_id=request.session_id, status="needs_input",
+                    prompt={"message": str(exc), "required": ["source_document_ids"]},
+                )
             if missing:
                 return self._note_prompt(request.session_id, missing)
             return self._run(key, Command(resume=additions))
+
+    def cancel_note(self, course_id: str, session_id: str, user_id: str | None = None):
+        key = self._key(course_id, session_id)
+        with self._lock(key):
+            self._require_not_cancelled(key)
+            self._pending(key, "note_config")
+            snapshot = self.graph.get_state(self._config(key))
+            if snapshot.values["request"].get("owner_id") != user_id:
+                raise SessionConflict("会话所有者不匹配")
+            existing = self.store.get("review_session", key) or {}
+            self.store.put("review_session", key, {
+                **existing, "course_id": course_id, "session_id": session_id,
+                "cancelled": True,
+            })
 
     def evaluate(self, request: Submission):
         key = self._key(request.course_id, request.session_id)
@@ -190,6 +247,7 @@ class FinalReviewAgent:
     def recover(self, course, session):
         key = self._key(course, session)
         with self._lock(key):
+            self._require_not_cancelled(key)
             snapshot = self.graph.get_state(self._config(key))
             if not snapshot.values:
                 raise KeyError("会话不存在")
@@ -202,6 +260,7 @@ class FinalReviewAgent:
     def read(self, course, session):
         key = self._key(course, session)
         with self._lock(key):
+            self._require_not_cancelled(key)
             snapshot = self.graph.get_state(self._config(key))
             if not snapshot.values:
                 raise KeyError("会话不存在")
@@ -215,6 +274,10 @@ class FinalReviewAgent:
             raise KeyError("会话不存在")
         if node not in snapshot.next or not any(task.interrupts for task in snapshot.tasks):
             raise SessionConflict("会话当前不接受此操作")
+
+    def _require_not_cancelled(self, key):
+        if (self.store.get("review_session", key) or {}).get("cancelled"):
+            raise SessionConflict("笔记任务已取消，请重新发起")
 
     def _run(self, key, payload):
         result = self.graph.invoke(payload, self._config(key))
@@ -274,14 +337,15 @@ class FinalReviewAgent:
         missing = []
         if note.note_type is None:
             missing.append("note_type")
-        if not note.scope:
-            missing.append("scope")
         if note.duration_minutes is None:
             missing.append("duration_minutes")
-        available = []
         selected = set(note.source_document_ids)
         if len(selected) != len(note.source_document_ids):
             raise ValueError("资料 ID 不可重复")
+        if not selected:
+            missing.append("source_document_ids")
+            return missing, []
+        available = set()
         for document in self.store.scan("document", {"course_id": request["course_id"]}):
             if document.get("parse_status") != "ready":
                 continue
@@ -290,22 +354,35 @@ class FinalReviewAgent:
                 continue
             if note.source_types and document.get("source_type") not in note.source_types:
                 continue
-            if selected and document["document_id"] not in selected:
+            if document["document_id"] not in selected:
                 continue
-            available.append(document["document_id"])
-        if selected and selected != set(available):
+            available.add(document["document_id"])
+        if selected != available:
             raise ValueError("所选资料不存在、不可用或不属于当前课程")
-        if not available:
-            missing.append("source_document_ids")
-        return missing, sorted(available)
+        chapter_request = _chapter_requirement(note.scope)
+        if chapter_request:
+            chapter, number = chapter_request
+            matching = False
+            for document_id in note.source_document_ids:
+                document = self.store.get("document", document_id)
+                if _file_matches_chapter(document.get("file_name") or document["title"],
+                                         document.get("chapter", ""), chapter, number):
+                    matching = True
+                    break
+                if any(chapter in chunk["content"].replace(" ", "")
+                       for chunk in self.store.list_material_chunks(document_id)):
+                    matching = True
+                    break
+            if not matching:
+                raise ValueError(f"所选资料中未找到“{chapter}”的明确内容，请调整资料或写作要求")
+        return missing, note.source_document_ids
 
     @staticmethod
     def _note_prompt(session_id, missing):
         labels = {
             "note_type": "笔记类型（章节笔记、考点清单、问答卡片或口诀）",
-            "scope": "考试或章节范围",
             "duration_minutes": "目标阅读时长（分钟）",
-            "source_document_ids": "可用的课程资料（请上传或选择已解析资料）",
+            "source_document_ids": "指定资料（请从当前课程选择至少一份可检索资料）",
         }
         return AgentResponse(
             session_id=session_id,
@@ -338,6 +415,166 @@ class FinalReviewAgent:
             session_id=request["session_id"], status="configured", note_config=config
         )
         return {"note_input": config, "response": response.model_dump(mode="json")}
+
+    def _note_generate(self, state):
+        request, config = state["request"], state["note_input"]
+        grouped = {}
+        for document_id in config["source_document_ids"]:
+            document = self.store.get("document", document_id)
+            if (
+                document is None
+                or document.get("user_id") != request.get("owner_id")
+                or document.get("course_id") != request["course_id"]
+                or document.get("parse_status") != "ready"
+            ):
+                raise ValueError("所选资料已不可用")
+            grouped[document_id] = []
+            for chunk in self.store.list_material_chunks(document_id):
+                grouped[document_id].append(
+                    {
+                        "chunk_id": chunk["chunk_id"],
+                        "document_id": document_id,
+                        "title": document["title"],
+                        "file_name": document.get("file_name") or document["title"],
+                        "source_type": document["source_type"],
+                        "content": chunk["content"],
+                        "position_kind": chunk.get("position_kind", "document"),
+                        "position": chunk.get("position"),
+                        "chapter": document.get("chapter", ""),
+                        "ordinal": chunk.get("chunk_ordinal", 0),
+                    }
+                )
+        scope = config["scope"].strip().lower()
+        chapter_request = _chapter_requirement(scope)
+        if chapter_request:
+            chapter, chapter_number = chapter_request
+            matched = {}
+            for document_id, items in grouped.items():
+                if not items:
+                    continue
+                file_matches = _file_matches_chapter(
+                    items[0]["file_name"], items[0]["chapter"], chapter, chapter_number
+                )
+                relevant = items if file_matches else [
+                    item for item in items if chapter in item["content"].replace(" ", "")
+                ]
+                if relevant:
+                    matched[document_id] = relevant
+            if not matched:
+                raise ValueError(f"所选资料中未找到“{chapter}”的明确内容，请调整资料或写作要求")
+            grouped = matched
+        terms = _focus_terms(scope)
+        for items in grouped.values():
+            items.sort(key=lambda item: (
+                -sum(term in item["content"].lower() for term in terms),
+                item["ordinal"],
+            ))
+        evidence = []
+        while len(evidence) < 40 and any(grouped.values()):
+            for items in grouped.values():
+                if items and len(evidence) < 40:
+                    evidence.append(items.pop(0))
+        if not evidence:
+            return {"response": self._note_refusal(request["session_id"])}
+        lookup = {item["chunk_id"]: item for item in evidence}
+        issues = []
+        for _ in range(self.settings.max_repairs + 1):
+            generated = GeneratedNote.model_validate(
+                self.model.note(
+                    {
+                        "note_config": config,
+                        "evidence": evidence,
+                        "issues_to_fix": issues,
+                    }
+                )
+            )
+            points, issues = [], []
+            for index, point in enumerate(generated.points, 1):
+                refs = []
+                for citation in point.citations:
+                    source = lookup.get(citation.chunk_id)
+                    if source is None or citation.quote not in source["content"]:
+                        issues.append(f"第 {index} 条来源片段或摘录不匹配")
+                        continue
+                    refs.append(
+                        {
+                            "chunk_id": citation.chunk_id,
+                            "document_id": source["document_id"],
+                            "quote": citation.quote,
+                            "file_name": source["file_name"],
+                            "source_type": source["source_type"],
+                        }
+                    )
+                distinct = {ref["document_id"] for ref in refs}
+                if point.provenance == "ai_supplement" and refs:
+                    issues.append(f"第 {index} 条 AI 补充不得带资料引用")
+                if point.provenance == "source" and len(distinct) != 1:
+                    issues.append(f"第 {index} 条单来源考点须引用一份资料")
+                if point.provenance == "synthesis" and len(distinct) < 2:
+                    issues.append(f"第 {index} 条综合改编须引用至少两份资料")
+                points.append(
+                    {
+                        "point_id": f"p{index}",
+                        "heading": point.heading,
+                        "content": point.content,
+                        "provenance": point.provenance,
+                        "references": refs,
+                    }
+                )
+            if not any(point["references"] for point in points):
+                issues.append("整份笔记没有可验证的资料来源")
+            if not issues:
+                verdict = self.model.verify(
+                    {
+                        "request": request,
+                        "output": {"points": [point for point in points if point["references"]]},
+                        "evidence": evidence,
+                    }
+                )
+                if not verdict["supported"]:
+                    issues = verdict["issues"] or ["考点未通过语义证据校验"]
+            if not issues:
+                break
+        if issues:
+            return {"response": self._note_refusal(request["session_id"])}
+        lines = [f"# {generated.title}"]
+        for point in points:
+            label = {"source": "资料来源", "synthesis": "综合改编", "ai_supplement": "AI 补充"}[
+                point["provenance"]
+            ]
+            lines.extend(["", f"## {point['heading']}", "", point["content"], "", f"来源：{label}"])
+        created = DomainService(self.store, request["owner_id"]).create_note_draft(
+            request["course_id"],
+            {
+                "title": generated.title,
+                "markdown": "\n".join(lines),
+                "note_type": config["note_type"],
+                "points": points,
+            },
+            state["run_id"],
+        )
+        asset, revision = created["asset"], created["revision"]
+        response = AgentResponse(
+            session_id=request["session_id"],
+            status="completed",
+            answer="笔记草稿已生成，请打开预览。",
+            draft={
+                "asset_id": asset["asset_id"],
+                "revision_id": revision["revision_id"],
+                "title": asset["title"],
+                "note_type": config["note_type"],
+                "url": f"#note/{asset['asset_id']}/{revision['revision_id']}",
+            },
+        )
+        return {"response": response.model_dump(mode="json")}
+
+    @staticmethod
+    def _note_refusal(session_id):
+        return AgentResponse(
+            session_id=session_id,
+            status="insufficient_evidence",
+            answer="现有资料不足，或笔记内容未通过来源校验。请补充相关资料后重试。",
+        ).model_dump(mode="json")
 
     def _retrieve(self, state):
         evidence = self.model.retrieve(state["request"], self.kb, broaden=state["attempts"] > 0)

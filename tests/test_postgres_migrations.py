@@ -11,10 +11,11 @@ from uuid import UUID
 
 import psycopg
 import pytest
-from conftest import TestEmbeddings
+from conftest import ScriptedModel, TestEmbeddings
 from fastapi.testclient import TestClient
 from psycopg.types.json import Jsonb
 
+from final_review.agent import FinalReviewAgent
 from final_review.api import create_app
 from final_review.config import Settings
 from final_review.domain import DomainConflict, DomainNotFound, DomainService
@@ -22,6 +23,7 @@ from final_review.material_jobs import process_material_job
 from final_review.migrations import apply_migrations
 from final_review.postgres import PostgresStore
 from final_review.rag import KnowledgeBase
+from final_review.schemas import AgentRequest, MaterialInput, NoteInput
 
 pytestmark = pytest.mark.integration
 TEST_URL = os.environ.get("TEST_DATABASE_URL")
@@ -84,6 +86,57 @@ def test_empty_database_runner_is_versioned_and_repeatable(database_url):
             "003_m0_database_hardening.sql",
             "004_m1_material_jobs.sql",
         ]
+
+
+def test_note_draft_persists_point_locator_in_postgres(database_url):
+    apply_migrations(database_url)
+    with psycopg.connect(database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO app_users(id,email,password_hash) VALUES (%s,%s,%s)",
+                (USER, "note@example.test", "hash"),
+            )
+            cursor.execute(
+                "INSERT INTO courses(record_key,user_id,course_id,data) "
+                "VALUES ('course-1',%s,'course-1',%s)",
+                (USER, Jsonb({"course_id": "course-1", "user_id": str(USER), "status": "active"})),
+            )
+    store = PostgresStore(database_url)
+    token = store.bind_user(str(USER))
+    try:
+        settings = Settings(_env_file=None, embedding_dimensions=3)
+        kb = KnowledgeBase(store, TestEmbeddings(), settings)
+        kb.ingest(
+            MaterialInput(
+                course_id="course-1", title="TCP 讲义", chapter="TCP",
+                source_type="teacher_ppt",
+                markdown="TCP 三次握手同步双方初始序列号并确认双方收发能力。",
+            ),
+            user_id=str(USER),
+        )
+        agent = FinalReviewAgent(store, kb, ScriptedModel(), settings)
+        result = agent.invoke(
+            AgentRequest(
+                course_id="course-1", session_id="m2-note", message="生成笔记", intent="note",
+                note_input=NoteInput(note_type="key_points", scope="TCP", duration_minutes=10),
+            ),
+            str(USER),
+        )
+        assert result.draft
+        draft = DomainService(store, str(USER)).note_draft(
+            result.draft["asset_id"], result.draft["revision_id"]
+        )
+        assert draft["revision"]["state"] == "draft"
+        assert draft["references"][0]["locator_id"] != "document"
+        with store.connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT 1 FROM material_locators WHERE user_id=%s AND locator_id=%s",
+                (USER, draft["references"][0]["locator_id"]),
+            )
+            assert cursor.fetchone()
+    finally:
+        store.reset_user(token)
+        store.close()
 
 
 def test_material_job_claim_publish_and_ready_only_search(database_url):
@@ -446,6 +499,13 @@ def test_database_api_returns_404_for_another_users_course(database_url, tmp_pat
             == 200
         )
         course = owner.post("/api/courses", json={"name": "private course"}).json()
+        conversation = owner.post(
+            f"/api/courses/{course['course_id']}/conversations", json={"title": "private chat"}
+        ).json()
+        conversation_base = (
+            f"/api/courses/{course['course_id']}/conversations/{conversation['conversation_id']}"
+        )
+        assert owner.get(conversation_base + "/messages").status_code == 200
         owner_id = owner.get("/api/auth/me").json()["id"]
         source = tmp_path / "uploads" / "lecture.md"
         source.parent.mkdir()
@@ -486,6 +546,9 @@ def test_database_api_returns_404_for_another_users_course(database_url, tmp_pat
         assert other.get(material_base + "/chunks").status_code == 404
         assert other.get(material_base + "/chunks/private-chunk").status_code == 404
         assert other.get(material_base + "/download").status_code == 404
+        assert other.get(f"/api/courses/{course['course_id']}/conversations").status_code == 404
+        assert other.get(conversation_base + "/messages").status_code == 404
+        assert other.patch(conversation_base, json={"title": "stolen"}).status_code == 404
 
 
 def test_course_and_exams_work_without_model_keys(database_url):
