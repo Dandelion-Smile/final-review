@@ -108,13 +108,30 @@ class ExamProfile(Model):
     excluded_topics: list[str] = Field(default_factory=list, max_length=30)
 
 
+NoteType = Literal["chapter", "key_points", "qa_cards", "mnemonic"]
+AudienceLevel = Literal["beginner", "intermediate", "advanced"]
+
+
+class NoteInput(Model):
+    note_type: NoteType | None = None
+    scope: Annotated[str, Field(max_length=200)] = ""
+    duration_minutes: int | None = Field(default=None, ge=1, le=240)
+    emphasis: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(
+        default_factory=list, max_length=20
+    )
+    audience_level: AudienceLevel | None = None
+    source_types: list[SourceType] = Field(default_factory=list, max_length=6)
+    source_document_ids: list[Identifier] = Field(default_factory=list, max_length=100)
+
+
 class AgentRequest(Model):
     course_id: Identifier
     session_id: Identifier
     message: Annotated[str, Field(min_length=1, max_length=4000)]
-    intent: Literal["auto", "ask", "quiz"] = "auto"
+    intent: Literal["auto", "ask", "quiz", "note"] = "auto"
     chapter: Annotated[str, Field(max_length=200)] = ""
     exam_profile: ExamProfile | None = None
+    note_input: NoteInput | None = None
 
 
 class ChatMessage(Model):
@@ -141,6 +158,12 @@ class ResumeRequest(Model):
     course_id: Identifier
     session_id: Identifier
     exam_profile: ExamProfile
+
+
+class ResumeNoteRequest(Model):
+    course_id: Identifier
+    session_id: Identifier
+    note_input: NoteInput = Field(default_factory=NoteInput)
 
 
 class Submission(Model):
@@ -255,12 +278,23 @@ class Verification(Model):
 
 
 class Route(Model):
-    intent: Literal["ask", "quiz"]
+    intent: Literal["ask", "quiz", "note"]
+
+
+class NoteExtraction(Model):
+    note_type: NoteType | None = None
+    scope: str = ""
+    duration_minutes: int | None = None
+    emphasis: list[str] = Field(default_factory=list)
+    audience_level: AudienceLevel | None = None
+    source_types: list[SourceType] = Field(default_factory=list)
 
 
 class AgentResponse(Model):
     session_id: str
-    status: Literal["completed", "needs_input", "awaiting_answers", "insufficient_evidence"]
+    status: Literal[
+        "completed", "configured", "needs_input", "awaiting_answers", "insufficient_evidence"
+    ]
     answer: str = ""
     questions: list[dict] = Field(default_factory=list)
     citations: list[Evidence] = Field(default_factory=list)
@@ -268,6 +302,7 @@ class AgentResponse(Model):
     weak_points: list[str] = Field(default_factory=list)
     suggestions: list[str] = Field(default_factory=list)
     prompt: dict | None = None
+    note_config: dict | None = None
 
     @model_validator(mode="after")
     def public_questions(self):

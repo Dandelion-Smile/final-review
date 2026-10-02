@@ -217,7 +217,13 @@ class ScriptedModel:
         self.seen_weak_points = []
 
     def route(self, request):
-        return "quiz" if "出题" in request["message"] else "ask"
+        if "出题" in request["message"]:
+            return "quiz"
+        return "note" if "笔记" in request["message"] else "ask"
+
+    def note_request(self, request):
+        return {"note_type": None, "scope": "", "duration_minutes": None,
+                "emphasis": [], "audience_level": None, "source_types": []}
 
     def retrieve(self, request, kb, broaden=False):
         self.retrieval_calls += 1

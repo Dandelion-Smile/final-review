@@ -17,7 +17,9 @@ from .schemas import (
     Grades,
     GroundedAnswer,
     KnowledgePlan,
+    NoteInput,
     Quiz,
+    ResumeNoteRequest,
     ResumeRequest,
     Submission,
 )
@@ -41,6 +43,7 @@ class ReviewState(TypedDict, total=False):
     assessment: dict
     weak_points: list[str]
     response: dict
+    note_input: dict
 
 
 def citation_issues(output: dict, evidence: list[dict]) -> list[str]:
@@ -73,6 +76,8 @@ class FinalReviewAgent:
         for name, node in {
             "route": self._route,
             "exam_profile": self._profile,
+            "note_parse": self._note_parse,
+            "note_config": self._note_config,
             "retrieve": self._retrieve,
             "generate": self._generate,
             "verify": self._verify,
@@ -85,10 +90,12 @@ class FinalReviewAgent:
         graph.add_edge(START, "route")
         graph.add_conditional_edges(
             "route",
-            lambda s: "exam_profile" if s["intent"] == "quiz" else "retrieve",
-            ["exam_profile", "retrieve"],
+            lambda s: {"quiz": "exam_profile", "note": "note_parse"}.get(s["intent"], "retrieve"),
+            ["exam_profile", "note_parse", "retrieve"],
         )
         graph.add_edge("exam_profile", "retrieve")
+        graph.add_edge("note_parse", "note_config")
+        graph.add_edge("note_config", END)
         graph.add_conditional_edges(
             "retrieve", lambda s: "generate" if s["evidence"] else "refuse", ["generate", "refuse"]
         )
@@ -113,13 +120,19 @@ class FinalReviewAgent:
     def _config(self, key):
         return {"configurable": {"thread_id": key}, "recursion_limit": 40}
 
-    def invoke(self, request: AgentRequest) -> AgentResponse:
+    def invoke(self, request: AgentRequest, user_id: str | None = None) -> AgentResponse:
         key = self._key(request.course_id, request.session_id)
         with self._lock(key):
             snapshot = self.graph.get_state(self._config(key))
             if snapshot.next:
                 raise SessionConflict("此会话有未完成任务，请补充信息、提交答案或恢复任务")
             incoming = request.model_dump(mode="json")
+            incoming["note_input"] = (
+                request.note_input.model_dump(mode="json", exclude_unset=True)
+                if request.note_input is not None
+                else {}
+            )
+            incoming["owner_id"] = user_id
             if incoming["exam_profile"] is None:
                 incoming["exam_profile"] = snapshot.values.get("request", {}).get("exam_profile")
             state = {
@@ -134,6 +147,7 @@ class FinalReviewAgent:
                 "assessment": {},
                 "response": {},
                 "weak_points": snapshot.values.get("weak_points", []),
+                "note_input": {},
             }
             return self._run(key, state)
 
@@ -142,6 +156,22 @@ class FinalReviewAgent:
         with self._lock(key):
             self._pending(key, "exam_profile")
             return self._run(key, Command(resume=request.exam_profile.model_dump(mode="json")))
+
+    def resume_note(self, request: ResumeNoteRequest, user_id: str | None = None):
+        key = self._key(request.course_id, request.session_id)
+        with self._lock(key):
+            self._pending(key, "note_config")
+            snapshot = self.graph.get_state(self._config(key))
+            original = snapshot.values["request"]
+            if original.get("owner_id") != user_id:
+                raise SessionConflict("会话所有者不匹配")
+            additions = request.note_input.model_dump(mode="json", exclude_unset=True)
+            combined = {**snapshot.values["note_input"], **additions}
+            note = NoteInput.model_validate(combined)
+            missing, _ = self._note_boundaries(original, note)
+            if missing:
+                return self._note_prompt(request.session_id, missing)
+            return self._run(key, Command(resume=additions))
 
     def evaluate(self, request: Submission):
         key = self._key(request.course_id, request.session_id)
@@ -234,6 +264,80 @@ class FinalReviewAgent:
             )
             request["exam_profile"] = ExamProfile.model_validate(profile).model_dump(mode="json")
         return {"request": request}
+
+    def _note_parse(self, state):
+        extracted = NoteInput.model_validate(self.model.note_request(state["request"]))
+        explicit = state["request"].get("note_input") or {}
+        return {"note_input": {**extracted.model_dump(mode="json"), **explicit}}
+
+    def _note_boundaries(self, request, note: NoteInput):
+        missing = []
+        if note.note_type is None:
+            missing.append("note_type")
+        if not note.scope:
+            missing.append("scope")
+        if note.duration_minutes is None:
+            missing.append("duration_minutes")
+        available = []
+        selected = set(note.source_document_ids)
+        if len(selected) != len(note.source_document_ids):
+            raise ValueError("资料 ID 不可重复")
+        for document in self.store.scan("document", {"course_id": request["course_id"]}):
+            if document.get("parse_status") != "ready":
+                continue
+            owner = request.get("owner_id")
+            if owner is not None and document.get("user_id") != owner:
+                continue
+            if note.source_types and document.get("source_type") not in note.source_types:
+                continue
+            if selected and document["document_id"] not in selected:
+                continue
+            available.append(document["document_id"])
+        if selected and selected != set(available):
+            raise ValueError("所选资料不存在、不可用或不属于当前课程")
+        if not available:
+            missing.append("source_document_ids")
+        return missing, sorted(available)
+
+    @staticmethod
+    def _note_prompt(session_id, missing):
+        labels = {
+            "note_type": "笔记类型（章节笔记、考点清单、问答卡片或口诀）",
+            "scope": "考试或章节范围",
+            "duration_minutes": "目标阅读时长（分钟）",
+            "source_document_ids": "可用的课程资料（请上传或选择已解析资料）",
+        }
+        return AgentResponse(
+            session_id=session_id,
+            status="needs_input",
+            prompt={
+                "message": "请补充：" + "、".join(labels[item] for item in missing),
+                "required": missing,
+            },
+        )
+
+    def _note_config(self, state):
+        request = state["request"]
+        data = state["note_input"]
+        note = NoteInput.model_validate(data)
+        missing, sources = self._note_boundaries(request, note)
+        if missing:
+            additions = interrupt(
+                self._note_prompt(request["session_id"], missing).model_dump(
+                    mode="json", exclude_none=True
+                )
+            )
+            note = NoteInput.model_validate({**data, **additions})
+            missing, sources = self._note_boundaries(request, note)
+            if missing:
+                raise ValueError("仍缺少笔记生成所需信息")
+        config = note.model_dump(mode="json")
+        config["audience_level"] = config["audience_level"] or "intermediate"
+        config["source_document_ids"] = sources
+        response = AgentResponse(
+            session_id=request["session_id"], status="configured", note_config=config
+        )
+        return {"note_input": config, "response": response.model_dump(mode="json")}
 
     def _retrieve(self, state):
         evidence = self.model.retrieve(state["request"], self.kb, broaden=state["attempts"] > 0)

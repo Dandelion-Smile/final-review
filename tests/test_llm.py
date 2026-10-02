@@ -85,6 +85,38 @@ def test_structured_output_retries_schema_error():
     assert len(attempts) == 2
 
 
+def test_note_extraction_keeps_missing_fields_empty():
+    def handler(request):
+        payload = json.loads(request.content)
+        assert payload["tools"][0]["function"]["name"] == "NoteExtraction"
+        return completion(
+            "NoteExtraction",
+            {
+                "note_type": "key_points",
+                "scope": "第三章",
+                "duration_minutes": None,
+                "emphasis": [],
+                "audience_level": None,
+                "source_types": ["teacher_ppt"],
+            },
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        model = ReviewModel(
+            ChatOpenAI(
+                model="test-model",
+                api_key="test-key",
+                base_url="http://test/v1",
+                http_client=client,
+            )
+        )
+        result = model.note_request({"message": "整理第三章老师 PPT 的考点清单"})
+    assert result["note_type"] == "key_points"
+    assert result["scope"] == "第三章"
+    assert result["duration_minutes"] is None
+    assert result["source_types"] == ["teacher_ppt"]
+
+
 def test_unknown_tool_is_rejected(system):
     with httpx.Client(
         transport=httpx.MockTransport(

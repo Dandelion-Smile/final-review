@@ -42,6 +42,7 @@ from .schemas import (
     MaterialDelete,
     MaterialInput,
     MaterialUpdate,
+    ResumeNoteRequest,
     ResumeRequest,
     SourceType,
     Submission,
@@ -934,12 +935,17 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
     @app.post("/agent/invoke", response_model=AgentResponse, dependencies=[Depends(authorize)])
     def invoke(request: AgentRequest, user: CurrentUser = Depends(authorize)):
         require_course(request.course_id, user)
-        return runtime().invoke(request)
+        return runtime().invoke(request, user.id)
 
     @app.post("/agent/resume", response_model=AgentResponse, dependencies=[Depends(authorize)])
     def resume(request: ResumeRequest, user: CurrentUser = Depends(authorize)):
         require_course(request.course_id, user)
         return runtime().resume_profile(request)
+
+    @app.post("/agent/resume-note", response_model=AgentResponse, dependencies=[Depends(authorize)])
+    def resume_note(request: ResumeNoteRequest, user: CurrentUser = Depends(authorize)):
+        require_course(request.course_id, user)
+        return runtime().resume_note(request, user.id)
 
     @app.post(
         "/assessment/evaluate", response_model=AgentResponse, dependencies=[Depends(authorize)]

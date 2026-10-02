@@ -16,6 +16,7 @@ from .schemas import (
     Grades,
     GroundedAnswer,
     KnowledgePlan,
+    NoteExtraction,
     Quiz,
     Route,
     Verification,
@@ -49,9 +50,18 @@ class ReviewModel:
             raise ModelError("模型输出在重试后仍不符合数据结构") from exc
 
     def route(self, request):
-        return self.structured(Route, "识别需求：资料问答 ask，要求做题或模拟考试 quiz。", request)[
-            "intent"
-        ]
+        return self.structured(
+            Route, "识别需求：资料问答 ask，做题或模拟考试 quiz，生成复习笔记 note。", request
+        )["intent"]
+
+    def note_request(self, request):
+        return self.structured(
+            NoteExtraction,
+            "只提取用户明确表达的笔记类型、考试或章节范围、目标阅读分钟数、重点、受众水平和资料来源类别。"
+            "四类类型分别为 chapter、key_points、qa_cards、mnemonic。没有说出的字段留空；"
+            "不要推测资料 ID、默认范围或默认时长。",
+            {"message": request["message"]},
+        )
 
     def retrieve(self, request, kb: KnowledgeBase, broaden=False):
         retriever = CourseRetriever(
