@@ -147,6 +147,45 @@ def test_chat_greeting_does_not_require_course_evidence(system):
         assert "准备好了" in reply
 
 
+def test_direct_chat_uses_selected_model_and_history(system, monkeypatch):
+    system.settings.chat_models = [
+        ChatModelConfig(
+            id="deepseek", label="DeepSeek", model="deepseek-test",
+            base_url="https://example.invalid/v1", api_key="test-key",
+        ),
+        ChatModelConfig(
+            id="gemini", label="Gemini", model="gemini-test",
+            base_url="https://example.invalid/v1", api_key="test-key", grounded=False,
+        ),
+    ]
+    calls = []
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            from types import SimpleNamespace
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="真实回复"))])
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setattr("final_review.api.OpenAI", FakeOpenAI)
+    with TestClient(create_app(system.settings, system)) as client:
+        result = client.post("/api/chat", json={
+            "message": "你好", "model_id": "gemini", "mode": "direct",
+            "history": [{"role": "user", "content": "先前的问题"},
+                        {"role": "assistant", "content": "先前的回答"}],
+        })
+        assert result.status_code == 200
+        assert result.json()["reply"] == "真实回复"
+        assert result.json()["model"] == "Gemini"
+        assert calls[0]["model"] == "gemini-test"
+        assert [item["role"] for item in calls[0]["messages"]] == [
+            "system", "user", "assistant", "user"
+        ]
+
+
 def test_real_pptx_conversion(system, tmp_path):
     from io import BytesIO
 

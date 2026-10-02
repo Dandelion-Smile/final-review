@@ -128,6 +128,7 @@ class ChatRequest(Model):
     course_id: Identifier = "software-engineering-basics"
     conversation_id: Identifier = "default"
     model_id: Identifier | None = None
+    mode: Literal["auto", "direct"] = "auto"
 
 
 class ChatResponse(Model):

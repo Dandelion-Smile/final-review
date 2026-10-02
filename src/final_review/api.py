@@ -293,7 +293,9 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
                 {"role": "user", "content": request.message},
             ]
             client = OpenAI(
-                api_key=selected_model.api_key.get_secret_value(), base_url=selected_model.base_url
+                api_key=selected_model.api_key.get_secret_value(),
+                base_url=selected_model.base_url,
+                timeout=settings.model_timeout,
             )
             completion = client.chat.completions.create(
                 model=selected_model.model, messages=messages, max_tokens=1200
@@ -314,7 +316,9 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
         # Some OpenAI-compatible providers only support ordinary chat reliably.
         # Keep those models usable without sending them through the agent's
         # multi-step tool and structured-output workflow.
-        if is_small_talk(request.message):
+        if request.mode == "direct":
+            reply, citations, model_name = ordinary_reply(), [], selected_model.label
+        elif is_small_talk(request.message):
             reply = "你好！我已经准备好了。你可以问课程资料里的知识点，或让我根据资料出题。"
             citations, model_name = [], selected_model.label
         elif app.state.agent is not None and selected_model.grounded:
