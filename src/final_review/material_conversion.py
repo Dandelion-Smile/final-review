@@ -125,7 +125,8 @@ def _convert_legacy(path: Path, directory: Path) -> Path:
     return converted
 
 
-def _ocr_image(path: Path, content: bytes, suffix: str, *, allow_empty: bool = False) -> str:
+def _ocr_image(path: Path, content: bytes, suffix: str, *, allow_empty: bool = False,
+               sparse_text: bool = False) -> str:
     try:
         with Image.open(BytesIO(content)) as image:
             if (
@@ -144,6 +145,8 @@ def _ocr_image(path: Path, content: bytes, suffix: str, *, allow_empty: bool = F
     if tessdata_dir:
         command.extend(["--tessdata-dir", str(tessdata_dir)])
     command.extend([str(path), "stdout", "-l", "chi_sim+eng"])
+    if sparse_text:
+        command.extend(["--psm", "11"])
     try:
         result = subprocess.run(
             command,
@@ -271,7 +274,8 @@ def _convert_presentation(
         try:
             md_extra = _new_lines(section["text"], markitdown_slides[index - 1])
             base = "\n".join(part for part in (section["text"], md_extra) if part.strip())
-            ocr = _ocr_image(image, image.read_bytes(), ".png", allow_empty=True)
+            ocr = _ocr_image(image, image.read_bytes(), ".png", allow_empty=True,
+                             sparse_text=True)
             ocr_extra = _new_lines(base, ocr)
             text = "\n".join(part for part in (base, ocr_extra) if part.strip())
             sections.append({**section, "text": text})

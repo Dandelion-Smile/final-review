@@ -7,6 +7,7 @@ only its public schema, so this suite can never accidentally target DATABASE_URL
 import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID
 
 import psycopg
@@ -17,7 +18,7 @@ from psycopg.types.json import Jsonb
 
 from final_review.agent import FinalReviewAgent
 from final_review.api import create_app
-from final_review.config import Settings
+from final_review.config import ChatModelConfig, Settings
 from final_review.domain import DomainConflict, DomainNotFound, DomainService
 from final_review.material_jobs import process_material_job
 from final_review.migrations import apply_migrations
@@ -106,7 +107,7 @@ def test_note_draft_persists_point_locator_in_postgres(database_url):
     try:
         settings = Settings(_env_file=None, embedding_dimensions=3)
         kb = KnowledgeBase(store, TestEmbeddings(), settings)
-        kb.ingest(
+        ingested = kb.ingest(
             MaterialInput(
                 course_id="course-1", title="TCP 讲义", chapter="TCP",
                 source_type="teacher_ppt",
@@ -118,7 +119,10 @@ def test_note_draft_persists_point_locator_in_postgres(database_url):
         result = agent.invoke(
             AgentRequest(
                 course_id="course-1", session_id="m2-note", message="生成笔记", intent="note",
-                note_input=NoteInput(note_type="key_points", scope="TCP", duration_minutes=10),
+                note_input=NoteInput(
+                    note_type="key_points", scope="TCP", duration_minutes=10,
+                    source_document_ids=[ingested["document_id"]],
+                ),
             ),
             str(USER),
         )
@@ -137,6 +141,109 @@ def test_note_draft_persists_point_locator_in_postgres(database_url):
     finally:
         store.reset_user(token)
         store.close()
+
+
+def test_conversation_history_and_rename_are_scoped_to_owner_and_course(
+    database_url, monkeypatch
+):
+    apply_migrations(database_url)
+    calls = []
+
+    class FakeOpenAI:
+        def __init__(self, **_kwargs):
+            self.chat = SimpleNamespace(completions=self)
+
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=f"答复 {len(calls)}"))]
+            )
+
+    monkeypatch.setattr("final_review.api.OpenAI", FakeOpenAI)
+    settings = Settings(
+        _env_file=None, database_url=database_url, auth_cookie_secure=False,
+        llm_api_key="", embedding_api_key="",
+        chat_models=[ChatModelConfig(
+            id="acceptance", label="验收模型", model="fixture-model",
+            base_url="https://example.invalid/v1", api_key="fixture-key",
+        )],
+    )
+    app = create_app(settings)
+    with TestClient(app) as owner:
+        other = TestClient(app)
+        assert owner.post("/api/auth/sign-up", json={
+            "email": "owner@example.test", "password": "test-password-123"
+        }).status_code == 200
+        assert other.post("/api/auth/sign-up", json={
+            "email": "other@example.test", "password": "test-password-123"
+        }).status_code == 200
+        math = owner.post("/api/courses", json={"name": "数学"}).json()["course_id"]
+        physics = owner.post("/api/courses", json={"name": "物理"}).json()["course_id"]
+        other_course = other.post("/api/courses", json={"name": "他人课程"}).json()
+        assert other_course["course_id"] not in {math, physics}
+
+        for index in range(7):
+            sent = owner.post("/api/chat", json={
+                "course_id": math, "conversation_id": f"chat-{index}",
+                "message": f"问题 {index}", "mode": "direct", "model_id": "acceptance",
+            })
+            assert sent.status_code == 200, sent.text
+        assert owner.post("/api/chat", json={
+            "course_id": physics, "conversation_id": "physics-chat",
+            "message": "物理问题", "mode": "direct", "model_id": "acceptance",
+        }).status_code == 200
+        listing = owner.get(f"/api/courses/{math}/conversations").json()["items"]
+        assert len(listing) == 7
+        assert {item["conversation_id"] for item in listing[:5]} == {
+            f"chat-{index}" for index in range(2, 7)
+        }
+        assert all(item["course_id"] == math for item in listing)
+
+        continued = owner.post("/api/chat", json={
+            "course_id": math, "conversation_id": "chat-0", "message": "接着说",
+            "mode": "direct", "model_id": "acceptance",
+        })
+        assert continued.status_code == 200
+        assert [item["role"] for item in calls[-1]["messages"]] == [
+            "system", "user", "assistant", "user"
+        ]
+        assert calls[-1]["messages"][1]["content"] == "问题 0"
+        assert calls[-1]["messages"][-1]["content"] == "接着说"
+        history = owner.get(f"/api/courses/{math}/conversations/chat-0/messages")
+        assert [item["content"] for item in history.json()["items"]] == [
+            "问题 0", "答复 1", "接着说", "答复 9"
+        ]
+        assert owner.get(f"/api/courses/{math}/conversations").json()["items"][0][
+            "conversation_id"
+        ] == "chat-0"
+        renamed = owner.patch(
+            f"/api/courses/{math}/conversations/chat-0", json={"title": "期末重点"}
+        )
+        assert renamed.status_code == 200
+        assert renamed.json()["title"] == "期末重点"
+
+        assert other.get(f"/api/courses/{math}/conversations").status_code == 404
+        assert other.get(f"/api/courses/{math}/conversations/chat-0/messages").status_code == 404
+        assert other.patch(
+            f"/api/courses/{math}/conversations/chat-0", json={"title": "越权"}
+        ).status_code == 404
+        assert owner.get(
+            f"/api/courses/{physics}/conversations/chat-0/messages"
+        ).status_code == 404
+        assert owner.patch(
+            f"/api/courses/{physics}/conversations/chat-0", json={"title": "错课程"}
+        ).status_code == 404
+
+    with TestClient(create_app(settings)) as reopened:
+        assert reopened.post("/api/auth/sign-in", json={
+            "email": "owner@example.test", "password": "test-password-123"
+        }).status_code == 200
+        restored = reopened.get(f"/api/courses/{math}/conversations/chat-0/messages")
+        assert restored.status_code == 200
+        assert len(restored.json()["items"]) == 4
+        assert reopened.get(f"/api/courses/{math}/conversations").json()["items"][0][
+            "title"
+        ] == "期末重点"
 
 
 def test_material_job_claim_publish_and_ready_only_search(database_url):

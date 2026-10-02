@@ -226,6 +226,8 @@ test("course switcher restores ordinary chat and shows five recent conversations
   await page.route("**/api/courses/*/conversations/*/messages", route => route.fulfill({ json: { items: [{ role: "user", content: "旧问题" }, { role: "assistant", content: "旧回答" }, ...calls.map(call => ({ role: "user", content: call.message }))] } }));
   await page.route("**/api/chat", route => { calls.push(route.request().postDataJSON()); return route.fulfill({ json: { reply: "继续回答", model: "Review", citations: [] } }); });
   await page.goto(`/#chat/${first.course_id}/chat-0`);
+  await expect(page.getByRole("button", { name: /课程管理/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /课程与考试/ })).toHaveCount(0);
   await expect(page.getByText("旧回答")).toBeVisible();
   await page.getByRole("button", { name: /当前课程 数学/ }).click();
   const panel = page.getByRole("dialog", { name: "课程与对话" });

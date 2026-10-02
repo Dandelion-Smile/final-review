@@ -308,10 +308,10 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
         return {"confirmation_required": False, "user": {"email": user.email}}
 
     @app.post("/api/auth/sign-in")
-    def sign_in(request: Credentials, response: Response):
+    def sign_in(request: Credentials, response: Response, http_request: Request):
         if not auth_enabled:
             raise HTTPException(503, "当前服务尚未配置本地认证数据库")
-        remote_addr = request.client.host if request.client else None
+        remote_addr = http_request.client.host if http_request.client else None
         user, session_id = database_auth.sign_in(request.email, request.password, remote_addr)
         database_auth.set_session_cookie(response, session_id)
         return {"user": {"email": user.email}}
