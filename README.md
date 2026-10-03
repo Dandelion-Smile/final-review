@@ -55,6 +55,8 @@ uv run python -m final_review.migrations
 uv run uvicorn final_review.api:create_app --factory --host 127.0.0.1 --port 8080 --workers 1
 # 在另一个终端启动资料处理 worker
 uv run python -m final_review.material_jobs
+# 在第三个终端启动笔记生成 worker
+uv run python -m final_review.note_jobs
 ```
 
 打开 [接口文档](http://127.0.0.1:8080/docs)。迁移命令会从 `.env` 读取
@@ -76,11 +78,13 @@ docker compose up --build -d
 `/knowledge/ingest` 的直接 Markdown 入库接口仍同步执行。
 
 在 AI 对话中生成笔记时，用户须从当前课程明确选择至少一份可检索资料，可单选、多选或选择全部；写作要求可留空。笔记只从所选资料取证据，并保留每条内容的来源片段。若要求明确章节但所选资料找不到对应内容，系统会提示修改资料或要求，不会用其他章节凑数。
+笔记模型偶尔未按结构化格式响应时，系统会在当前任务内重试；某一批的模型响应或来源核对仍失败时，该批改用所选资料的逐字摘录生成草稿，并在标题与对话回复中标明“资料摘录”。仅当所选资料没有可用文字片段时，才无法据此生成笔记。
 笔记配置在独立弹层中完成，不改变聊天输入框的位置；笔记类型使用与页面一致的选择菜单。生成前可取消配置，取消记录保留在对话中，旧笔记任务不能再继续，用户可在同一对话重新发起。
 
 | 配置 | 含义 |
 | --- | --- |
 | LLM_API_KEY / LLM_BASE_URL / LLM_MODEL | 聊天模型，须支持工具调用 |
+| NOTE_MODEL_TIMEOUT / NOTE_MODEL_MAX_RETRIES | 笔记 worker 单次模型请求超时（默认 120 秒）和底层重试次数（默认 1）；独立于网页聊天的 MODEL_TIMEOUT |
 | EMBEDDING_API_KEY / EMBEDDING_BASE_URL / EMBEDDING_MODEL | Embedding 提供商 |
 | EMBEDDING_DIMENSIONS | 必须匹配实际维度；提供商接口需接受 dimensions 参数 |
 | DATABASE_URL | 本机 PostgreSQL 连接串 |

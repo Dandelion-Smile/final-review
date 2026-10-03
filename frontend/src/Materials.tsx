@@ -37,6 +37,7 @@ export default function Materials({ selectedCourse }: { selectedCourse: Course |
   const [deleting, setDeleting] = useState<{ item: Material; preview: DeletePreview } | null>(null);
   const [sourcePreview, setSourcePreview] = useState<SourcePreview | null>(null);
   const [selectedChunk, setSelectedChunk] = useState<SourceChunk | null>(null);
+  const [referencedChunkIds, setReferencedChunkIds] = useState<string[]>([]);
   const [previewError, setPreviewError] = useState("");
   const [retainSnapshot, setRetainSnapshot] = useState(false);
   const [dialogError, setDialogError] = useState("");
@@ -49,6 +50,8 @@ export default function Materials({ selectedCourse }: { selectedCourse: Course |
   const visible = items.filter(item => (!filterChapter || (filterChapter === "__empty__" ? !item.chapter : item.chapter === filterChapter))
     && (!filterSource || item.source_type === filterSource)
     && (!filterStatus || item.parse_status === filterStatus));
+  const citedChunks = sourcePreview?.items.filter(chunk => referencedChunkIds.includes(chunk.chunk_id)) ?? [];
+  const previewChunks = citedChunks.length ? citedChunks : sourcePreview?.items ?? [];
 
   async function refresh() {
     const [documents, currentJobs] = await Promise.all([
@@ -86,15 +89,15 @@ export default function Materials({ selectedCourse }: { selectedCourse: Course |
     if (!courseId) { setItems([]); return; }
     let active = true;
     async function refresh() {
-      try {
-        const [documents, currentJobs] = await Promise.all([
-          api<{ items: Material[] }>(`/api/courses/${encodeURIComponent(courseId)}/documents`),
-          api<{ items: MaterialJob[] }>(`/api/courses/${encodeURIComponent(courseId)}/material-jobs`),
-        ]);
-        if (active) { setItems(documents.items); setJobs(currentJobs.items); }
-      } catch (error) {
-        if (active) setMessage(error instanceof Error ? error.message : "资料加载失败");
-      }
+      const [documents, currentJobs] = await Promise.allSettled([
+        api<{ items: Material[] }>(`/api/courses/${encodeURIComponent(courseId)}/documents`),
+        api<{ items: MaterialJob[] }>(`/api/courses/${encodeURIComponent(courseId)}/material-jobs`),
+      ]);
+      if (!active) return;
+      if (documents.status === "fulfilled") setItems(documents.value.items);
+      if (currentJobs.status === "fulfilled") setJobs(currentJobs.value.items);
+      if (documents.status === "rejected") setMessage(`资料列表加载失败：${documents.reason instanceof Error ? documents.reason.message : "请稍后重试"}`);
+      else if (currentJobs.status === "rejected") setMessage(`处理状态加载失败：${currentJobs.reason instanceof Error ? currentJobs.reason.message : "请稍后重试"}`);
     }
     void refresh();
     const timer = hasActiveJobs ? window.setInterval(() => { void refresh(); }, 2000) : undefined;
@@ -103,20 +106,24 @@ export default function Materials({ selectedCourse }: { selectedCourse: Course |
 
   useEffect(() => {
     const hash = sourceHash;
-    if (!hash.startsWith("#materials/") || hash === openedHash.current || !items.length) return;
-    const [, linkedCourse, linkedDocument, linkedChunk] = hash.slice(1).split("/").map(decodeURIComponent);
-    if (linkedCourse !== courseId || !linkedDocument || !linkedChunk) return;
+    if (!hash.startsWith("#materials/") || hash === openedHash.current) return;
+    const [, encodedCourse, encodedDocument, encodedChunks] = hash.slice(1).split("/");
+    const linkedCourse = decodeURIComponent(encodedCourse || "");
+    const linkedDocument = decodeURIComponent(encodedDocument || "");
+    const linkedChunkIds = [...new Set((encodedChunks || "").split(",").filter(Boolean).map(decodeURIComponent))];
+    if (linkedCourse !== courseId || !linkedDocument || !linkedChunkIds.length) return;
     openedHash.current = hash;
-    if (!items.some(item => item.document_id === linkedDocument && item.parse_status === "ready")) {
-      setMessage("来源片段不可用或已删除。"); return;
-    }
     const base = documentPath(courseId, linkedDocument);
-    void Promise.all([
-      api<SourcePreview>(base + "/chunks"),
-      api<SourceChunk>(base + `/chunks/${encodeURIComponent(linkedChunk)}`),
-    ]).then(([preview, chunk]) => { setSourcePreview(preview); setSelectedChunk(chunk); })
-      .catch(error => setMessage(error instanceof Error ? error.message : "来源片段不可用"));
-  }, [courseId, items, sourceHash]);
+    void api<SourcePreview>(base + "/chunks").then(async preview => {
+      const availableIds = linkedChunkIds.filter(id => preview.items.some(chunk => chunk.chunk_id === id));
+      setSourcePreview(preview);
+      setReferencedChunkIds(availableIds);
+      if (availableIds.length < linkedChunkIds.length) setPreviewError("部分引用片段已失效，以下显示仍可查看的位置。");
+      if (!availableIds.length) return;
+      const chunk = await api<SourceChunk>(base + `/chunks/${encodeURIComponent(availableIds[0])}`);
+      setSelectedChunk(chunk);
+    }).catch(error => setMessage(`来源片段加载失败：${error instanceof Error ? error.message : "请稍后重试"}`));
+  }, [courseId, sourceHash]);
 
   async function retry(jobId: string) {
     try {
@@ -194,7 +201,7 @@ export default function Materials({ selectedCourse }: { selectedCourse: Course |
   }
 
   async function openSource(item: Material) {
-    setPreviewError(""); setSelectedChunk(null);
+    setPreviewError(""); setSelectedChunk(null); setReferencedChunkIds([]);
     try {
       const preview = await api<SourcePreview>(documentPath(courseId, item.document_id) + "/chunks");
       setSourcePreview(preview);
@@ -207,7 +214,8 @@ export default function Materials({ selectedCourse }: { selectedCourse: Course |
     try {
       const detail = await api<SourceChunk>(documentPath(courseId, sourcePreview.document_id) + `/chunks/${encodeURIComponent(chunk.chunk_id)}`);
       setSelectedChunk(detail);
-      const hash = `#materials/${encodeURIComponent(courseId)}/${encodeURIComponent(sourcePreview.document_id)}/${encodeURIComponent(chunk.chunk_id)}`;
+      const ids = referencedChunkIds.length ? referencedChunkIds : [chunk.chunk_id];
+      const hash = `#materials/${encodeURIComponent(courseId)}/${encodeURIComponent(sourcePreview.document_id)}/${ids.map(encodeURIComponent).join(",")}`;
       openedHash.current = hash;
       window.location.hash = hash;
     } catch (error) { setPreviewError(error instanceof Error ? error.message : "片段加载失败"); }
@@ -260,7 +268,19 @@ export default function Materials({ selectedCourse }: { selectedCourse: Course |
       const editable = status === "ready" || status === "failed";
       return <li key={item.document_id}><div className="material-detail"><strong>{item.title}</strong><small>{item.file_name} · {sourceLabel[item.source_type] ?? item.source_type} · {item.chapter || "未归类"}</small>{status === "failed" && <p className="material-error">{job?.error_message ?? item.parse_error}</p>}</div><span className={`material-status ${status}`}>{status === "ready" ? "可检索" : status === "failed" ? "处理失败" : status === "queued" ? "排队中" : `处理中${job?.stage ? ` · ${stageLabel[job.stage] ?? job.stage}` : ""}`}</span><div className="material-actions">{status === "ready" && <button type="button" onClick={() => void openSource(item)} disabled={busy}>预览</button>}<button type="button" onClick={() => openEdit(item)} disabled={!editable || busy} title={!editable ? "处理完成后可编辑" : undefined}>编辑</button>{status === "failed" && job && <button type="button" onClick={() => void retry(job.job_id)} disabled={busy}>重试</button>}<button type="button" className="material-delete" onClick={() => void openDelete(item)} disabled={busy}>删除</button></div></li>;
     })}</ul>}</section>
-    {sourcePreview && <div className="wb-overlay" role="presentation"><section className="wb-dialog material-dialog material-preview" role="dialog" aria-modal="true" aria-labelledby="material-preview-title"><h2 id="material-preview-title">资料片段预览</h2><p>{sourcePreview.file_name} · {sourceLabel[sourcePreview.source_type] ?? sourcePreview.source_type}</p><div className="material-preview-layout"><div className="material-preview-list" aria-label="资料片段">{sourcePreview.items.length === 0 ? <p>暂无可用片段</p> : sourcePreview.items.map((chunk, index) => <button type="button" key={chunk.chunk_id} className={selectedChunk?.chunk_id === chunk.chunk_id ? "selected" : ""} onClick={() => void selectChunk(chunk)}><strong>{index + 1}. {locationLabel(chunk)}</strong><span>{chunk.excerpt}</span></button>)}</div><article className="material-preview-content">{selectedChunk ? <><strong>{locationLabel(selectedChunk)}</strong><pre>{selectedChunk.content}</pre></> : <p>选择左侧片段查看完整内容。</p>}</article></div>{previewError && <p className="material-dialog-error" role="alert">{previewError}</p>}<div className="wb-dialog-actions"><a href={documentPath(courseId, sourcePreview.document_id) + "/download"}>下载原文件</a><button type="button" onClick={() => { setSourcePreview(null); setSelectedChunk(null); openedHash.current = ""; setSourceHash(""); if (window.location.hash.startsWith("#materials/")) history.replaceState(null, "", window.location.pathname + window.location.search); }}>关闭</button></div></section></div>}
+    {sourcePreview && <div className="wb-overlay" role="presentation"><section className="wb-dialog material-dialog material-preview" role="dialog" aria-modal="true" aria-labelledby="material-preview-title">
+      <h2 id="material-preview-title">资料片段预览</h2>
+      <p>{sourcePreview.file_name} · {sourceLabel[sourcePreview.source_type] ?? sourcePreview.source_type}</p>
+      {referencedChunkIds.length > 0 && <p className="material-citation-count">本条笔记引用 {citedChunks.length} 处位置，选择下方位置查看对应内容。</p>}
+      <div className="material-preview-layout">
+        <div className="material-preview-list" aria-label={referencedChunkIds.length ? "笔记引用位置" : "资料片段"}>
+          {previewChunks.length === 0 ? <p>暂无可用片段</p> : previewChunks.map((chunk, index) => <button type="button" key={chunk.chunk_id} className={selectedChunk?.chunk_id === chunk.chunk_id ? "selected" : ""} aria-current={selectedChunk?.chunk_id === chunk.chunk_id ? "location" : undefined} onClick={() => void selectChunk(chunk)}><strong>{referencedChunkIds.length ? `引用 ${index + 1} · ` : `${index + 1}. `}{locationLabel(chunk)}</strong><span>{chunk.excerpt}</span></button>)}
+        </div>
+        <article className="material-preview-content">{selectedChunk ? <><strong>{locationLabel(selectedChunk)}</strong><pre>{selectedChunk.content}</pre></> : <p>选择左侧片段查看完整内容。</p>}</article>
+      </div>
+      {previewError && <p className="material-dialog-error" role="alert">{previewError}</p>}
+      <div className="wb-dialog-actions"><a href={documentPath(courseId, sourcePreview.document_id) + "/download"}>下载原文件</a><button type="button" onClick={() => { setSourcePreview(null); setSelectedChunk(null); setReferencedChunkIds([]); setPreviewError(""); openedHash.current = ""; setSourceHash(""); if (window.location.hash.startsWith("#materials/")) history.replaceState(null, "", window.location.pathname + window.location.search); }}>关闭</button></div>
+    </section></div>}
     {editing && <div className="wb-overlay" role="presentation"><form className="wb-dialog material-dialog" role="dialog" aria-modal="true" aria-labelledby="material-edit-title" onSubmit={saveEdit}><h2 id="material-edit-title">编辑资料信息</h2><p>文件内容保持不变，章节和来源会同步用于资料检索。</p><label>标题<input value={editTitle} onChange={event => setEditTitle(event.target.value)} maxLength={200} required/></label><label>章节<input value={editChapter} onChange={event => setEditChapter(event.target.value)} maxLength={200} placeholder="可选"/></label><label>来源类型<select value={editSource} onChange={event => setEditSource(event.target.value as SourceType)}>{sourceOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>{dialogError && <p className="material-dialog-error" role="alert">{dialogError}</p>}<div className="wb-dialog-actions"><button type="button" onClick={() => setEditing(null)} disabled={busy}>取消</button><button className="wb-primary" disabled={busy || !editTitle.trim()}>{busy ? "正在保存…" : "保存资料信息"}</button></div></form></div>}
     {deleting && <div className="wb-overlay" role="presentation"><section className="wb-dialog material-dialog" role="dialog" aria-modal="true" aria-labelledby="material-delete-title"><span className="wb-eyebrow">删除影响</span><h2 id="material-delete-title">删除“{deleting.item.title}”？</h2><p>删除后，原文件和检索内容将不可再使用。</p><div className="material-impact"><span>正式资产 <b>{deleting.preview.affected_assets}</b></span><span>正式版本引用 <b>{deleting.preview.blocking_references}</b></span></div>{deleting.preview.blocking_references > 0 ? <div className="material-snapshot-choice"><p>这份资料仍被正式内容引用。默认禁止删除；若继续，系统会保留文件名、来源类型、当前可用的文档级定位和必要文本摘录，供这些内容说明来源。原文件与检索内容仍会删除。</p><label><input type="checkbox" checked={retainSnapshot} onChange={event => setRetainSnapshot(event.target.checked)}/> 我了解影响，保留来源快照后删除</label></div> : <p>目前没有正式内容引用这份资料。确认后将删除原文件和检索内容。</p>}<p className="wb-expiry">本次确认有效至 {new Date(deleting.preview.expires_at).toLocaleString("zh-CN")}</p>{dialogError && <p className="material-dialog-error" role="alert">{dialogError} <button type="button" onClick={() => { const item = deleting.item; setDeleting(null); void openDelete(item); }}>重新预览</button></p>}<div className="wb-dialog-actions"><button type="button" onClick={() => setDeleting(null)} disabled={busy}>取消</button><button type="button" className="wb-danger" onClick={() => void confirmDelete()} disabled={busy || (deleting.preview.blocking_references > 0 && !retainSnapshot)}>{busy ? "正在删除…" : "确认删除资料"}</button></div></section></div>}
   </div>;

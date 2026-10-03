@@ -359,6 +359,39 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
 
+        # A valid sent message creates its conversation before model inference.
+        # The conversation remains available for renaming if inference fails.
+        created_at = datetime.now(UTC).isoformat()
+        existing_conversation = existing_conversation or {}
+        with store.transaction():
+            store.put(
+                "conversation",
+                conversation_key,
+                {
+                    **existing_conversation,
+                    "conversation_id": request.conversation_id,
+                    "course_id": request.course_id,
+                    "user_id": user.id,
+                    "title": (request.message.strip()[:40]
+                              if existing_conversation.get("title") in {None, "", "未命名对话"}
+                              else existing_conversation["title"]),
+                    "created_at": existing_conversation.get("created_at", created_at),
+                    "updated_at": created_at,
+                },
+            )
+            store.put(
+                "message",
+                stable_key(conversation_key, "user", created_at),
+                {
+                    "conversation_id": request.conversation_id,
+                    "course_id": request.course_id,
+                    "user_id": user.id,
+                    "role": "user",
+                    "content": request.message,
+                    "created_at": created_at,
+                },
+            )
+
         def ordinary_reply() -> str:
             messages = [
                 {
@@ -422,35 +455,6 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
             reply = ordinary_reply()
             citations, model_name = [], selected_model.label
 
-        created_at = datetime.now(UTC).isoformat()
-        existing_conversation = existing_conversation or {}
-        store.put(
-            "conversation",
-            conversation_key,
-            {
-                **existing_conversation,
-                "conversation_id": request.conversation_id,
-                "course_id": request.course_id,
-                "user_id": user.id,
-                "title": (request.message.strip()[:40]
-                          if existing_conversation.get("title") in {None, "", "未命名对话"}
-                          else existing_conversation["title"]),
-                "created_at": existing_conversation.get("created_at", created_at),
-                "updated_at": created_at,
-            },
-        )
-        store.put(
-            "message",
-            stable_key(conversation_key, "user", created_at),
-            {
-                "conversation_id": request.conversation_id,
-                "course_id": request.course_id,
-                "user_id": user.id,
-                "role": "user",
-                "content": request.message,
-                "created_at": created_at,
-            },
-        )
         assistant_created_at = datetime.now(UTC).isoformat()
         store.put(
             "message",
@@ -631,7 +635,11 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
     def material_chunks(course_id: str, document_id: str, user: CurrentUser):
         document = ready_material(course_id, document_id, user)
         store = conversation_store()
-        version = store.ensure_material_source(document)
+        # Preview is read-only. Concurrent list/detail requests must not race to
+        # backfill locator rows on the shared PostgreSQL connection.
+        from .source_locators import material_version
+
+        version = material_version(document)
         chunks = store.list_material_chunks(document_id)
         return document, version, chunks
 
@@ -762,9 +770,15 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
         rows = conversation_store().scan(
             "message", {"conversation_id": conversation_id, "course_id": course_id}
         )
+        active_note = conversation.get("active_note")
+        if active_note and active_note.get("job_id"):
+            job = conversation_store().get("note_job", active_note["job_id"])
+            if job:
+                active_note = {**active_note, "status": job["status"],
+                               "error": job.get("error"), "stage": job.get("stage")}
         return {
             "items": sorted(rows, key=lambda item: item.get("created_at", "")),
-            "active_note": conversation.get("active_note"),
+            "active_note": active_note,
         }
 
     @app.post("/knowledge/ingest", dependencies=[Depends(authorize)])
@@ -1137,6 +1151,69 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
         record_note_result(request.course_id, conversation_id, user,
                            request.session_id, event_id, result)
         return result
+
+    @app.post("/agent/queue-note", dependencies=[Depends(authorize)])
+    def queue_note(request: ResumeNoteRequest, conversation_id: Identifier,
+                   event_id: Identifier, user: CurrentUser = Depends(authorize)):
+        require_course(request.course_id, user)
+        store = conversation_store()
+        job_id = stable_key(request.course_id, conversation_id, request.session_id, event_id)
+        with store.transaction():
+            existing = store.get("note_job", job_id)
+            if existing:
+                return {"job_id": job_id, "status": existing["status"]}
+            conversation = note_conversation(request.course_id, conversation_id, user)
+            active = conversation.get("active_note")
+            if (not active or active["session_id"] != request.session_id
+                    or active["status"] != "needs_input"):
+                raise HTTPException(409, "当前对话没有等待补充的笔记任务")
+            source_names = []
+            for document_id in request.note_input.source_document_ids:
+                document = store.get("document", document_id)
+                if (not document or document.get("course_id") != request.course_id
+                        or document.get("parse_status", "ready") != "ready"):
+                    raise HTTPException(422, "所选资料不可用，请重新选择")
+                source_names.append(
+                    document.get("file_name") or document.get("title") or document_id
+                )
+            now = datetime.now(UTC).isoformat()
+            job = {"job_id": job_id, "user_id": user.id, "course_id": request.course_id,
+                   "conversation_id": conversation_id, "session_id": request.session_id,
+                   "event_id": event_id, "note_input": request.note_input.model_dump(mode="json"),
+                   "status": "queued", "attempts": 0, "max_attempts": 3,
+                   "available_at": now, "lease_until": None, "created_at": now}
+            store.put("note_job", job_id, job)
+            note_message(request.course_id, conversation_id, user, f"{event_id}-user", "user",
+                         f"补充笔记要求：指定资料 {'、'.join(source_names)}；"
+                         f"笔记类型 {request.note_input.note_type or '默认'}；"
+                         f"写作要求 {request.note_input.scope or '无'}；"
+                         f"阅读时长 {request.note_input.duration_minutes or '未指定'} 分钟")
+            note_state(request.course_id, conversation_id, user,
+                       {"session_id": request.session_id, "status": "queued",
+                        "job_id": job_id, "event_id": event_id,
+                        "note_input": job["note_input"]})
+        return {"job_id": job_id, "status": "queued"}
+
+    @app.post("/agent/retry-note", dependencies=[Depends(authorize)])
+    def retry_note(course_id: Identifier, conversation_id: Identifier, job_id: Identifier,
+                   user: CurrentUser = Depends(authorize)):
+        require_course(course_id, user)
+        store = conversation_store()
+        with store.transaction():
+            job = (store.get_for_update("note_job", job_id)
+                   if hasattr(store, "get_for_update") else store.get("note_job", job_id))
+            if (not job or job["course_id"] != course_id
+                    or job["conversation_id"] != conversation_id):
+                raise HTTPException(404, "笔记任务不存在")
+            if job["status"] != "failed":
+                raise HTTPException(409, "只有失败的任务可以重试")
+            job = {**job, "status": "queued", "attempts": 0, "error": None, "stage": None,
+                   "available_at": datetime.now(UTC).isoformat(), "lease_until": None}
+            store.put("note_job", job_id, job)
+            note_state(course_id, conversation_id, user,
+                       {"session_id": job["session_id"], "status": "queued", "job_id": job_id,
+                        "event_id": job["event_id"], "note_input": job["note_input"]})
+        return {"job_id": job_id, "status": "queued"}
 
     @app.post("/agent/cancel-note", dependencies=[Depends(authorize)])
     def cancel_note(request: CancelNoteRequest, conversation_id: Identifier,

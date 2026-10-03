@@ -78,6 +78,9 @@ test("note request creates an openable sourced draft", async ({ page, request })
   await page.getByPlaceholder(/侧重请求头和状态码/).fill("侧重 TCP 三次握手");
   await page.getByRole("dialog", { name: "补充笔记要求" }).screenshot({ path: "test-results/note-config.png" });
   await page.getByRole("dialog", { name: "补充笔记要求" }).getByRole("button", { name: "生成笔记" }).click();
+  await expect(page.getByRole("dialog", { name: "补充笔记要求" })).toHaveCount(0);
+  await page.getByRole("button", { name: "我的资料" }).click();
+  await page.getByRole("button", { name: "AI 对话" }).click();
   await expect(page.getByRole("link", { name: /打开笔记草稿/ })).toBeVisible();
   await page.reload();
   await expect(page.getByRole("link", { name: /打开笔记草稿/ })).toBeVisible();
@@ -90,7 +93,48 @@ test("note request creates an openable sourced draft", async ({ page, request })
   const preview = page.getByRole("dialog", { name: "笔记草稿预览" });
   await expect(preview).toContainText("三次握手");
   await expect(preview).toContainText("TCP 讲义");
-  await expect(preview.getByRole("link", { name: /查看片段/ })).toBeVisible();
+  await expect(preview.getByRole("link", { name: /查看 \d+ 处引用/ })).toBeVisible();
+  await page.route("**/api/courses/*/material-jobs", route => route.fulfill({ status: 500, json: {} }));
+  await preview.getByRole("link", { name: /查看 \d+ 处引用/ }).first().click();
+  await expect(page.getByRole("dialog", { name: "资料片段预览" })).toContainText("TCP 三次握手同步双方初始序列号");
+  await expect(page.getByRole("status")).toContainText("处理状态加载失败");
+});
+
+test("one source file links to every cited location", async ({ page, request }) => {
+  await request.post("http://127.0.0.1:8081/test/reset");
+  const course = await (await request.post("http://127.0.0.1:8081/api/courses", {
+    data: { name: "Web 服务端" },
+  })).json();
+  const chunkIds = ["chunk-one", "chunk-two", "chunk-three"];
+  const chunks = chunkIds.map((chunk_id, index) => ({
+    chunk_id, locator_id: chunk_id, position_kind: "slide", position: index + 2,
+    text_start: null, text_end: null, excerpt: `第 ${index + 2} 张幻灯片内容`,
+  }));
+  await page.route("**/api/assets/example/revisions/draft", route => route.fulfill({ json: {
+    asset: { title: "HTML 笔记", course_id: course.course_id },
+    revision: { markdown: "", points: [{ point_id: "point-one", heading: "HTML 本质", content: "考点内容",
+      provenance: "source", references: chunkIds.map(chunk_id => ({
+        document_id: "file-one", chunk_id, file_name: "HTML.pptx", source_type: "teacher_ppt",
+      })) }] }, references: [],
+  } }));
+  await page.route("**/api/courses/*/documents/file-one/chunks", route => route.fulfill({ json: {
+    document_id: "file-one", material_version_id: "v1", file_name: "HTML.pptx",
+    source_type: "teacher_ppt", items: chunks,
+  } }));
+  await page.route("**/api/courses/*/documents/file-one/chunks/*", route => {
+    const id = route.request().url().split("/").pop()!;
+    const chunk = chunks.find(item => item.chunk_id === id)!;
+    return route.fulfill({ json: { ...chunk, content: chunk.excerpt } });
+  });
+  await page.goto("/#note/example/draft");
+  const note = page.getByRole("dialog", { name: "笔记草稿预览" });
+  await expect(note.getByRole("link", { name: /HTML.pptx/ })).toHaveCount(1);
+  await note.getByRole("link", { name: /查看 3 处引用/ }).click();
+  const source = page.getByRole("dialog", { name: "资料片段预览" });
+  await expect(source).toContainText("本条笔记引用 3 处位置");
+  await expect(source.getByRole("button", { name: /引用 \d/ })).toHaveCount(3);
+  await source.getByRole("button", { name: /引用 3 · 第 4 张幻灯片/ }).click();
+  await expect(source.locator(".material-preview-content")).toContainText("第 4 张幻灯片内容");
 });
 
 test("natural note request enters the note flow", async ({ page, request }) => {

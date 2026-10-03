@@ -7,7 +7,7 @@ import pytest
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
 from final_review.llm import ModelError, ReviewModel
-from final_review.schemas import Route
+from final_review.schemas import GeneratedNote, Route
 
 
 def completion(name=None, arguments=None):
@@ -83,6 +83,71 @@ def test_structured_output_retries_schema_error():
         )
         assert model.structured(Route, "route", {"message": "解释 TCP"}) == {"intent": "ask"}
     assert len(attempts) == 2
+
+
+def test_note_generation_retries_missing_tool_call_and_accepts_valid_response():
+    attempts = []
+
+    def handler(request):
+        attempts.append(json.loads(request.content))
+        if len(attempts) == 1:
+            return completion()  # Provider returned text instead of the requested tool call.
+        return completion("GeneratedNote", {"title": "TCP 笔记", "points": [{
+            "heading": "三次握手", "content": "同步序列号", "provenance": "source",
+            "citations": [{"chunk_id": "chunk-1", "quote": "同步序列号"}],
+        }]})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        model = ReviewModel(ChatOpenAI(
+            model="test-model", api_key="test-key", base_url="http://test/v1",
+            http_client=client,
+        ))
+        result = model.structured(GeneratedNote, "generate", {"evidence": []})
+    assert result["title"] == "TCP 笔记"
+    assert len(attempts) == 2
+
+
+def test_note_generation_accepts_valid_json_text_without_tool_call():
+    responses = []
+
+    def handler(request):
+        responses.append(json.loads(request.content))
+        data = {"title": "TCP 摘要", "points": [{
+            "heading": "三次握手", "content": "同步序列号", "provenance": "source",
+            "citations": [{"chunk_id": "chunk-1", "quote": "同步序列号"}],
+        }]}
+        response = completion()
+        body = response.json()
+        body["choices"][0]["message"]["content"] = json.dumps(data, ensure_ascii=False)
+        return httpx.Response(200, json=body)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        model = ReviewModel(ChatOpenAI(
+            model="test-model", api_key="test-key", base_url="http://test/v1",
+            http_client=client,
+        ))
+        result = model.structured(GeneratedNote, "generate", {"evidence": []})
+    assert result["title"] == "TCP 摘要"
+    assert len(responses) == 1
+
+
+def test_note_generation_reports_empty_response_after_three_attempts(caplog):
+    attempts = []
+
+    def handler(request):
+        attempts.append(json.loads(request.content))
+        return completion()
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        model = ReviewModel(ChatOpenAI(
+            model="test-model", api_key="test-key", base_url="http://test/v1",
+            http_client=client,
+        ))
+        with pytest.raises(ModelError, match="连续返回无法解析"):
+            model.structured(GeneratedNote, "generate", {"evidence": []})
+    assert len(attempts) == 3
+    assert "content_length=4" in caplog.text
+    assert "done" not in caplog.text
 
 
 def test_note_extraction_keeps_missing_fields_empty():

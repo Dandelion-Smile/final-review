@@ -9,6 +9,8 @@ import json
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from hashlib import md5
+from threading import Lock, local
+from weakref import WeakSet
 
 import psycopg
 from psycopg.rows import dict_row
@@ -27,6 +29,7 @@ class PostgresStore:
         "chunk": "document_chunks",
         "conversation": "conversations",
         "message": "messages",
+        "note_job": "note_jobs",
         "review_session": "review_sessions",
         "knowledge_point": "knowledge_points",
         "checkpoint": "checkpoints",
@@ -47,33 +50,48 @@ class PostgresStore:
     }
 
     def __init__(self, database_url: str):
-        self.connection = psycopg.connect(database_url, row_factory=dict_row)
-        self._transaction_depth = 0
+        self.database_url = database_url
+        self._local = local()
+        self._connections: WeakSet[psycopg.Connection] = WeakSet()
+        self._connections_lock = Lock()
+        self._closed = False
+
+    @property
+    def connection(self) -> psycopg.Connection:
+        """One physical session per thread; LangGraph checkpointers never share it."""
+        connection = getattr(self._local, "connection", None)
+        if connection is None or getattr(connection, "closed", False):
+            with self._connections_lock:
+                if self._closed:
+                    raise StorageError("数据库连接已关闭")
+                connection = psycopg.connect(
+                    self.database_url, row_factory=dict_row, autocommit=True,
+                )
+                self._connections.add(connection)
+            self._local.connection = connection
+        return connection
+
+    @property
+    def _transaction_depth(self) -> int:
+        return getattr(self._local, "transaction_depth", 0)
 
     @contextmanager
     def transaction(self):
-        """Group one destructive domain operation into a single transaction."""
-        if not self._transaction_depth:
-            # Earlier reads start an implicit psycopg transaction. Close it so
-            # the block below owns the outer transaction instead of a savepoint.
-            self.connection.commit()
-        self._transaction_depth += 1
+        """Commit or roll back the current thread's atomic operation on exit."""
+        connection = self.connection
+        self._local.transaction_depth = self._transaction_depth + 1
         try:
-            with self.connection.transaction():
+            with connection.transaction():
                 yield
         finally:
-            self._transaction_depth -= 1
-
-    def _commit(self):
-        if not self._transaction_depth:
-            self.connection.commit()
-
-    def _rollback(self):
-        if not self._transaction_depth:
-            self.connection.rollback()
+            self._local.transaction_depth -= 1
 
     def close(self):
-        self.connection.close()
+        with self._connections_lock:
+            self._closed = True
+            for connection in list(self._connections):
+                connection.close()
+            self._connections.clear()
 
     def setup(self):
         """Fail fast when the self-managed PostgreSQL migration is absent."""
@@ -98,6 +116,9 @@ class PostgresStore:
                 cursor.execute("SELECT to_regclass('public.material_jobs') AS table_name")
                 if cursor.fetchone()["table_name"] is None:
                     raise StorageError("缺少资料 Job 表；请先运行数据库迁移")
+                cursor.execute("SELECT to_regclass('public.note_jobs') AS table_name")
+                if cursor.fetchone()["table_name"] is None:
+                    raise StorageError("缺少笔记 Job 表；请先运行数据库迁移")
         except psycopg.Error as exc:
             raise StorageError("PostgreSQL 初始化检查失败") from exc
 
@@ -176,18 +197,17 @@ class PostgresStore:
             f"ON CONFLICT (record_key) DO UPDATE SET {', '.join(update)}"
         )
         try:
-            with self.connection.cursor() as cursor:
-                cursor.execute(sql, values)
-                if table == "material_version":
-                    cursor.execute(
-                        "INSERT INTO material_locators("
-                        "user_id,course_id,material_version_id,locator_id,locator_kind,ordinal"
-                        ") VALUES (%s,%s,%s,'document','document',0) ON CONFLICT DO NOTHING",
-                        (user_id, data["course_id"], data["material_version_id"]),
-                    )
-            self._commit()
+            with self.transaction():
+                with self.connection.cursor() as cursor:
+                    cursor.execute(sql, values)
+                    if table == "material_version":
+                        cursor.execute(
+                            "INSERT INTO material_locators("
+                            "user_id,course_id,material_version_id,locator_id,locator_kind,ordinal"
+                            ") VALUES (%s,%s,%s,'document','document',0) ON CONFLICT DO NOTHING",
+                            (user_id, data["course_id"], data["material_version_id"]),
+                        )
         except psycopg.Error as exc:
-            self._rollback()
             raise StorageError("PostgreSQL 写入失败") from exc
 
     @staticmethod
@@ -272,25 +292,23 @@ class PostgresStore:
                     f"DELETE FROM {physical} WHERE record_key = %s AND user_id = %s",
                     (key, self._user()),
                 )
-            self._commit()
         except psycopg.Error as exc:
-            self._rollback()
             raise StorageError("PostgreSQL 删除失败") from exc
 
     def delete_document(self, key: str):
         user_id = self._user()
         try:
-            with self.connection.cursor() as cursor:
-                cursor.execute(
-                    "DELETE FROM document_chunks WHERE document_id = %s AND user_id = %s",
-                    (key, user_id),
-                )
-                cursor.execute(
-                    "DELETE FROM documents WHERE record_key = %s AND user_id = %s", (key, user_id)
-                )
-            self._commit()
+            with self.transaction():
+                with self.connection.cursor() as cursor:
+                    cursor.execute(
+                        "DELETE FROM document_chunks WHERE document_id = %s AND user_id = %s",
+                        (key, user_id),
+                    )
+                    cursor.execute(
+                        "DELETE FROM documents WHERE record_key = %s AND user_id = %s",
+                        (key, user_id),
+                    )
         except psycopg.Error as exc:
-            self._rollback()
             raise StorageError("PostgreSQL 删除资料失败") from exc
 
     def deindex_document(self, key: str):
@@ -300,14 +318,12 @@ class PostgresStore:
                     "DELETE FROM document_chunks WHERE document_id = %s AND user_id = %s",
                     (key, self._user()),
                 )
-            self._commit()
         except psycopg.Error as exc:
-            self._rollback()
             raise StorageError("PostgreSQL 移除资料检索索引失败") from exc
 
     def update_material_metadata(self, key: str, changes: dict) -> dict | None:
         """Update display metadata and indexed chunk metadata under one row lock."""
-        with self.connection.transaction():
+        with self.transaction():
             with self.connection.cursor() as cursor:
                 cursor.execute("SELECT data FROM documents WHERE record_key=%s AND user_id=%s "
                                "FOR UPDATE", (key, self._user()))
@@ -331,7 +347,6 @@ class PostgresStore:
                     (Jsonb({field: document[field] for field in
                             ("title", "chapter", "source_type")}), key, self._user()),
                 )
-        self._commit()
         return document
 
     def ingest(self, document: dict, chunks: list[dict]):
@@ -341,49 +356,48 @@ class PostgresStore:
                     "parse_status": document.get("parse_status", "ready")}
         document["material_version_id"] = material_version(document)["material_version_id"]
         try:
-            with self.connection.cursor() as cursor:
-                cursor.execute(
-                    "INSERT INTO documents(record_key,user_id,course_id,document_id,data) "
-                    "VALUES (%s,%s,%s,%s,%s) ON CONFLICT(record_key) DO UPDATE SET "
-                    "course_id=EXCLUDED.course_id,data=EXCLUDED.data",
-                    (
-                        document["document_id"],
-                        user_id,
-                        document["course_id"],
-                        document["document_id"],
-                        Jsonb(document),
-                    ),
-                )
-                cursor.execute(
-                    "DELETE FROM document_chunks WHERE document_id = %s AND user_id = %s",
-                    (document["document_id"], user_id),
-                )
-                for chunk in chunks:
+            with self.transaction():
+                with self.connection.cursor() as cursor:
                     cursor.execute(
-                        "INSERT INTO document_chunks("
-                        "record_key,user_id,course_id,document_id,data,content,embedding"
-                        ") VALUES (%s,%s,%s,%s,%s,%s,%s::vector)",
+                        "INSERT INTO documents(record_key,user_id,course_id,document_id,data) "
+                        "VALUES (%s,%s,%s,%s,%s) ON CONFLICT(record_key) DO UPDATE SET "
+                        "course_id=EXCLUDED.course_id,data=EXCLUDED.data",
                         (
-                            chunk["chunk_id"],
+                            document["document_id"],
                             user_id,
-                            chunk["course_id"],
-                            chunk["document_id"],
-                            Jsonb(chunk),
-                            chunk["content"],
-                            self._vector(chunk["embedding"]),
+                            document["course_id"],
+                            document["document_id"],
+                            Jsonb(document),
                         ),
                     )
-                self._persist_material_source(cursor, document, chunks)
-            self._commit()
+                    cursor.execute(
+                        "DELETE FROM document_chunks WHERE document_id = %s AND user_id = %s",
+                        (document["document_id"], user_id),
+                    )
+                    for chunk in chunks:
+                        cursor.execute(
+                            "INSERT INTO document_chunks("
+                            "record_key,user_id,course_id,document_id,data,content,embedding"
+                            ") VALUES (%s,%s,%s,%s,%s,%s,%s::vector)",
+                            (
+                                chunk["chunk_id"],
+                                user_id,
+                                chunk["course_id"],
+                                chunk["document_id"],
+                                Jsonb(chunk),
+                                chunk["content"],
+                                self._vector(chunk["embedding"]),
+                            ),
+                        )
+                    self._persist_material_source(cursor, document, chunks)
         except psycopg.Error as exc:
-            self._rollback()
             raise StorageError("PostgreSQL 资料入库失败") from exc
 
     def create_material_job(self, document: dict, job: dict) -> dict:
         """Create placeholder and job together; a repeated key returns its first job."""
         user_id = self._user()
         try:
-            with self.connection.transaction():
+            with self.transaction():
                 with self.connection.cursor() as cursor:
                     existing = None
                     if job["idempotency_key"]:
@@ -407,10 +421,8 @@ class PostgresStore:
                             (job["job_id"], user_id, job["course_id"], job["document_id"],
                              job["idempotency_key"], job["fingerprint"]),
                         )
-            self._commit()
             return self._job(existing) if existing else self.get_material_job(job["job_id"])
         except psycopg.errors.UniqueViolation as exc:
-            self.connection.rollback()
             if job["idempotency_key"]:
                 existing = self.find_material_job(job["course_id"], job["idempotency_key"])
                 if existing:
@@ -448,9 +460,94 @@ class PostgresStore:
             )
             return [self._job(row) for row in cursor.fetchall()]
 
+    def claim_note_job(self) -> dict | None:
+        """Claim a queued note or an expired lease, across worker processes."""
+        # Each poll gets a fresh transaction timestamp, including empty polls.
+        with self.transaction():
+            with self.connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT record_key,user_id,data FROM note_jobs WHERE "
+                    "(data->>'status'='queued' AND (data->>'available_at')::timestamptz<=now()) "
+                    "OR (data->>'status'='running' AND "
+                    "(data->>'lease_until')::timestamptz<now()) "
+                    "ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1"
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    return None
+                job = row["data"]
+                attempts = job.get("attempts", 0) + 1
+                if attempts > job.get("max_attempts", 3):
+                    job = {**job, "status": "failed",
+                           "error": "笔记生成多次中断，请重试", "lease_until": None}
+                else:
+                    from datetime import UTC, datetime, timedelta
+
+                    job = {**job, "status": "running", "attempts": attempts,
+                           "lease_until": (datetime.now(UTC) + timedelta(minutes=15)).isoformat(),
+                           "error": None}
+                cursor.execute("UPDATE note_jobs SET data=%s WHERE record_key=%s",
+                               (Jsonb(job), row["record_key"]))
+        return {**job, "user_id": str(row["user_id"])} if job["status"] == "running" else None
+
+    def finish_note_job(self, job_id: str, attempt: int, *, result: dict | None = None,
+                        error: str | None = None) -> bool:
+        """Only the current lease holder may publish a terminal result."""
+        with self.transaction():
+            with self.connection.cursor() as cursor:
+                cursor.execute("SELECT data FROM note_jobs WHERE record_key=%s AND user_id=%s "
+                               "FOR UPDATE", (job_id, self._user()))
+                row = cursor.fetchone()
+                if (not row or row["data"]["status"] != "running"
+                        or row["data"]["attempts"] != attempt):
+                    return False
+                job = {**row["data"], "status": "failed" if error else "succeeded",
+                       "result": result, "error": error, "lease_until": None}
+                cursor.execute("UPDATE note_jobs SET data=%s WHERE record_key=%s",
+                               (Jsonb(job), job_id))
+        return True
+
+    def update_note_job_progress(self, job_id: str, attempt: int, stage: str,
+                                 *, batch_index: int | None = None,
+                                 batch_result: dict | None = None) -> bool:
+        """Save completed batches before the graph node commits its checkpoint."""
+        with self.transaction():
+            with self.connection.cursor() as cursor:
+                cursor.execute("SELECT data FROM note_jobs WHERE record_key=%s AND user_id=%s "
+                               "FOR UPDATE", (job_id, self._user()))
+                row = cursor.fetchone()
+                if (not row or row["data"]["status"] != "running"
+                        or row["data"]["attempts"] != attempt):
+                    return False
+                job = {**row["data"], "stage": stage}
+                if batch_index is not None and batch_result is not None:
+                    job["partial_batches"] = {**job.get("partial_batches", {}),
+                                              str(batch_index): batch_result}
+                cursor.execute("UPDATE note_jobs SET data=%s WHERE record_key=%s",
+                               (Jsonb(job), job_id))
+        return True
+
+    def renew_note_job(self, job_id: str, attempt: int) -> bool:
+        """Keep a live long-running generation from being claimed twice."""
+        from datetime import UTC, datetime, timedelta
+
+        with self.transaction():
+            with self.connection.cursor() as cursor:
+                cursor.execute("SELECT data FROM note_jobs WHERE record_key=%s AND user_id=%s "
+                               "FOR UPDATE", (job_id, self._user()))
+                row = cursor.fetchone()
+                if (not row or row["data"]["status"] != "running"
+                        or row["data"]["attempts"] != attempt):
+                    return False
+                job = {**row["data"], "lease_until":
+                       (datetime.now(UTC) + timedelta(minutes=15)).isoformat()}
+                cursor.execute("UPDATE note_jobs SET data=%s WHERE record_key=%s",
+                               (Jsonb(job), job_id))
+        return True
+
     def claim_material_job(self) -> dict | None:
         """One worker claims one due job; expired leases can be claimed again."""
-        with self.connection.transaction():
+        with self.transaction():
             with self.connection.cursor() as cursor:
                 cursor.execute(
                     "UPDATE material_jobs AS j SET status='failed',"
@@ -497,7 +594,6 @@ class PostgresStore:
                         "WHERE record_key=%s AND user_id=%s",
                         (row["document_id"], row["user_id"]),
                     )
-        self._commit()
         return claimed
 
     def update_material_job(self, job_id: str, attempt: int, *, stage: str):
@@ -507,11 +603,10 @@ class PostgresStore:
                 "WHERE job_id=%s AND user_id=%s AND status='running' AND attempts=%s",
                 (stage, job_id, self._user(), attempt),
             )
-        self._commit()
 
     def fail_material_job(self, job_id: str, attempt: int, *, code: str,
                           message: str, retry: bool) -> bool:
-        with self.connection.transaction():
+        with self.transaction():
             with self.connection.cursor() as cursor:
                 cursor.execute("SELECT document_id FROM material_jobs WHERE job_id=%s "
                                "AND user_id=%s AND status='running' AND attempts=%s FOR UPDATE",
@@ -531,13 +626,12 @@ class PostgresStore:
                                    "to_jsonb(%s::text)) WHERE record_key=%s AND user_id=%s "
                                    "AND data->>'parse_status' <> 'deleted'",
                                    (status, message, row["document_id"], self._user()))
-        self._commit()
         return row is not None
 
     def publish_material_job(self, job_id: str, attempt: int, document: dict,
                              chunks: list[dict]) -> bool:
         """Publish chunks, ready document, and Job success in one transaction."""
-        with self.connection.transaction():
+        with self.transaction():
             with self.connection.cursor() as cursor:
                 cursor.execute("SELECT status,attempts FROM material_jobs WHERE job_id=%s "
                                "AND user_id=%s FOR UPDATE", (job_id, self._user()))
@@ -581,7 +675,6 @@ class PostgresStore:
                         "UPDATE material_jobs SET status='succeeded',stage='index',"
                         "lease_until=NULL,finished_at=now() WHERE job_id=%s", (job_id,),
                     )
-        self._commit()
         return valid
 
     def _persist_material_source(self, cursor, document: dict, chunks: list[dict]) -> None:
@@ -624,14 +717,13 @@ class PostgresStore:
         """Backfill locator rows for ready material indexed before M1-05."""
         version = material_version(document)
         chunks = self.list_material_chunks(document["document_id"])
-        with self.connection.transaction():
+        with self.transaction():
             with self.connection.cursor() as cursor:
                 self._persist_material_source(cursor, document, chunks)
-        self._commit()
         return version
 
     def retry_material_job(self, job_id: str) -> dict | None:
-        with self.connection.transaction():
+        with self.transaction():
             with self.connection.cursor() as cursor:
                 cursor.execute("SELECT * FROM material_jobs WHERE job_id=%s AND user_id=%s "
                                "FOR UPDATE", (job_id, self._user()))
@@ -658,7 +750,6 @@ class PostgresStore:
                                    "jsonb_build_object('parse_status','queued') "
                                    "WHERE record_key=%s AND user_id=%s",
                                    (row["document_id"], self._user()))
-        self._commit()
         return result
 
     @staticmethod

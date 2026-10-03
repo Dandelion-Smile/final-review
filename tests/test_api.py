@@ -1,3 +1,4 @@
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from final_review.api import create_app
@@ -145,6 +146,39 @@ def test_chat_greeting_does_not_require_course_evidence(system):
     with TestClient(create_app(system.settings, system)) as client:
         reply = client.post("/api/chat", json={"message": "你好"}).json()["reply"]
         assert "准备好了" in reply
+
+
+def test_first_valid_message_persists_when_model_fails(system, monkeypatch):
+    system.settings.chat_models = [
+        ChatModelConfig(id="review", label="Review", model="test-model",
+                        base_url="https://example.invalid/v1", api_key="test-key")
+    ]
+
+    class FailedCompletions:
+        def create(self, **kwargs):
+            raise HTTPException(502, "模型暂时不可用")
+
+    class FailedOpenAI:
+        def __init__(self, **kwargs):
+            self.chat = type("Chat", (), {"completions": FailedCompletions()})()
+
+    monkeypatch.setattr("final_review.api.OpenAI", FailedOpenAI)
+    with TestClient(create_app(system.settings, system)) as client:
+        response = client.post("/api/chat", json={
+            "course_id": "software-engineering-basics", "conversation_id": "failed-chat",
+            "message": "第一个问题", "model_id": "review", "mode": "direct",
+        })
+        assert response.status_code == 502
+        history = client.get(
+            "/api/courses/software-engineering-basics/conversations/failed-chat/messages"
+        ).json()["items"]
+        assert [(item["role"], item["content"]) for item in history] == [
+            ("user", "第一个问题")
+        ]
+        assert client.patch(
+            "/api/courses/software-engineering-basics/conversations/failed-chat",
+            json={"title": "已保存的提问"},
+        ).status_code == 200
 
 
 def test_direct_chat_uses_selected_model_and_history(system, monkeypatch):

@@ -21,6 +21,45 @@ class MemoryStore:
         self.lock = RLock()
         self.job_user = "local-user"
 
+    def bind_user(self, user_id):
+        return user_id
+
+    def reset_user(self, token):
+        pass
+
+    def claim_note_job(self):
+        with self.lock:
+            for job in self.tables.get("note_job", {}).values():
+                if job["status"] == "queued":
+                    job["status"] = "running"
+                    job["attempts"] += 1
+                    return deepcopy(job)
+        return None
+
+    def finish_note_job(self, job_id, attempt, *, result=None, error=None):
+        with self.lock:
+            job = self.tables["note_job"][job_id]
+            if job["status"] != "running" or job["attempts"] != attempt:
+                return False
+            job.update(status="failed" if error else "succeeded", result=result, error=error)
+            return True
+
+    def update_note_job_progress(self, job_id, attempt, stage, *,
+                                 batch_index=None, batch_result=None):
+        with self.lock:
+            job = self.tables["note_job"][job_id]
+            if job["status"] != "running" or job["attempts"] != attempt:
+                return False
+            job["stage"] = stage
+            if batch_index is not None and batch_result is not None:
+                job.setdefault("partial_batches", {})[str(batch_index)] = deepcopy(batch_result)
+            return True
+
+    def renew_note_job(self, job_id, attempt):
+        with self.lock:
+            job = self.tables["note_job"][job_id]
+            return job["status"] == "running" and job["attempts"] == attempt
+
     @contextmanager
     def transaction(self):
         with self.lock:

@@ -1,7 +1,8 @@
 import re
 from collections import Counter, defaultdict
+from contextvars import ContextVar, Token
 from threading import Lock
-from typing import TypedDict
+from typing import Callable, TypedDict
 from uuid import uuid4
 
 from langgraph.graph import END, START, StateGraph
@@ -31,6 +32,30 @@ from .storage import stable_key
 
 class SessionConflict(ValueError):
     pass
+
+
+class NoteProgress:
+    def __init__(self, completed: dict[str, dict], update: Callable[..., bool]):
+        self.completed = completed
+        self.update = update
+
+    def report(self, stage: str, *, batch_index: int | None = None,
+               batch_result: dict | None = None) -> None:
+        if not self.update(stage, batch_index=batch_index, batch_result=batch_result):
+            raise SessionConflict("笔记任务租约已失效")
+        if batch_index is not None and batch_result is not None:
+            self.completed[str(batch_index)] = batch_result
+
+
+_note_progress: ContextVar[NoteProgress | None] = ContextVar("note_progress", default=None)
+
+
+def bind_note_progress(progress: NoteProgress) -> Token:
+    return _note_progress.set(progress)
+
+
+def reset_note_progress(token: Token) -> None:
+    _note_progress.reset(token)
 
 
 def _chapter_requirement(scope: str) -> tuple[str, str] | None:
@@ -416,8 +441,137 @@ class FinalReviewAgent:
         )
         return {"note_input": config, "response": response.model_dump(mode="json")}
 
+    def _generate_note_batch(self, request, config, evidence, batch_index, batch_total,
+                             progress: NoteProgress | None):
+        lookup = {item["chunk_id"]: item for item in evidence}
+        issues = []
+        for _ in range(self.settings.max_repairs + 1):
+            try:
+                generated = GeneratedNote.model_validate(self.model.note({
+                    "note_config": config, "evidence": evidence, "issues_to_fix": issues,
+                    "batch_index": batch_index + 1, "batch_total": batch_total,
+                    "batch_instruction": "本批生成一至五个考点，逐字引用本批原文；不要输出批次字样"
+                    if batch_total > 1 else "生成完整笔记",
+                }))
+            except (ModelError, ValueError):
+                return self._extractive_note_batch(evidence, config["note_type"],
+                                                   "模型响应格式错误")
+            points, issues = [], []
+            if batch_total > 1 and len(generated.points) > 5:
+                issues.append("本批超过五个考点，请保留最重要的五个")
+            for index, point in enumerate(generated.points, 1):
+                refs = []
+                for citation in point.citations:
+                    source = lookup.get(citation.chunk_id)
+                    if source is None or citation.quote not in source["content"]:
+                        issues.append(f"第 {index} 条来源片段或摘录不匹配")
+                        continue
+                    refs.append({
+                        "chunk_id": citation.chunk_id, "document_id": source["document_id"],
+                        "quote": citation.quote, "file_name": source["file_name"],
+                        "source_type": source["source_type"],
+                    })
+                distinct = {ref["document_id"] for ref in refs}
+                if point.provenance == "ai_supplement" and refs:
+                    issues.append(f"第 {index} 条 AI 补充不得带资料引用")
+                if point.provenance == "source" and len(distinct) != 1:
+                    issues.append(f"第 {index} 条单来源考点须引用一份资料")
+                if point.provenance == "synthesis" and len(distinct) < 2:
+                    issues.append(f"第 {index} 条综合改编须引用至少两份资料")
+                points.append({
+                    "heading": point.heading, "content": point.content,
+                    "provenance": point.provenance, "references": refs,
+                })
+            if not any(point["references"] for point in points):
+                issues.append("这一部分没有可验证的资料来源")
+            if not issues:
+                if progress:
+                    progress.report(f"正在核对第 {batch_index + 1}/{batch_total} 部分")
+                try:
+                    verdict = self.model.verify({
+                        "request": request,
+                        "output": {"points": [point for point in points if point["references"]]},
+                        "evidence": evidence,
+                    })
+                except ModelError:
+                    return self._extractive_note_batch(evidence, config["note_type"],
+                                                       "模型核对响应格式错误")
+                if not verdict["supported"]:
+                    issues = verdict["issues"] or ["考点未通过语义证据校验"]
+            if not issues:
+                return {"title": generated.title, "points": points,
+                        "source_ids": [item["chunk_id"] for item in evidence]}
+        return self._extractive_note_batch(evidence, config["note_type"],
+                                           "生成内容未通过来源核对")
+
+    @staticmethod
+    def _extractive_note_batch(evidence: list[dict], note_type: str, reason: str) -> dict:
+        """Grounded fallback: only copy text already present in selected source chunks."""
+        points = []
+        for source in evidence:
+            content = source["content"].strip()
+            if not content or any(point["content"] == content[:400] for point in points):
+                continue
+            if source.get("position_kind") == "page" and source.get("position"):
+                location = f"第 {source['position']} 页"
+            elif source.get("position_kind") == "slide" and source.get("position"):
+                location = f"第 {source['position']} 张幻灯片"
+            else:
+                location = f"片段 {source['ordinal'] + 1}"
+            heading = (f"{source['file_name']}的{location}讲了什么？" if note_type == "qa_cards"
+                       else f"{source['file_name']} · {location}")
+            points.append({
+                "heading": heading[:200], "content": content[:400], "provenance": "source",
+                "references": [{
+                    "chunk_id": source["chunk_id"], "document_id": source["document_id"],
+                    "quote": content[:120], "file_name": source["file_name"],
+                    "source_type": source["source_type"],
+                }],
+            })
+            if len(points) == 5:
+                break
+        if not points:
+            raise ValueError("所选资料片段均为空，无法生成笔记")
+        return {"title": "复习资料摘录", "points": points,
+                "source_ids": [item["chunk_id"] for item in evidence],
+                "fallback_reason": reason}
+
+    @staticmethod
+    def _merge_note_batches(results: list[dict]) -> list[dict]:
+        """Combine already-verified points without asking the model to invent citations."""
+        merged: list[dict] = []
+        by_heading: dict[tuple[str, bool], dict] = {}
+        for offset in range(max(len(result["points"]) for result in results)):
+            for result in results:
+                if offset >= len(result["points"]):
+                    continue
+                point = result["points"][offset]
+                key = (point["heading"].strip().casefold(),
+                       point["provenance"] == "ai_supplement")
+                existing = by_heading.get(key)
+                if existing is None:
+                    existing = {**point, "references": list(point["references"])}
+                    by_heading[key] = existing
+                    merged.append(existing)
+                else:
+                    if point["content"] not in existing["content"]:
+                        existing["content"] += "\n" + point["content"]
+                    known = {(ref["chunk_id"], ref["quote"])
+                             for ref in existing["references"]}
+                    existing["references"].extend(ref for ref in point["references"]
+                                                  if (ref["chunk_id"], ref["quote"]) not in known)
+                    if existing["provenance"] != "ai_supplement":
+                        sources = {ref["document_id"] for ref in existing["references"]}
+                        existing["provenance"] = "synthesis" if len(sources) > 1 else "source"
+        for index, point in enumerate(merged[:20], 1):
+            point["point_id"] = f"p{index}"
+        return merged[:20]
+
     def _note_generate(self, state):
         request, config = state["request"], state["note_input"]
+        progress = _note_progress.get()
+        if progress:
+            progress.report("正在整理资料")
         grouped = {}
         for document_id in config["source_document_ids"]:
             document = self.store.get("document", document_id)
@@ -476,68 +630,53 @@ class FinalReviewAgent:
                     evidence.append(items.pop(0))
         if not evidence:
             return {"response": self._note_refusal(request["session_id"])}
-        lookup = {item["chunk_id"]: item for item in evidence}
-        issues = []
-        for _ in range(self.settings.max_repairs + 1):
-            generated = GeneratedNote.model_validate(
-                self.model.note(
-                    {
-                        "note_config": config,
-                        "evidence": evidence,
-                        "issues_to_fix": issues,
-                    }
+        batches = [evidence[index:index + 10] for index in range(0, len(evidence), 10)] \
+            if len(evidence) > 12 else [evidence]
+        results = []
+        for index, batch in enumerate(batches):
+            source_ids = [item["chunk_id"] for item in batch]
+            cached = progress.completed.get(str(index)) if progress else None
+            if cached and cached.get("source_ids") == source_ids:
+                result = cached
+            else:
+                if progress:
+                    progress.report(f"正在生成第 {index + 1}/{len(batches)} 部分")
+                result = self._generate_note_batch(
+                    request, config, batch, index, len(batches), progress,
                 )
-            )
-            points, issues = [], []
-            for index, point in enumerate(generated.points, 1):
-                refs = []
-                for citation in point.citations:
-                    source = lookup.get(citation.chunk_id)
-                    if source is None or citation.quote not in source["content"]:
-                        issues.append(f"第 {index} 条来源片段或摘录不匹配")
-                        continue
-                    refs.append(
-                        {
-                            "chunk_id": citation.chunk_id,
-                            "document_id": source["document_id"],
-                            "quote": citation.quote,
-                            "file_name": source["file_name"],
-                            "source_type": source["source_type"],
-                        }
-                    )
-                distinct = {ref["document_id"] for ref in refs}
-                if point.provenance == "ai_supplement" and refs:
-                    issues.append(f"第 {index} 条 AI 补充不得带资料引用")
-                if point.provenance == "source" and len(distinct) != 1:
-                    issues.append(f"第 {index} 条单来源考点须引用一份资料")
-                if point.provenance == "synthesis" and len(distinct) < 2:
-                    issues.append(f"第 {index} 条综合改编须引用至少两份资料")
-                points.append(
-                    {
-                        "point_id": f"p{index}",
-                        "heading": point.heading,
-                        "content": point.content,
-                        "provenance": point.provenance,
-                        "references": refs,
-                    }
-                )
-            if not any(point["references"] for point in points):
-                issues.append("整份笔记没有可验证的资料来源")
-            if not issues:
-                verdict = self.model.verify(
-                    {
-                        "request": request,
-                        "output": {"points": [point for point in points if point["references"]]},
-                        "evidence": evidence,
-                    }
-                )
-                if not verdict["supported"]:
-                    issues = verdict["issues"] or ["考点未通过语义证据校验"]
-            if not issues:
-                break
-        if issues:
-            return {"response": self._note_refusal(request["session_id"])}
-        lines = [f"# {generated.title}"]
+                if result is None:
+                    return {"response": self._note_refusal(request["session_id"])}
+                if progress:
+                    progress.report(f"已完成第 {index + 1}/{len(batches)} 部分",
+                                    batch_index=index, batch_result=result)
+            results.append(result)
+        if progress:
+            progress.report("正在合并与去重")
+        points = self._merge_note_batches(results)
+        if progress:
+            progress.report("正在核对整份笔记")
+        available = {item["chunk_id"]: item for item in evidence}
+        for point in points:
+            sources = set()
+            for ref in point["references"]:
+                source = available.get(ref["chunk_id"])
+                if source is None or ref["quote"] not in source["content"]:
+                    raise ValueError("合并后的笔记来源片段或摘录不匹配")
+                sources.add(source["document_id"])
+            if ((point["provenance"] == "source" and len(sources) != 1)
+                    or (point["provenance"] == "synthesis" and len(sources) < 2)
+                    or (point["provenance"] == "ai_supplement" and sources)):
+                raise ValueError("合并后的笔记来源类型不匹配")
+        if progress:
+            progress.report("正在保存草稿")
+        fallback_count = sum(bool(result.get("fallback_reason")) for result in results)
+        fallback_reasons = "、".join(sorted({result["fallback_reason"] for result in results
+                                             if result.get("fallback_reason")}))
+        title = re.sub(r"\s*[（(]?批次\s*\d+\s*/\s*\d+[）)]?", "",
+                       results[0]["title"]).strip()
+        if fallback_count:
+            title = f"{title}（含 {fallback_count} 部分资料摘录）"
+        lines = [f"# {title}"]
         for point in points:
             label = {"source": "资料来源", "synthesis": "综合改编", "ai_supplement": "AI 补充"}[
                 point["provenance"]
@@ -546,7 +685,7 @@ class FinalReviewAgent:
         created = DomainService(self.store, request["owner_id"]).create_note_draft(
             request["course_id"],
             {
-                "title": generated.title,
+                "title": title,
                 "markdown": "\n".join(lines),
                 "note_type": config["note_type"],
                 "points": points,
@@ -557,7 +696,9 @@ class FinalReviewAgent:
         response = AgentResponse(
             session_id=request["session_id"],
             status="completed",
-            answer="笔记草稿已生成，请打开预览。",
+            answer=(f"笔记草稿已生成；因{fallback_reasons}，其中 {fallback_count} 部分使用"
+                    "资料原文摘录，请打开预览核对。"
+                    if fallback_count else "笔记草稿已生成，请打开预览。"),
             draft={
                 "asset_id": asset["asset_id"],
                 "revision_id": revision["revision_id"],

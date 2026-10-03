@@ -9,6 +9,7 @@ from final_review.agent import FinalReviewAgent
 from final_review.api import create_app
 from final_review.config import Settings
 from final_review.material_jobs import process_material_job
+from final_review.note_jobs import process_note_job
 from final_review.rag import KnowledgeBase
 
 
@@ -35,6 +36,21 @@ def app():
                 time.sleep(0.1)
 
     Thread(target=work, daemon=True).start()
+
+    def note_work():
+        import time
+
+        while True:
+            job = store.claim_note_job()
+            if job:
+                try:
+                    process_note_job(store, agent, job)
+                except KeyError:
+                    pass  # /test/reset can discard a claimed test job.
+            else:
+                time.sleep(0.1)
+
+    Thread(target=note_work, daemon=True).start()
 
     def reset():
         with store.lock:

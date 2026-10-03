@@ -6,9 +6,23 @@ import NoteMaterialPicker, { materialLabel, type NoteMaterial } from "./NoteMate
 type ChatModel = { id: string; label: string };
 type DraftCard = { asset_id: string; revision_id: string; title: string; note_type: string; url: string };
 type AgentResult = { status: string; answer: string; prompt?: { message: string; required: string[] }; draft?: DraftCard };
-type NotePreviewData = { asset: { title: string; course_id: string }; revision: { markdown: string; points: { point_id: string; heading: string; content: string; provenance: string; references: { document_id: string; chunk_id: string; file_name: string; source_type: string }[] }[] }; references: { point_id: string; locator_id: string }[] };
+type NoteReference = { document_id: string; chunk_id: string; file_name: string; source_type: string };
+type NotePreviewData = { asset: { title: string; course_id: string }; revision: { markdown: string; points: { point_id: string; heading: string; content: string; provenance: string; references: NoteReference[] }[] }; references: { point_id: string; locator_id: string }[] };
 type Message = { from: "agent" | "user"; text: string; model?: string; draft?: DraftCard };
-type ActiveNote = { session_id: string; status: "needs_input" | "running" | "failed"; prompt?: AgentResult["prompt"]; note_input?: { note_type?: string; scope?: string; duration_minutes?: number; source_document_ids?: string[] } };
+type ActiveNote = { session_id: string; status: "needs_input" | "queued" | "running" | "failed"; job_id?: string; stage?: string; error?: string; prompt?: AgentResult["prompt"]; note_input?: { note_type?: string; scope?: string; duration_minutes?: number; source_document_ids?: string[] } };
+
+function groupNoteReferences(references: NoteReference[]) {
+  const files = new Map<string, { file_name: string; source_type: string; document_id: string; chunk_ids: string[] }>();
+  for (const reference of references) {
+    const file = files.get(reference.document_id) ?? {
+      document_id: reference.document_id, file_name: reference.file_name,
+      source_type: reference.source_type, chunk_ids: [],
+    };
+    if (!file.chunk_ids.includes(reference.chunk_id)) file.chunk_ids.push(reference.chunk_id);
+    files.set(reference.document_id, file);
+  }
+  return [...files.values()];
+}
 
 async function noteRequest(path: string, body?: unknown): Promise<AgentResult> {
   const controller = new AbortController();
@@ -44,7 +58,10 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
   const [isSending, setIsSending] = useState(false);
   const [noteSession, setNoteSession] = useState<string | null>(null);
   const [notePrompt, setNotePrompt] = useState<AgentResult["prompt"]>();
-  const [noteRecovery, setNoteRecovery] = useState<"running" | "failed" | null>(null);
+  const [noteRecovery, setNoteRecovery] = useState<"queued" | "running" | "failed" | null>(null);
+  const [noteJobId, setNoteJobId] = useState<string | null>(null);
+  const [noteJobError, setNoteJobError] = useState("");
+  const [noteJobStage, setNoteJobStage] = useState("");
   const [noteType, setNoteType] = useState("key_points");
   const [noteScope, setNoteScope] = useState("");
   const [noteDuration, setNoteDuration] = useState("10");
@@ -91,6 +108,9 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
     setNoteSession(null);
     setNotePrompt(undefined);
     setNoteRecovery(null);
+    setNoteJobId(null);
+    setNoteJobError("");
+    setNoteJobStage("");
     setNoteMaterials([]);
     setNoteScope("");
     setPickerOpen(false);
@@ -103,8 +123,11 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
         .then(data => { if (active) {
           setMessages(data.items.map(item => ({ from: item.role === "user" ? "user" : "agent", text: item.content, draft: item.draft })));
           setNoteSession(data.active_note?.session_id ?? null);
+          setNoteJobId(data.active_note?.job_id ?? null);
+          setNoteJobError(data.active_note?.error ?? "");
+          setNoteJobStage(data.active_note?.stage ?? "");
           setNotePrompt(data.active_note?.status === "needs_input" ? data.active_note.prompt : undefined);
-          setNoteRecovery(data.active_note?.status === "running" || data.active_note?.status === "failed" ? data.active_note.status : null);
+          setNoteRecovery(["queued", "running", "failed"].includes(data.active_note?.status ?? "") ? data.active_note!.status as "queued" | "running" | "failed" : null);
           restoreNoteInput(data.active_note, courseId, () => active);
         } })
         .catch(error => { if (active) { setHistoryFailed(true); setModelError(error instanceof Error ? error.message : "对话读取失败"); } })
@@ -112,6 +135,25 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
     } else setHistoryLoading(false);
     return () => { active = false; };
   }, [courseId, selectedConversationId]);
+
+  useEffect(() => {
+    if (!courseId || !selectedConversationId || !noteJobId || !["queued", "running"].includes(noteRecovery ?? "")) return;
+    let active = true;
+    const timer = window.setInterval(() => {
+      void api<{ items: { role: "user" | "assistant"; content: string; draft?: DraftCard }[]; active_note?: ActiveNote | null }>(`/api/courses/${encodeURIComponent(courseId)}/conversations/${encodeURIComponent(selectedConversationId)}/messages`)
+        .then(data => {
+          if (!active) return;
+          setMessages(data.items.map(item => ({ from: item.role === "user" ? "user" : "agent", text: item.content, draft: item.draft })));
+          setNoteSession(data.active_note?.session_id ?? null);
+          setNoteJobId(data.active_note?.job_id ?? null);
+          setNoteJobError(data.active_note?.error ?? "");
+          setNoteJobStage(data.active_note?.stage ?? "");
+          setNotePrompt(data.active_note?.status === "needs_input" ? data.active_note.prompt : undefined);
+          setNoteRecovery(["queued", "running", "failed"].includes(data.active_note?.status ?? "") ? data.active_note!.status as "queued" | "running" | "failed" : null);
+        }).catch(() => {});
+    }, 2000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [courseId, selectedConversationId, noteJobId, noteRecovery]);
 
   useEffect(() => {
     setEditingTitle(false);
@@ -165,17 +207,18 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
     setIsSending(true);
     setModelError("");
     try {
-      const result = await noteRequest(`/agent/resume-note?conversation_id=${encodeURIComponent(conversationId.current)}&event_id=${crypto.randomUUID()}`, {
+      const result = await api<{ job_id: string; status: "queued" }>(`/agent/queue-note?conversation_id=${encodeURIComponent(conversationId.current)}&event_id=${crypto.randomUUID()}`, "POST", {
         course_id: courseId, session_id: noteSession,
         note_input: { note_type: noteType, scope: noteScope.trim(), duration_minutes: Number(noteDuration),
           source_document_ids: noteMaterials.map(item => item.document_id) },
       });
       setMessages(current => [...current, { from: "user", text: `补充笔记要求：使用 ${noteMaterials.map(materialLabel).join("、")}；${noteScope.trim() ? `写作要求 ${noteScope.trim()}；` : ""}阅读时长 ${noteDuration} 分钟` }]);
-      showAgentResult(result);
-    } catch (error) {
-      setModelError(error instanceof Error ? error.message : "笔记生成失败");
-      setNoteRecovery("failed");
       setNotePrompt(undefined);
+      setNoteJobId(result.job_id);
+      setNoteRecovery("queued");
+      setNoteJobStage("");
+    } catch (error) {
+      setModelError(error instanceof Error ? error.message : "笔记任务提交失败");
     } finally { setIsSending(false); }
   }
 
@@ -203,13 +246,20 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
     if (!courseId || !noteSession || isSending) return;
     setIsSending(true); setModelError("");
     try {
+      if (noteJobId) {
+        await api(`/agent/retry-note?course_id=${encodeURIComponent(courseId)}&conversation_id=${encodeURIComponent(conversationId.current)}&job_id=${encodeURIComponent(noteJobId)}`, "POST");
+        setNoteRecovery("queued"); setNoteJobError(""); setNoteJobStage("");
+        return;
+      }
       const result = await noteRequest(`/agent/recover?course_id=${encodeURIComponent(courseId)}&session_id=${encodeURIComponent(noteSession)}&conversation_id=${encodeURIComponent(conversationId.current)}`);
       showAgentResult(result);
       const history = await api<{ items: { role: "user" | "assistant"; content: string; draft?: DraftCard }[]; active_note?: ActiveNote | null }>(`/api/courses/${encodeURIComponent(courseId)}/conversations/${encodeURIComponent(conversationId.current)}/messages`);
       setMessages(history.items.map(item => ({ from: item.role === "user" ? "user" : "agent", text: item.content, draft: item.draft })));
       setNoteSession(history.active_note?.session_id ?? null);
+      setNoteJobId(history.active_note?.job_id ?? null);
+      setNoteJobStage(history.active_note?.stage ?? "");
       setNotePrompt(history.active_note?.status === "needs_input" ? history.active_note.prompt : undefined);
-      setNoteRecovery(history.active_note?.status === "running" || history.active_note?.status === "failed" ? history.active_note.status : null);
+      setNoteRecovery(["queued", "running", "failed"].includes(history.active_note?.status ?? "") ? history.active_note!.status as "queued" | "running" | "failed" : null);
       restoreNoteInput(history.active_note, courseId, () => mounted.current);
     } catch (error) { setModelError(error instanceof Error ? error.message : "恢复笔记任务失败"); setNoteRecovery("failed"); }
     finally { setIsSending(false); }
@@ -287,16 +337,26 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
     } catch (error) {
       if (!mounted.current || conversationId.current !== requestConversationId) return;
       const detail = error instanceof Error ? error.message : "模型服务暂时不可用";
-      setMessages(history);
-      setDraft(message);
-      setModelError(`发送失败：${detail}`);
-      if (noteStarted) {
-        setNoteRecovery("failed");
-        if (!selectedConversationId) {
-          void api(`/api/courses/${encodeURIComponent(courseId)}/conversations/${encodeURIComponent(requestConversationId)}/messages`)
-            .then(() => onConversationCreated(requestConversationId)).catch(() => {});
+      let saved = false;
+      try {
+        const data = await api<{ items: { role: "user" | "assistant"; content: string; draft?: DraftCard }[]; active_note?: ActiveNote | null }>(`/api/courses/${encodeURIComponent(courseId)}/conversations/${encodeURIComponent(requestConversationId)}/messages`);
+        if (!mounted.current || conversationId.current !== requestConversationId) return;
+        saved = data.items.length > history.length;
+        if (saved) {
+          setMessages(data.items.map(item => ({ from: item.role === "user" ? "user" : "agent", text: item.content, draft: item.draft })));
+          if (!selectedConversationId) onConversationCreated(requestConversationId);
+          if (noteStarted) {
+            setNoteSession(data.active_note?.session_id ?? null);
+            setNoteRecovery(data.active_note?.status === "failed" ? "failed" : null);
+          }
         }
+      } catch { /* The server may have rejected the message before saving it. */ }
+      if (!saved) {
+        setMessages(history);
+        setDraft(message);
+        if (noteStarted) setNoteSession(null);
       }
+      setModelError(`发送失败：${detail}`);
     } finally {
       if (mounted.current && conversationId.current === requestConversationId) setIsSending(false);
     }
@@ -315,13 +375,13 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
         <i aria-hidden="true">{item.from === "agent" ? "✦" : "你"}</i>
         <div><label>{item.from === "agent" ? item.model || "助手" : "你"}</label><p>{item.text}</p>{item.draft && <a className="note-draft-card" href={item.draft.url}><strong>{item.draft.title}</strong><span>打开笔记草稿 →</span></a>}</div>
       </article>)}
+      {noteRecovery && noteSession && <article className="message agent" role="status"><i aria-hidden="true">✦</i><div><label>助手</label><p>{noteRecovery === "queued" ? "笔记任务已排队，正在等待生成。" : noteRecovery === "running" ? `正在生成笔记${noteJobStage ? ` · ${noteJobStage}` : "…"}` : `笔记生成失败${noteJobError ? `：${noteJobError}` : ""}`}</p>{noteRecovery === "failed" && <button type="button" disabled={isSending} onClick={() => void recoverNote()}>{noteJobId ? "重试生成" : "恢复笔记任务"}</button>}</div></article>}
       {isSending && <div className="chat-thinking" role="status">✦　正在生成回复…</div>}
     </div>
     {modelError && <p className="chat-error" role="alert">{modelError}</p>}
-    {noteRecovery && noteSession && <div className="note-clarification"><strong>{noteRecovery === "running" ? "笔记任务仍在处理中" : "笔记任务未完成"}</strong><button type="button" disabled={isSending} onClick={() => void recoverNote()}>恢复笔记任务</button></div>}
     {notePrompt && !pickerOpen && <NoteConfigDialog noteType={noteType} onNoteType={setNoteType} duration={noteDuration} onDuration={setNoteDuration} materials={noteMaterials} onChooseMaterials={() => setPickerOpen(true)} requirements={noteScope} onRequirements={setNoteScope} onGenerate={() => void resumeNote()} onCancel={() => void cancelNote()} busy={isSending || noteCancelling} error={modelError} promptMessage={notePrompt.message} />}
     {pickerOpen && courseId && <NoteMaterialPicker courseId={courseId} selected={noteMaterials} onConfirm={items => { setNoteMaterials(items); setPickerOpen(false); }} onClose={() => setPickerOpen(false)} />}
-    {preview && <div className="note-preview-backdrop"><section className="note-preview" role="dialog" aria-modal="true" aria-label="笔记草稿预览"><button type="button" onClick={() => { window.location.hash = ""; setPreview(null); }}>关闭</button><small>草稿 · 尚未确认</small><h2>{preview.asset.title}</h2>{preview.revision.points.map(point => <article key={point.point_id}><h3>{point.heading}</h3><p>{point.content}</p><small>{point.provenance === "ai_supplement" ? "AI 补充" : point.provenance === "synthesis" ? "综合改编" : "资料来源"}</small>{point.references.map(ref => <a key={ref.chunk_id} href={`#materials/${preview.asset.course_id}/${ref.document_id}/${ref.chunk_id}`}>{ref.file_name} · {ref.source_type} · 查看片段</a>)}</article>)}</section></div>}
+    {preview && <div className="note-preview-backdrop"><section className="note-preview" role="dialog" aria-modal="true" aria-label="笔记草稿预览"><button type="button" onClick={() => { window.location.hash = ""; setPreview(null); }}>关闭</button><small>草稿 · 尚未确认</small><h2>{preview.asset.title}</h2>{preview.revision.points.map(point => <article key={point.point_id}><h3>{point.heading}</h3><p>{point.content}</p><small>{point.provenance === "ai_supplement" ? "AI 补充" : point.provenance === "synthesis" ? "综合改编" : "资料来源"}</small>{groupNoteReferences(point.references).map(file => <a key={file.document_id} href={`#materials/${encodeURIComponent(preview.asset.course_id)}/${encodeURIComponent(file.document_id)}/${file.chunk_ids.map(encodeURIComponent).join(",")}`}>{file.file_name} · {file.source_type} · 查看 {file.chunk_ids.length} 处引用</a>)}</article>)}</section></div>}
     <div className="composer">
       <textarea value={draft} disabled={isSending || historyLoading || historyFailed} onChange={event => setDraft(event.target.value)} onKeyDown={event => {
         if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); }

@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     min_similarity: float = Field(default=0.25, ge=-1, le=1)
     max_repairs: int = Field(default=1, ge=0, le=3)
     model_timeout: float = Field(default=60, gt=0)
+    note_model_timeout: float = Field(default=120, gt=0)
+    note_model_max_retries: int = Field(default=1, ge=0, le=3)
     fast_quiz_timeout: float = Field(default=30, gt=0, le=90)
 
     @model_validator(mode="after")

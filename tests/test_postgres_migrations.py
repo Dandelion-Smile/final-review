@@ -5,8 +5,11 @@ only its public schema, so this suite can never accidentally target DATABASE_URL
 """
 
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -14,17 +17,21 @@ import psycopg
 import pytest
 from conftest import ScriptedModel, TestEmbeddings
 from fastapi.testclient import TestClient
+from psycopg.pq import TransactionStatus
 from psycopg.types.json import Jsonb
 
 from final_review.agent import FinalReviewAgent
 from final_review.api import create_app
+from final_review.checkpoints import SurrealSaver
 from final_review.config import ChatModelConfig, Settings
 from final_review.domain import DomainConflict, DomainNotFound, DomainService
+from final_review.llm import ModelError
 from final_review.material_jobs import process_material_job
 from final_review.migrations import apply_migrations
 from final_review.postgres import PostgresStore
 from final_review.rag import KnowledgeBase
 from final_review.schemas import AgentRequest, MaterialInput, NoteInput
+from final_review.storage import stable_key
 
 pytestmark = pytest.mark.integration
 TEST_URL = os.environ.get("TEST_DATABASE_URL")
@@ -77,6 +84,7 @@ def test_empty_database_runner_is_versioned_and_repeatable(database_url):
         "002_m0_domain_contracts.sql",
         "003_m0_database_hardening.sql",
         "004_m1_material_jobs.sql",
+        "005_note_jobs.sql",
     ]
     assert apply_migrations(database_url) == []
     with psycopg.connect(database_url) as connection, connection.cursor() as cursor:
@@ -86,7 +94,192 @@ def test_empty_database_runner_is_versioned_and_repeatable(database_url):
             "002_m0_domain_contracts.sql",
             "003_m0_database_hardening.sql",
             "004_m1_material_jobs.sql",
+            "005_note_jobs.sql",
         ]
+
+
+def test_note_worker_sees_job_created_after_empty_poll(database_url):
+    apply_migrations(database_url)
+    with psycopg.connect(database_url) as connection:
+        _seed_course(connection)
+    worker = PostgresStore(database_url)
+    writer = PostgresStore(database_url)
+    worker_token = worker.bind_user(str(USER))
+    writer_token = writer.bind_user(str(USER))
+    try:
+        assert worker.claim_note_job() is None
+        assert worker.connection.info.transaction_status == TransactionStatus.IDLE
+        available_at = datetime.now(UTC) + timedelta(milliseconds=50)
+        writer.put("note_job", "late-note-job", {
+            "job_id": "late-note-job", "user_id": str(USER), "course_id": "course-1",
+            "conversation_id": "conversation-1", "status": "queued", "attempts": 0,
+            "available_at": available_at.isoformat(), "created_at": datetime.now(UTC).isoformat(),
+        })
+        time.sleep(0.08)
+        claimed = worker.claim_note_job()
+        assert claimed is not None
+        assert claimed["job_id"] == "late-note-job"
+        assert claimed["status"] == "running"
+        assert worker.connection.info.transaction_status == TransactionStatus.IDLE
+    finally:
+        worker.reset_user(worker_token)
+        writer.reset_user(writer_token)
+        worker.close()
+        writer.close()
+
+
+def test_checkpoint_thread_does_not_share_draft_transaction_connection(database_url):
+    apply_migrations(database_url)
+    with psycopg.connect(database_url) as connection:
+        _seed_course(connection)
+    store = PostgresStore(database_url)
+    draft_open = Event()
+    release_draft = Event()
+
+    def save_draft():
+        token = store.bind_user(str(USER))
+        try:
+            with store.transaction():
+                store.put("course", "course-key", {
+                    "course_id": "course-1", "user_id": str(USER), "status": "active",
+                })
+                draft_open.set()
+                assert release_draft.wait(10)
+            return store.connection.info.backend_pid
+        finally:
+            store.reset_user(token)
+
+    def write_checkpoint():
+        assert draft_open.wait(10)
+        token = store.bind_user(str(USER))
+        try:
+            saver = SurrealSaver(store)
+            saver.put_writes({"configurable": {
+                "thread_id": "note-thread", "checkpoint_ns": "",
+                "checkpoint_id": "checkpoint-one",
+            }}, [("note_output", {"saved": True})], "task-one")
+            return store.connection.info.backend_pid
+        finally:
+            store.reset_user(token)
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            draft = executor.submit(save_draft)
+            checkpoint = executor.submit(write_checkpoint)
+            try:
+                checkpoint_pid = checkpoint.result(timeout=10)
+            finally:
+                release_draft.set()
+            assert draft.result(timeout=10) != checkpoint_pid
+        token = store.bind_user(str(USER))
+        try:
+            assert len(store.scan("pending_write", {"thread_id": "note-thread"})) == 1
+            with pytest.raises(RuntimeError, match="rollback probe"):
+                with store.transaction():
+                    store.put("course", "course-key", {
+                        "course_id": "course-1", "user_id": str(USER),
+                        "status": "active", "name": "should roll back",
+                    })
+                    raise RuntimeError("rollback probe")
+            assert store.get("course", "course-key").get("name") is None
+        finally:
+            store.reset_user(token)
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("fallback_first", [False, True])
+def test_four_note_batches_save_one_draft_and_checkpoint_on_first_run(
+    database_url, fallback_first,
+):
+    apply_migrations(database_url)
+    with psycopg.connect(database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("INSERT INTO app_users(id,email,password_hash) VALUES (%s,%s,%s)",
+                           (USER, "four-batches@example.test", "hash"))
+            cursor.execute("INSERT INTO courses(record_key,user_id,course_id,data) "
+                           "VALUES ('course-1',%s,'course-1',%s)",
+                           (USER, Jsonb({"course_id": "course-1", "user_id": str(USER),
+                                         "status": "active"})))
+    store = PostgresStore(database_url)
+    token = store.bind_user(str(USER))
+    try:
+        document_id = "four-batch-source"
+        store.ingest({
+            "document_id": document_id, "course_id": "course-1", "title": "TCP 讲义",
+            "file_name": "tcp.pptx", "chapter": "TCP", "source_type": "teacher_ppt",
+            "cleaned_markdown": "TCP 连接建立", "parse_status": "ready",
+        }, [{
+            "chunk_id": stable_key(document_id, str(index)), "document_id": document_id,
+            "course_id": "course-1", "title": "TCP 讲义", "chapter": "TCP",
+            "source_type": "teacher_ppt", "chunk_ordinal": index,
+            "content": f"TCP 三次握手同步双方初始序列号，片段 {index}。",
+            "embedding": [1.0, 0.1, 0.0],
+        } for index in range(40)])
+        model = ScriptedModel()
+        note_calls = []
+        original_note = model.note
+
+        def capture_note(data):
+            note_calls.append(data["batch_index"])
+            if fallback_first and data["batch_index"] == 1:
+                raise ModelError("模型连续返回无法解析的结构化内容")
+            return original_note(data)
+
+        model.note = capture_note
+        settings = Settings(_env_file=None, embedding_dimensions=3)
+        agent = FinalReviewAgent(store, KnowledgeBase(store, TestEmbeddings(), settings),
+                                 model, settings)
+        result = agent.invoke(AgentRequest(
+            course_id="course-1", session_id="four-batch-note", message="生成笔记",
+            intent="note", note_input=NoteInput(
+                note_type="key_points", duration_minutes=10,
+                source_document_ids=[document_id],
+            ),
+        ), str(USER))
+        assert result.status == "completed"
+        if fallback_first:
+            assert "资料原文摘录" in result.answer
+        assert note_calls == [1, 2, 3, 4]
+        assert len(store.scan("learning_asset", {"course_id": "course-1"})) == 1
+        assert len(store.scan("asset_revision", {"course_id": "course-1"})) == 1
+        thread_id = store.session_key("course-1", "four-batch-note")
+        assert store.scan("checkpoint", {"thread_id": thread_id})
+        assert store.scan("pending_write", {"thread_id": thread_id})
+        assert agent.recover("course-1", "four-batch-note").draft == result.draft
+        assert len(store.scan("learning_asset", {"course_id": "course-1"})) == 1
+
+        original_put = store.put
+        interrupted = False
+
+        def fail_after_draft(table, key, data):
+            nonlocal interrupted
+            if (table == "pending_write" and not interrupted
+                    and len(store.scan("learning_asset", {"course_id": "course-1"})) == 2):
+                interrupted = True
+                raise RuntimeError("checkpoint interrupted after draft")
+            return original_put(table, key, data)
+
+        store.put = fail_after_draft
+        try:
+            with pytest.raises(RuntimeError, match="checkpoint interrupted after draft"):
+                agent.invoke(AgentRequest(
+                    course_id="course-1", session_id="recover-after-draft",
+                    message="生成笔记", intent="note", note_input=NoteInput(
+                        note_type="key_points", duration_minutes=10,
+                        source_document_ids=[document_id],
+                    ),
+                ), str(USER))
+        finally:
+            store.put = original_put
+        assert interrupted
+        assert len(store.scan("learning_asset", {"course_id": "course-1"})) == 2
+        recovered = agent.recover("course-1", "recover-after-draft")
+        assert recovered.status == "completed"
+        assert len(store.scan("learning_asset", {"course_id": "course-1"})) == 2
+    finally:
+        store.reset_user(token)
+        store.close()
 
 
 def test_note_draft_persists_point_locator_in_postgres(database_url):
@@ -420,7 +613,7 @@ def test_existing_001_002_with_legacy_attempt_upgrades(database_url):
         _sql(connection, "002_m0_domain_contracts.sql")
         _seed_course(connection, legacy=True)
     assert apply_migrations(database_url) == [
-        "003_m0_database_hardening.sql", "004_m1_material_jobs.sql"
+        "003_m0_database_hardening.sql", "004_m1_material_jobs.sql", "005_note_jobs.sql"
     ]
     with psycopg.connect(database_url) as connection, connection.cursor() as cursor:
         cursor.execute("SELECT legacy_session_id FROM attempts WHERE record_key='attempt-key'")

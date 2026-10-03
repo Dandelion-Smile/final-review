@@ -56,8 +56,8 @@ def test_note_draft_has_point_locator_and_readable_card(system):
         )
 
 
-def test_invalid_citation_refuses_without_draft(system):
-    prepare(system)
+def test_invalid_citation_uses_real_source_excerpt(system):
+    document = prepare(system)
     system.model.note = lambda data: {
         "title": "错误笔记",
         "points": [
@@ -70,8 +70,14 @@ def test_invalid_citation_refuses_without_draft(system):
         ],
     }
     result = generate(system)
-    assert result.status == "insufficient_evidence"
-    assert not system.store.scan("learning_asset", {"course_id": "net"})
+    assert result.status == "completed"
+    assert "资料原文摘录" in result.answer
+    revision = system.store.get("asset_revision", result.draft["revision_id"])
+    reference = revision["points"][0]["references"][0]
+    assert reference["document_id"] == document["document_id"]
+    assert reference["chunk_id"] != "invented"
+    original = system.store.list_material_chunks(document["document_id"])[0]["content"]
+    assert reference["quote"] in original
 
 
 def test_synthesis_requires_two_distinct_documents(system):
@@ -85,8 +91,10 @@ def test_synthesis_requires_two_distinct_documents(system):
 
     system.model.note = note
     result = generate(system)
-    assert result.status == "insufficient_evidence"
-    assert not system.store.scan("learning_asset", {"course_id": "net"})
+    assert result.status == "completed"
+    revision = system.store.get("asset_revision", result.draft["revision_id"])
+    assert revision["points"][0]["provenance"] == "source"
+    assert "资料摘录" in revision["title"]
 
 
 def test_persistence_error_rolls_back_asset_revision_and_refs(system):

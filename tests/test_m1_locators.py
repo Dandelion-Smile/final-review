@@ -105,7 +105,7 @@ def test_pdf_and_pptx_jobs_publish_positioned_chunks(system, tmp_path, monkeypat
             }
 
 
-def test_chunk_preview_download_and_foreign_owner_are_guarded(system, tmp_path):
+def test_chunk_preview_download_and_foreign_owner_are_guarded(system, tmp_path, monkeypatch):
     system.settings.uploads_dir = str(tmp_path / "uploads")
     with TestClient(create_app(system.settings, system)) as client:
         uploaded = client.post(
@@ -116,6 +116,10 @@ def test_chunk_preview_download_and_foreign_owner_are_guarded(system, tmp_path):
         job = system.store.claim_material_job()
         process_material_job(system.store, system.kb, job, 10 * 1024 * 1024)
         base = f"/api/courses/net/documents/{uploaded['document_id']}"
+        def reject_backfill(document):
+            raise AssertionError("preview must not write locators")
+
+        monkeypatch.setattr(system.store, "ensure_material_source", reject_backfill)
         listing = client.get(base + "/chunks")
         assert listing.status_code == 200
         item = listing.json()["items"][0]

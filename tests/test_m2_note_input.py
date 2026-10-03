@@ -385,12 +385,14 @@ def test_note_evidence_is_balanced_across_only_selected_files(system):
         "local-user",
     )
     assert result.status == "completed"
-    assert len(seen[0]) == 40
-    assert [item["document_id"] for item in seen[0][:4]] == [
+    assert len(seen) == 4
+    assert all(len(batch) == 10 for batch in seen)
+    selected = [item for batch in seen for item in batch]
+    assert [item["document_id"] for item in selected[:4]] == [
         first["document_id"], second["document_id"],
         first["document_id"], second["document_id"],
     ]
-    assert {item["document_id"] for item in seen[0]} == {
+    assert {item["document_id"] for item in selected} == {
         first["document_id"], second["document_id"]
     }
 

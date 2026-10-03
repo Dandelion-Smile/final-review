@@ -1,3 +1,5 @@
+from threading import local
+
 from final_review.postgres import PostgresStore
 
 
@@ -28,7 +30,8 @@ class _Connection:
 
 def test_search_excludes_embedding_from_retrieval_payload():
     store = PostgresStore.__new__(PostgresStore)
-    store.connection = _Connection(
+    store._local = local()
+    store._local.connection = _Connection(
         [
             {
                 "data": {
