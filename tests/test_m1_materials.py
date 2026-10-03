@@ -44,6 +44,39 @@ def test_upload_survives_worker_with_different_working_directory(system, tmp_pat
         assert _run_queued_job(system)["status"] == "succeeded"
 
 
+def test_external_upload_reuses_only_same_name_and_content(system, tmp_path):
+    system.settings.uploads_dir = str(tmp_path / "uploads")
+
+    def upload(client, name, content):
+        return client.post("/knowledge/upload", data={
+            "course_id": "net", "title": name, "source_type": "external_upload",
+        }, files={"file": (name, content)})
+
+    with TestClient(create_app(system.settings, system)) as client:
+        first = upload(client, "chapter.md", b"first chapter content")
+        assert first.status_code == 202
+        assert first.json()["reused"] is False
+        pending_repeat = upload(client, "chapter.md", b"first chapter content")
+        assert pending_repeat.status_code == 200
+        assert pending_repeat.json()["document_id"] == first.json()["document_id"]
+        assert pending_repeat.json()["reused"] is True
+        assert _run_queued_job(system)["status"] == "succeeded"
+        ready_repeat = upload(client, "chapter.md", b"first chapter content")
+        assert ready_repeat.json()["status"] == "ready"
+        assert ready_repeat.json()["document_id"] == first.json()["document_id"]
+        edited_form_repeat = client.post("/knowledge/upload", data={
+            "course_id": "net", "title": "另一个标题", "chapter": "第二章",
+            "source_type": "homework",
+        }, files={"file": ("chapter.md", b"first chapter content")})
+        assert edited_form_repeat.json()["reused"] is True
+        assert edited_form_repeat.json()["document_id"] == first.json()["document_id"]
+        renamed = upload(client, "renamed.md", b"first chapter content")
+        changed = upload(client, "chapter.md", b"different chapter content")
+        assert renamed.json()["document_id"] != first.json()["document_id"]
+        assert changed.json()["document_id"] != first.json()["document_id"]
+        assert len(system.store.scan("document", {"course_id": "net"})) == 4
+
+
 @pytest.mark.parametrize(
     ("suffix", "format_name"),
     [("png", "PNG"), ("jpg", "JPEG"), ("jpeg", "JPEG"), ("webp", "WEBP")],

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api, type Course } from "./workbench-api";
 import "./materials.css";
 
-type SourceType = "past_exam" | "teacher_ppt" | "homework" | "other_practice" | "crash_course" | "ai_supplement";
+type SourceType = "past_exam" | "teacher_ppt" | "homework" | "other_practice" | "external_upload" | "crash_course" | "ai_supplement";
 type Material = { document_id: string; title: string; file_name?: string; source_type: SourceType; chapter?: string; parse_status: string; parse_error?: string; updated_at?: string | null };
 type MaterialJob = { job_id: string; document_id: string; status: "queued" | "running" | "succeeded" | "failed"; stage?: string | null; error_message?: string | null; attempts: number };
 type DeletePreview = { blocking_references: number; affected_assets: number; confirmation_id: string; expires_at: string };
@@ -12,7 +12,7 @@ const stageLabel: Record<string, string> = { parse: "解析", convert: "转换 P
 
 const sourceOptions: [SourceType, string][] = [
   ["past_exam", "历年真题"], ["teacher_ppt", "老师 PPT"], ["homework", "平时作业"],
-  ["other_practice", "其他练习"], ["crash_course", "速成课"], ["ai_supplement", "AI 补充"],
+  ["other_practice", "其他练习"], ["external_upload", "外部上传"], ["crash_course", "速成课"], ["ai_supplement", "AI 补充"],
 ];
 const sourceLabel = Object.fromEntries(sourceOptions);
 const documentPath = (courseId: string, documentId: string) => `/api/courses/${encodeURIComponent(courseId)}/documents/${encodeURIComponent(documentId)}`;

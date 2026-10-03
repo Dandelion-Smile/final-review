@@ -1,13 +1,14 @@
 """Disposable in-memory API for the browser workbench test."""
 
 from threading import Thread
+from types import SimpleNamespace
 
 import uvicorn
 from conftest import MemoryStore, ScriptedModel, TestEmbeddings
 
 from final_review.agent import FinalReviewAgent
 from final_review.api import create_app
-from final_review.config import Settings
+from final_review.config import ChatModelConfig, Settings
 from final_review.material_jobs import process_material_job
 from final_review.note_jobs import process_note_job
 from final_review.rag import KnowledgeBase
@@ -15,6 +16,33 @@ from final_review.rag import KnowledgeBase
 
 def app():
     settings = Settings(_env_file=None, embedding_dimensions=3)
+    settings.chat_models = [ChatModelConfig(
+        id=model_id, label=label, model=model_id,
+        base_url="https://example.invalid/v1", api_key="test-key",
+    ) for model_id, label in [("review", "Review"), ("deepseek", "DeepSeek"),
+                             ("gemini", "Gemini 3 Flash")]]
+
+    class TestCompletions:
+        def create(self, **kwargs):
+            messages = kwargs["messages"]
+            if messages[0]["content"].startswith("判断用户当前消息的意图"):
+                message = messages[-1]["content"]
+                intent = "note" if any(term in message for term in (
+                    "生成笔记", "生成一份笔记", "可背诵的资料", "考前总结手记",
+                )) or ("生成" in message and "笔记" in message) else "ask"
+                content = '{"intent":"' + intent + '"}'
+            else:
+                content = "可以继续聊天"
+            return SimpleNamespace(choices=[SimpleNamespace(
+                message=SimpleNamespace(content=content))])
+
+    class TestOpenAI:
+        def __init__(self, **kwargs):
+            self.chat = SimpleNamespace(completions=TestCompletions())
+
+    import importlib
+
+    importlib.import_module("final_review.api").OpenAI = TestOpenAI
     store = MemoryStore()
     agent = FinalReviewAgent(
         store, KnowledgeBase(store, TestEmbeddings(), settings), ScriptedModel(), settings

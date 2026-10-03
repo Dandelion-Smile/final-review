@@ -385,7 +385,7 @@ def test_note_evidence_is_balanced_across_only_selected_files(system):
         "local-user",
     )
     assert result.status == "completed"
-    assert len(seen) == 4
+    assert len(seen) == 6
     assert all(len(batch) == 10 for batch in seen)
     selected = [item for batch in seen for item in batch]
     assert [item["document_id"] for item in selected[:4]] == [
@@ -395,6 +395,112 @@ def test_note_evidence_is_balanced_across_only_selected_files(system):
     assert {item["document_id"] for item in selected} == {
         first["document_id"], second["document_id"]
     }
+
+
+@pytest.mark.parametrize("file_count,chunk_limit,point_limit", [
+    (1, 40, 20), (2, 60, 24), (3, 80, 28), (4, 100, 32), (5, 120, 36),
+])
+def test_note_selection_limits_and_coverage(system, file_count, chunk_limit, point_limit):
+    first = ready_document(system)
+    template = next(chunk for chunk in system.store.chunks
+                    if chunk["document_id"] == first["document_id"])
+    document_ids = []
+    system.store.chunks = []
+    for file_index in range(file_count):
+        document_id = f"selection-{file_index}"
+        document_ids.append(document_id)
+        system.store.put("document", document_id, {
+            **first, "document_id": document_id, "file_name": "同名讲义.pptx",
+        })
+        system.store.chunks.extend({
+            **template, "document_id": document_id,
+            "chunk_id": f"{document_id}-{ordinal}", "chunk_ordinal": ordinal,
+            "content": f"可核对知识点 {file_index}-{ordinal}",
+        } for ordinal in range(45))
+    plan = system._prepare_note_selection(
+        {"course_id": "net", "owner_id": "local-user"},
+        {"source_document_ids": document_ids, "scope": ""}, legacy=False,
+    )
+    assert plan["coverage"]["effective_files"] == file_count
+    assert plan["coverage"]["readable_chunks"] == 45 * file_count
+    assert plan["coverage"]["read_chunks"] == min(chunk_limit, 45 * file_count)
+    assert plan["point_limit"] == point_limit
+    assert plan["batch_limits"] and sum(plan["batch_limits"]) <= point_limit
+    assert [item["document_id"] for item in plan["evidence"][:file_count]] == document_ids
+    assert len(plan["coverage"]["files"]) == file_count
+
+
+def test_short_note_file_reallocates_unused_chunk_budget(system):
+    first = ready_document(system)
+    template = next(chunk for chunk in system.store.chunks
+                    if chunk["document_id"] == first["document_id"])
+    system.store.chunks = []
+    ids = [f"short-{index}" for index in range(5)]
+    for index, document_id in enumerate(ids):
+        system.store.put("document", document_id, {
+            **first, "document_id": document_id, "file_name": f"第{index}份.pptx",
+        })
+        system.store.chunks.extend({
+            **template, "document_id": document_id,
+            "chunk_id": f"{document_id}-{ordinal}", "chunk_ordinal": ordinal,
+            "content": f"知识点 {index}-{ordinal}",
+        } for ordinal in range(2 if index == 0 else 40))
+    plan = system._prepare_note_selection(
+        {"course_id": "net", "owner_id": "local-user"},
+        {"source_document_ids": ids, "scope": ""}, legacy=False,
+    )
+    assert len(plan["evidence"]) == 120
+    assert plan["coverage"]["files"][0]["read_chunks"] == 2
+    assert sum(file["read_chunks"] for file in plan["coverage"]["files"][1:]) == 118
+
+
+def test_chapter_coverage_denominator_excludes_other_chapters(system):
+    first = ready_document(system)
+    first["file_name"] = "1.基础.pptx"
+    system.store.put("document", first["document_id"], first)
+    other = {**first, "document_id": "chapter-three", "file_name": "3.进阶.pptx"}
+    system.store.put("document", other["document_id"], other)
+    template = next(chunk for chunk in system.store.chunks
+                    if chunk["document_id"] == first["document_id"])
+    system.store.chunks = [
+        {**template, "document_id": document["document_id"],
+         "chunk_id": f"chapter-{index}", "chunk_ordinal": index,
+         "content": f"可核对内容 {index}"}
+        for index, document in enumerate((first, other))
+    ]
+    plan = system._prepare_note_selection(
+        {"course_id": "net", "owner_id": "local-user"},
+        {"source_document_ids": [first["document_id"], other["document_id"]],
+         "scope": "第一章"}, legacy=False,
+    )
+    assert plan["coverage"]["selected_files"] == 2
+    assert plan["coverage"]["effective_files"] == 1
+    assert plan["coverage"]["readable_chunks"] == 1
+    assert plan["coverage"]["files"][1]["readable_chunks"] == 0
+
+
+def test_note_batch_repairs_over_budget_points_before_verification(system):
+    document = ready_document(system)
+    original_note = system.model.note
+    calls = []
+
+    def over_budget_once(data):
+        calls.append(data["batch_instruction"])
+        result = original_note(data)
+        if len(calls) == 1:
+            result["points"] = [{**result["points"][0], "heading": f"重复考点 {index}"}
+                                for index in range(6)]
+        return result
+
+    system.model.note = over_budget_once
+    result = system.invoke(AgentRequest(
+        course_id="net", session_id="repair-budget", message="生成笔记", intent="note",
+        note_input=NoteInput(note_type="key_points", duration_minutes=10,
+                             source_document_ids=[document["document_id"]]),
+    ), "local-user")
+    assert result.status == "completed"
+    assert len(calls) == 2
+    assert all("最多生成 5 个考点" in call for call in calls)
 
 
 def test_first_chapter_request_excludes_selected_third_chapter_file(system):
@@ -425,6 +531,44 @@ def test_first_chapter_request_excludes_selected_third_chapter_file(system):
     )
     assert result.status == "completed"
     assert {item["document_id"] for item in seen[0]} == {first["document_id"]}
+
+
+def test_teacher_emphasis_checks_both_chapters_and_prioritizes_them(system):
+    second = ready_document(system)
+    second["file_name"] = "2.HTTP.pptx"
+    system.store.put("document", second["document_id"], second)
+    third = {**second, "document_id": "third-document", "file_name": "3.JS.pptx"}
+    other = {**second, "document_id": "other-document", "file_name": "4.其他.pptx"}
+    system.store.put("document", third["document_id"], third)
+    system.store.put("document", other["document_id"], other)
+    template = next(chunk for chunk in system.store.chunks
+                    if chunk["document_id"] == second["document_id"])
+    system.store.chunks = [
+        {**template, "document_id": document["document_id"],
+         "chunk_id": f"{document['document_id']}-{index}", "chunk_ordinal": index,
+         "content": f"该文件的可核对内容 {index}"}
+        for document in (second, third, other) for index in range(25)
+    ]
+    seen = []
+    original_note = system.model.note
+
+    def capture_note(data):
+        seen.extend(data["evidence"])
+        return original_note(data)
+
+    system.model.note = capture_note
+    result = system.invoke(AgentRequest(
+        course_id="net", session_id="teacher-focus", message="生成笔记", intent="note",
+        note_input=NoteInput(note_type="chapter", duration_minutes=10,
+                             scope="老师说第2章和第3章是重点",
+                             source_document_ids=[second["document_id"],
+                                                  third["document_id"], other["document_id"]]),
+    ), "local-user")
+    assert result.status == "completed"
+    focused = {second["document_id"], third["document_id"]}
+    assert sum(item["document_id"] in focused for item in seen) > sum(
+        item["document_id"] == other["document_id"] for item in seen)
+    assert {item["document_id"] for item in seen} == focused | {other["document_id"]}
 
 
 def test_optional_writing_focus_promotes_relevant_late_chunk(system):

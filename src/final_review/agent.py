@@ -35,16 +35,29 @@ class SessionConflict(ValueError):
 
 
 class NoteProgress:
-    def __init__(self, completed: dict[str, dict], update: Callable[..., bool]):
+    def __init__(self, completed: dict[str, dict], update: Callable[..., bool],
+                 begin_publish: Callable[[], bool] | None = None,
+                 selection_plan: dict | None = None, policy_version: int = 2):
         self.completed = completed
         self.update = update
+        self._begin_publish = begin_publish
+        self.selection_plan = selection_plan
+        self.policy_version = policy_version
 
     def report(self, stage: str, *, batch_index: int | None = None,
-               batch_result: dict | None = None) -> None:
-        if not self.update(stage, batch_index=batch_index, batch_result=batch_result):
+               batch_result: dict | None = None,
+               selection_plan: dict | None = None) -> None:
+        if not self.update(stage, batch_index=batch_index, batch_result=batch_result,
+                           selection_plan=selection_plan):
             raise SessionConflict("笔记任务租约已失效")
         if batch_index is not None and batch_result is not None:
             self.completed[str(batch_index)] = batch_result
+        if selection_plan is not None:
+            self.selection_plan = selection_plan
+
+    def begin_publish(self) -> None:
+        if self._begin_publish and not self._begin_publish():
+            raise SessionConflict("笔记任务租约已失效")
 
 
 _note_progress: ContextVar[NoteProgress | None] = ContextVar("note_progress", default=None)
@@ -58,16 +71,17 @@ def reset_note_progress(token: Token) -> None:
     _note_progress.reset(token)
 
 
-def _chapter_requirement(scope: str) -> tuple[str, str] | None:
-    match = re.search(r"第\s*([一二三四五六七八九十\d]+)\s*章", scope.lower())
-    if not match:
-        return None
-    chapter = match.group(0).replace(" ", "")
-    number = match.group(1)
+def _chapter_requirements(scope: str) -> list[tuple[str, str]]:
     chinese_numbers = "一二三四五六七八九十"
-    if number in chinese_numbers:
-        number = str(chinese_numbers.index(number) + 1)
-    return chapter, number
+    chapters = []
+    for match in re.finditer(r"第\s*([一二三四五六七八九十\d]+)\s*章", scope.lower()):
+        chapter = match.group(0).replace(" ", "")
+        number = match.group(1)
+        if number in chinese_numbers:
+            number = str(chinese_numbers.index(number) + 1)
+        if (chapter, number) not in chapters:
+            chapters.append((chapter, number))
+    return chapters
 
 
 def _file_matches_chapter(file_name: str, chapter_field: str,
@@ -330,6 +344,7 @@ class FinalReviewAgent:
                 status=payload["status"],
                 questions=payload.get("questions", []),
                 prompt=payload.get("prompt"),
+                note_config=state.get("note_input") if state.get("intent") == "note" else None,
                 weak_points=state.get("weak_points", []),
             )
         return AgentResponse.model_validate(state["response"])
@@ -384,9 +399,7 @@ class FinalReviewAgent:
             available.add(document["document_id"])
         if selected != available:
             raise ValueError("所选资料不存在、不可用或不属于当前课程")
-        chapter_request = _chapter_requirement(note.scope)
-        if chapter_request:
-            chapter, number = chapter_request
+        for chapter, number in _chapter_requirements(note.scope):
             matching = False
             for document_id in note.source_document_ids:
                 document = self.store.get("document", document_id)
@@ -442,7 +455,7 @@ class FinalReviewAgent:
         return {"note_input": config, "response": response.model_dump(mode="json")}
 
     def _generate_note_batch(self, request, config, evidence, batch_index, batch_total,
-                             progress: NoteProgress | None):
+                             progress: NoteProgress | None, point_limit: int):
         lookup = {item["chunk_id"]: item for item in evidence}
         issues = []
         for _ in range(self.settings.max_repairs + 1):
@@ -450,15 +463,15 @@ class FinalReviewAgent:
                 generated = GeneratedNote.model_validate(self.model.note({
                     "note_config": config, "evidence": evidence, "issues_to_fix": issues,
                     "batch_index": batch_index + 1, "batch_total": batch_total,
-                    "batch_instruction": "本批生成一至五个考点，逐字引用本批原文；不要输出批次字样"
-                    if batch_total > 1 else "生成完整笔记",
+                    "batch_instruction": (f"本批最多生成 {point_limit} 个考点，逐字引用本批原文；"
+                                          "不要输出批次字样"),
                 }))
             except (ModelError, ValueError):
                 return self._extractive_note_batch(evidence, config["note_type"],
-                                                   "模型响应格式错误")
+                                                   "模型响应格式错误", point_limit)
             points, issues = [], []
-            if batch_total > 1 and len(generated.points) > 5:
-                issues.append("本批超过五个考点，请保留最重要的五个")
+            if len(generated.points) > point_limit:
+                issues.append(f"本批超过 {point_limit} 个考点，请保留最重要的内容")
             for index, point in enumerate(generated.points, 1):
                 refs = []
                 for citation in point.citations:
@@ -495,17 +508,18 @@ class FinalReviewAgent:
                     })
                 except ModelError:
                     return self._extractive_note_batch(evidence, config["note_type"],
-                                                       "模型核对响应格式错误")
+                                                       "模型核对响应格式错误", point_limit)
                 if not verdict["supported"]:
                     issues = verdict["issues"] or ["考点未通过语义证据校验"]
             if not issues:
                 return {"title": generated.title, "points": points,
                         "source_ids": [item["chunk_id"] for item in evidence]}
         return self._extractive_note_batch(evidence, config["note_type"],
-                                           "生成内容未通过来源核对")
+                                           "生成内容未通过来源核对", point_limit)
 
     @staticmethod
-    def _extractive_note_batch(evidence: list[dict], note_type: str, reason: str) -> dict:
+    def _extractive_note_batch(evidence: list[dict], note_type: str, reason: str,
+                               point_limit: int = 5) -> dict:
         """Grounded fallback: only copy text already present in selected source chunks."""
         points = []
         for source in evidence:
@@ -528,7 +542,7 @@ class FinalReviewAgent:
                     "source_type": source["source_type"],
                 }],
             })
-            if len(points) == 5:
+            if len(points) == point_limit:
                 break
         if not points:
             raise ValueError("所选资料片段均为空，无法生成笔记")
@@ -537,7 +551,7 @@ class FinalReviewAgent:
                 "fallback_reason": reason}
 
     @staticmethod
-    def _merge_note_batches(results: list[dict]) -> list[dict]:
+    def _merge_note_batches(results: list[dict], point_limit: int = 20) -> list[dict]:
         """Combine already-verified points without asking the model to invent citations."""
         merged: list[dict] = []
         by_heading: dict[tuple[str, bool], dict] = {}
@@ -563,16 +577,27 @@ class FinalReviewAgent:
                     if existing["provenance"] != "ai_supplement":
                         sources = {ref["document_id"] for ref in existing["references"]}
                         existing["provenance"] = "synthesis" if len(sources) > 1 else "source"
-        for index, point in enumerate(merged[:20], 1):
+        if len(merged) > point_limit:
+            raise ValueError("合并后的笔记超过预分配的成品额度")
+        for index, point in enumerate(merged, 1):
             point["point_id"] = f"p{index}"
-        return merged[:20]
+        return merged
 
-    def _note_generate(self, state):
-        request, config = state["request"], state["note_input"]
-        progress = _note_progress.get()
-        if progress:
-            progress.report("正在整理资料")
+    @staticmethod
+    def _note_limits(file_count: int) -> tuple[int, int]:
+        return 20 + 20 * file_count, 16 + 4 * file_count
+
+    @staticmethod
+    def _batch_point_limits(batch_count: int, total_limit: int) -> list[int]:
+        # A batch of roughly ten excerpts can contribute at most five points.
+        allocated = min(total_limit, batch_count * 5)
+        return [allocated // batch_count + (index < allocated % batch_count)
+                for index in range(batch_count)]
+
+    def _prepare_note_selection(self, request: dict, config: dict,
+                                legacy: bool) -> dict | None:
         grouped = {}
+        file_names = {}
         for document_id in config["source_document_ids"]:
             document = self.store.get("document", document_id)
             if (
@@ -582,54 +607,98 @@ class FinalReviewAgent:
                 or document.get("parse_status") != "ready"
             ):
                 raise ValueError("所选资料已不可用")
+            file_names[document_id] = document.get("file_name") or document["title"]
             grouped[document_id] = []
             for chunk in self.store.list_material_chunks(document_id):
-                grouped[document_id].append(
-                    {
-                        "chunk_id": chunk["chunk_id"],
-                        "document_id": document_id,
-                        "title": document["title"],
-                        "file_name": document.get("file_name") or document["title"],
-                        "source_type": document["source_type"],
-                        "content": chunk["content"],
-                        "position_kind": chunk.get("position_kind", "document"),
-                        "position": chunk.get("position"),
-                        "chapter": document.get("chapter", ""),
-                        "ordinal": chunk.get("chunk_ordinal", 0),
-                    }
-                )
+                if not chunk["content"].strip():
+                    continue
+                grouped[document_id].append({
+                    "chunk_id": chunk["chunk_id"], "document_id": document_id,
+                    "title": document["title"], "file_name": file_names[document_id],
+                    "source_type": document["source_type"], "content": chunk["content"],
+                    "position_kind": chunk.get("position_kind", "document"),
+                    "position": chunk.get("position"), "chapter": document.get("chapter", ""),
+                    "ordinal": chunk.get("chunk_ordinal", 0),
+                })
         scope = config["scope"].strip().lower()
-        chapter_request = _chapter_requirement(scope)
-        if chapter_request:
-            chapter, chapter_number = chapter_request
+        chapter_requests = _chapter_requirements(scope)
+        restrict_chapters = bool(chapter_requests) and not any(
+            term in scope for term in ("重点", "侧重", "着重", "优先")
+        )
+        if restrict_chapters:
             matched = {}
             for document_id, items in grouped.items():
                 if not items:
                     continue
-                file_matches = _file_matches_chapter(
-                    items[0]["file_name"], items[0]["chapter"], chapter, chapter_number
-                )
-                relevant = items if file_matches else [
-                    item for item in items if chapter in item["content"].replace(" ", "")
-                ]
+                file_matches = any(_file_matches_chapter(
+                    items[0]["file_name"], items[0]["chapter"], chapter, number,
+                ) for chapter, number in chapter_requests)
+                relevant = items if file_matches else [item for item in items if any(
+                    chapter in item["content"].replace(" ", "")
+                    for chapter, _ in chapter_requests
+                )]
                 if relevant:
                     matched[document_id] = relevant
             if not matched:
-                raise ValueError(f"所选资料中未找到“{chapter}”的明确内容，请调整资料或写作要求")
+                raise ValueError("所选资料中未找到指定章节的明确内容，请调整资料或写作要求")
             grouped = matched
         terms = _focus_terms(scope)
         for items in grouped.values():
             items.sort(key=lambda item: (
+                -sum(_file_matches_chapter(item["file_name"], item["chapter"],
+                                           chapter, number) or
+                     chapter in item["content"].replace(" ", "")
+                     for chapter, number in chapter_requests),
                 -sum(term in item["content"].lower() for term in terms),
                 item["ordinal"],
             ))
+        counts = {document_id: len(items) for document_id, items in grouped.items()}
+        effective_count = sum(count > 0 for count in counts.values())
+        if not effective_count:
+            return None
+        chunk_limit, point_limit = ((40, 20) if legacy else
+                                    self._note_limits(effective_count))
+        document_order = list(grouped)
         evidence = []
-        while len(evidence) < 40 and any(grouped.values()):
-            for items in grouped.values():
-                if items and len(evidence) < 40:
+        read_counts = {document_id: 0 for document_id in config["source_document_ids"]}
+        while len(evidence) < chunk_limit and any(grouped.values()):
+            for document_id in document_order:
+                items = grouped[document_id]
+                if items and len(evidence) < chunk_limit:
                     evidence.append(items.pop(0))
-        if not evidence:
+                    read_counts[document_id] += 1
+        batches = ([evidence[index:index + 10] for index in range(0, len(evidence), 10)]
+                   if len(evidence) > 12 else [evidence])
+        coverage = {
+            "selected_files": len(config["source_document_ids"]),
+            "effective_files": effective_count,
+            "readable_chunks": sum(counts.values()),
+            "read_chunks": len(evidence),
+            "partial": len(evidence) < sum(counts.values()),
+            "files": [{"document_id": document_id, "file_name": file_names[document_id],
+                       "readable_chunks": counts.get(document_id, 0),
+                       "read_chunks": read_counts[document_id]}
+                      for document_id in config["source_document_ids"]],
+        }
+        return {"evidence": evidence, "coverage": coverage, "point_limit": point_limit,
+                "batch_limits": ([5] * len(batches) if legacy else
+                                 self._batch_point_limits(len(batches), point_limit))}
+
+    def _note_generate(self, state):
+        request, config = state["request"], state["note_input"]
+        progress = _note_progress.get()
+        if progress:
+            progress.report("正在整理资料")
+        plan = progress.selection_plan if progress else None
+        if plan is None:
+            plan = self._prepare_note_selection(
+                request, config, legacy=bool(progress and progress.policy_version < 2)
+            )
+            if plan and progress:
+                progress.report("已固定本次取材", selection_plan=plan)
+        if not plan:
             return {"response": self._note_refusal(request["session_id"])}
+        evidence = plan["evidence"]
         batches = [evidence[index:index + 10] for index in range(0, len(evidence), 10)] \
             if len(evidence) > 12 else [evidence]
         results = []
@@ -643,6 +712,7 @@ class FinalReviewAgent:
                     progress.report(f"正在生成第 {index + 1}/{len(batches)} 部分")
                 result = self._generate_note_batch(
                     request, config, batch, index, len(batches), progress,
+                    plan["batch_limits"][index],
                 )
                 if result is None:
                     return {"response": self._note_refusal(request["session_id"])}
@@ -652,7 +722,7 @@ class FinalReviewAgent:
             results.append(result)
         if progress:
             progress.report("正在合并与去重")
-        points = self._merge_note_batches(results)
+        points = self._merge_note_batches(results, plan["point_limit"])
         if progress:
             progress.report("正在核对整份笔记")
         available = {item["chunk_id"]: item for item in evidence}
@@ -669,6 +739,7 @@ class FinalReviewAgent:
                 raise ValueError("合并后的笔记来源类型不匹配")
         if progress:
             progress.report("正在保存草稿")
+            progress.begin_publish()
         fallback_count = sum(bool(result.get("fallback_reason")) for result in results)
         fallback_reasons = "、".join(sorted({result["fallback_reason"] for result in results
                                              if result.get("fallback_reason")}))
@@ -676,7 +747,15 @@ class FinalReviewAgent:
                        results[0]["title"]).strip()
         if fallback_count:
             title = f"{title}（含 {fallback_count} 部分资料摘录）"
-        lines = [f"# {title}"]
+        coverage = plan["coverage"]
+        coverage_text = (f"已选 {coverage['selected_files']} 份资料；共有 "
+                         f"{coverage['readable_chunks']} 个可读片段；本次读取 "
+                         f"{coverage['read_chunks']} 个"
+                         f"{'，部分覆盖' if coverage['partial'] else '，已读取范围内全部片段'}。")
+        lines = [f"# {title}", "", coverage_text]
+        for file in coverage["files"]:
+            lines.append(f"- {file['file_name']}（{file['document_id'][:8]}）：读取 "
+                         f"{file['read_chunks']}/{file['readable_chunks']} 个片段")
         for point in points:
             label = {"source": "资料来源", "synthesis": "综合改编", "ai_supplement": "AI 补充"}[
                 point["provenance"]
@@ -689,6 +768,7 @@ class FinalReviewAgent:
                 "markdown": "\n".join(lines),
                 "note_type": config["note_type"],
                 "points": points,
+                "coverage": coverage,
             },
             state["run_id"],
         )

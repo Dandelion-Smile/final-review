@@ -100,6 +100,8 @@ class ReviewModel:
         return self.structured(
             NoteExtraction,
             "只提取用户明确表达的笔记类型、考试或章节范围、目标阅读分钟数、重点、受众水平和资料来源类别。"
+            "用户要求背诵、强调老师说的重点章节、希望详略如何安排等生成要求写入scope；"
+            "保留原意，不把用户转述的老师意见当作已由资料验证的事实。"
             "四类类型分别为 chapter、key_points、qa_cards、mnemonic。没有说出的字段留空；"
             "不要推测资料 ID、默认范围或默认时长。",
             {"message": request["message"]},

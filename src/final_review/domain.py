@@ -316,6 +316,7 @@ class DomainService:
                 "markdown": payload["markdown"],
                 "note_type": payload["note_type"],
                 "points": payload["points"],
+                "coverage": payload.get("coverage"),
                 "source_document_ids": sorted(
                     {
                         ref["document_id"]

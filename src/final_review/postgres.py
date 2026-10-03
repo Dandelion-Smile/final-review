@@ -8,7 +8,8 @@ binds every request to the authenticated user before any read or write.
 import json
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
-from hashlib import md5
+from hashlib import md5, sha256
+from pathlib import Path
 from threading import Lock, local
 from weakref import WeakSet
 
@@ -427,7 +428,50 @@ class PostgresStore:
                 existing = self.find_material_job(job["course_id"], job["idempotency_key"])
                 if existing:
                     return existing
+            duplicate = self.find_duplicate_material(
+                job["course_id"], document["file_name"], document["content_sha256"],
+            )
+            if duplicate and duplicate["job"]:
+                return duplicate["job"]
             raise StorageError("资料任务创建冲突") from exc
+
+    def find_duplicate_material(self, course_id: str, file_name: str,
+                                content_sha256: str) -> dict | None:
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT data FROM documents WHERE user_id=%s AND course_id=%s "
+                "AND data->>'file_name'=%s AND data->>'content_sha256'=%s "
+                "AND data->>'parse_status'<>'deleted' LIMIT 1",
+                (self._user(), course_id, file_name, content_sha256),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                cursor.execute(
+                    "SELECT data FROM documents WHERE user_id=%s AND course_id=%s "
+                    "AND data->>'file_name'=%s AND NOT data ? 'content_sha256' "
+                    "AND data->>'parse_status'<>'deleted'",
+                    (self._user(), course_id, file_name),
+                )
+                for legacy in cursor.fetchall():
+                    path_value = legacy["data"].get("file_path")
+                    if not path_value:
+                        continue
+                    path = Path(path_value)
+                    if not path.is_absolute():
+                        path = Path(__file__).resolve().parents[2] / path
+                    if path.is_file() and path.stat().st_size <= 50 * 1024 * 1024:
+                        if sha256(path.read_bytes()).hexdigest() == content_sha256:
+                            row = legacy
+                            break
+        if not row:
+            return None
+        document = row["data"]
+        with self.connection.cursor() as cursor:
+            cursor.execute("SELECT * FROM material_jobs WHERE user_id=%s AND "
+                           "document_id=%s ORDER BY created_at DESC LIMIT 1",
+                           (self._user(), document["document_id"]))
+            job_row = cursor.fetchone()
+        return {"document": document, "job": self._job(job_row) if job_row else None}
 
     @staticmethod
     def _job(row: dict) -> dict:
@@ -485,7 +529,7 @@ class PostgresStore:
 
                     job = {**job, "status": "running", "attempts": attempts,
                            "lease_until": (datetime.now(UTC) + timedelta(minutes=15)).isoformat(),
-                           "error": None}
+                           "error": None, "publish_started": False}
                 cursor.execute("UPDATE note_jobs SET data=%s WHERE record_key=%s",
                                (Jsonb(job), row["record_key"]))
         return {**job, "user_id": str(row["user_id"])} if job["status"] == "running" else None
@@ -502,14 +546,54 @@ class PostgresStore:
                         or row["data"]["attempts"] != attempt):
                     return False
                 job = {**row["data"], "status": "failed" if error else "succeeded",
-                       "result": result, "error": error, "lease_until": None}
+                       "result": result, "error": error, "lease_until": None,
+                       "publish_started": (False if error else
+                                           row["data"].get("publish_started", False))}
+                cursor.execute("UPDATE note_jobs SET data=%s WHERE record_key=%s",
+                               (Jsonb(job), job_id))
+        return True
+
+    def cancel_note_job(self, job_id: str) -> str:
+        """Cancel a queued/running job unless final draft publication has begun."""
+        with self.transaction():
+            with self.connection.cursor() as cursor:
+                cursor.execute("SELECT data FROM note_jobs WHERE record_key=%s AND user_id=%s "
+                               "FOR UPDATE", (job_id, self._user()))
+                row = cursor.fetchone()
+                if row is None:
+                    return "missing"
+                job = row["data"]
+                if job["status"] == "cancelled":
+                    return "cancelled"
+                if job["status"] not in {"queued", "running", "failed"}:
+                    return "completed"
+                if job.get("publish_started"):
+                    return "publishing"
+                job = {**job, "status": "cancelled", "lease_until": None,
+                       "error": None, "partial_batches": {}}
+                cursor.execute("UPDATE note_jobs SET data=%s WHERE record_key=%s",
+                               (Jsonb(job), job_id))
+        return "cancelled"
+
+    def begin_note_publish(self, job_id: str, attempt: int) -> bool:
+        """Fence cancellation before the first draft write."""
+        with self.transaction():
+            with self.connection.cursor() as cursor:
+                cursor.execute("SELECT data FROM note_jobs WHERE record_key=%s AND user_id=%s "
+                               "FOR UPDATE", (job_id, self._user()))
+                row = cursor.fetchone()
+                if (not row or row["data"]["status"] != "running"
+                        or row["data"]["attempts"] != attempt):
+                    return False
+                job = {**row["data"], "publish_started": True}
                 cursor.execute("UPDATE note_jobs SET data=%s WHERE record_key=%s",
                                (Jsonb(job), job_id))
         return True
 
     def update_note_job_progress(self, job_id: str, attempt: int, stage: str,
                                  *, batch_index: int | None = None,
-                                 batch_result: dict | None = None) -> bool:
+                                 batch_result: dict | None = None,
+                                 selection_plan: dict | None = None) -> bool:
         """Save completed batches before the graph node commits its checkpoint."""
         with self.transaction():
             with self.connection.cursor() as cursor:
@@ -520,6 +604,8 @@ class PostgresStore:
                         or row["data"]["attempts"] != attempt):
                     return False
                 job = {**row["data"], "stage": stage}
+                if selection_plan is not None:
+                    job["selection_plan"] = selection_plan
                 if batch_index is not None and batch_result is not None:
                     job["partial_batches"] = {**job.get("partial_batches", {}),
                                               str(batch_index): batch_result}

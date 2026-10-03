@@ -42,15 +42,41 @@ class MemoryStore:
             if job["status"] != "running" or job["attempts"] != attempt:
                 return False
             job.update(status="failed" if error else "succeeded", result=result, error=error)
+            if error:
+                job["publish_started"] = False
+            return True
+
+    def cancel_note_job(self, job_id):
+        with self.lock:
+            job = self.tables["note_job"].get(job_id)
+            if job is None:
+                return "missing"
+            if job["status"] == "cancelled":
+                return "cancelled"
+            if job["status"] not in {"queued", "running", "failed"}:
+                return "completed"
+            if job.get("publish_started"):
+                return "publishing"
+            job.update(status="cancelled", lease_until=None, error=None, partial_batches={})
+            return "cancelled"
+
+    def begin_note_publish(self, job_id, attempt):
+        with self.lock:
+            job = self.tables["note_job"][job_id]
+            if job["status"] != "running" or job["attempts"] != attempt:
+                return False
+            job["publish_started"] = True
             return True
 
     def update_note_job_progress(self, job_id, attempt, stage, *,
-                                 batch_index=None, batch_result=None):
+                                 batch_index=None, batch_result=None, selection_plan=None):
         with self.lock:
             job = self.tables["note_job"][job_id]
             if job["status"] != "running" or job["attempts"] != attempt:
                 return False
             job["stage"] = stage
+            if selection_plan is not None:
+                job["selection_plan"] = deepcopy(selection_plan)
             if batch_index is not None and batch_result is not None:
                 job.setdefault("partial_batches", {})[str(batch_index)] = deepcopy(batch_result)
             return True
@@ -180,6 +206,19 @@ class MemoryStore:
             None,
         )
 
+    def find_duplicate_material(self, course_id, file_name, content_sha256):
+        with self.lock:
+            for document in self.tables.get("document", {}).values():
+                if (document.get("course_id") == course_id
+                        and document.get("file_name") == file_name
+                        and document.get("content_sha256") == content_sha256
+                        and document.get("parse_status") != "deleted"):
+                    job = next((row for row in self.tables.get("material_job", {}).values()
+                                if row["document_id"] == document["document_id"]), None)
+                    return {"document": deepcopy(document),
+                            "job": deepcopy(job) if job else None}
+        return None
+
     def get_material_job(self, job_id):
         return self.get("material_job", job_id)
 
@@ -288,9 +327,10 @@ class ScriptedModel:
         return "note" if "笔记" in request["message"] else "ask"
 
     def note_request(self, request):
+        message = request["message"]
         return {
             "note_type": None,
-            "scope": "",
+            "scope": "重点处理第二章和第三章，适合背诵" if "老师说" in message else "",
             "duration_minutes": None,
             "emphasis": [],
             "audience_level": None,

@@ -7,6 +7,7 @@ SOURCE_PRIORITY = {
     SourceType.teacher_ppt: 3,
     SourceType.homework: 2,
     SourceType.other_practice: 1,
+    SourceType.external_upload: 1,
     SourceType.crash_course: 1,
     SourceType.ai_supplement: 0,
 }
@@ -15,6 +16,7 @@ SOURCE_LABELS = {
     SourceType.teacher_ppt: "老师PPT",
     SourceType.homework: "平时作业",
     SourceType.other_practice: "其他练习",
+    SourceType.external_upload: "外部上传",
     SourceType.crash_course: "速成课",
     SourceType.ai_supplement: "AI补充",
 }

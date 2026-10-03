@@ -52,7 +52,8 @@ def process_note_job(store, agent: FinalReviewAgent, job: dict) -> None:
         lease_thread = Thread(target=heartbeat, name="note-job-heartbeat", daemon=True)
         lease_thread.start()
 
-    def update_progress(current_stage: str, *, batch_index=None, batch_result=None) -> bool:
+    def update_progress(current_stage: str, *, batch_index=None, batch_result=None,
+                        selection_plan=None) -> bool:
         nonlocal stage
         if lost_lease.is_set():
             return False
@@ -60,10 +61,14 @@ def process_note_job(store, agent: FinalReviewAgent, job: dict) -> None:
         return store.update_note_job_progress(
             job["job_id"], job["attempts"], current_stage,
             batch_index=batch_index, batch_result=batch_result,
+            selection_plan=selection_plan,
         )
 
     progress_token = bind_note_progress(NoteProgress(
         completed=job.get("partial_batches", {}).copy(), update=update_progress,
+        begin_publish=lambda: store.begin_note_publish(job["job_id"], job["attempts"]),
+        selection_plan=job.get("selection_plan"),
+        policy_version=job.get("note_policy_version", 1),
     ))
     try:
         request = ResumeNoteRequest(
@@ -73,7 +78,7 @@ def process_note_job(store, agent: FinalReviewAgent, job: dict) -> None:
         try:
             result = agent.resume_note(request, job["user_id"])
         except SessionConflict as exc:
-            if "租约已失效" in str(exc):
+            if "租约已失效" in str(exc) or "笔记任务已取消" in str(exc):
                 raise
             # A prior worker may have passed the interrupt before losing its lease.
             result = agent.recover(job["course_id"], job["session_id"])
@@ -106,6 +111,8 @@ def process_note_job(store, agent: FinalReviewAgent, job: dict) -> None:
                       {**conversation, "active_note": active,
                        "updated_at": datetime.now(UTC).isoformat()})
     except Exception as exc:
+        if (store.get("note_job", job["job_id"]) or {}).get("status") == "cancelled":
+            return
         logger.exception("笔记任务处理失败: %s", job["job_id"])
         timed_out = isinstance(exc, (APITimeoutError, TimeoutError)) or any(
             cls.__name__ == "OpenAITimeoutError" for cls in type(exc).__mro__

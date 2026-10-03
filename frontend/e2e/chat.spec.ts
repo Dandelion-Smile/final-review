@@ -6,10 +6,10 @@ test("chat switches models and sends conversation history", async ({ page, reque
   await page.route("**/api/chat/models", route => route.fulfill({
     json: { items: [{ id: "deepseek", label: "DeepSeek" }, { id: "gemini", label: "Gemini 3 Flash" }] },
   }));
-  await page.route("**/api/chat", async route => {
+  await page.route("**/api/chat/dispatch", async route => {
     const body = route.request().postDataJSON();
     calls.push(body);
-    await route.fulfill({ json: { reply: calls.length === 1 ? "第一条回复" : "第二条回复", model: body.model_id === "gemini" ? "Gemini 3 Flash" : "DeepSeek", citations: [] } });
+    await route.fulfill({ json: { kind: "chat", intent: "ask", reply: calls.length === 1 ? "第一条回复" : "第二条回复", model: body.model_id === "gemini" ? "Gemini 3 Flash" : "DeepSeek" } });
   });
   await page.route("**/api/courses/*/conversations/*/messages", route => route.fulfill({ json: { items: calls.flatMap((call, index) => [
     { role: "user", content: call.message }, { role: "assistant", content: index === 0 ? "第一条回复" : "第二条回复" },
@@ -41,7 +41,7 @@ test("chat switches models and sends conversation history", async ({ page, reque
   await expect(page.getByText("第二条回复")).toBeVisible();
   expect(calls.map(call => call.model_id)).toEqual(["deepseek", "gemini"]);
   expect(calls[1].conversation_id).toBe(calls[0].conversation_id);
-  expect(calls[1].mode).toBe("direct");
+  expect(calls[1].mode).toBeUndefined();
 });
 
 test("note request creates an openable sourced draft", async ({ page, request }) => {
@@ -93,6 +93,8 @@ test("note request creates an openable sourced draft", async ({ page, request })
   const preview = page.getByRole("dialog", { name: "笔记草稿预览" });
   await expect(preview).toContainText("三次握手");
   await expect(preview).toContainText("TCP 讲义");
+  await expect(preview).toContainText("已选 1 份资料");
+  await expect(preview).toContainText("读取 1/1 个片段");
   await expect(preview.getByRole("link", { name: /查看 \d+ 处引用/ })).toBeVisible();
   await page.route("**/api/courses/*/material-jobs", route => route.fulfill({ status: 500, json: {} }));
   await preview.getByRole("link", { name: /查看 \d+ 处引用/ }).first().click();
@@ -185,6 +187,37 @@ test("note material picker distinguishes duplicates and excludes failed files", 
   await page.getByRole("dialog", { name: "选择生成依据" }).screenshot({ path: "test-results/note-source-picker-mobile.png" });
 });
 
+test("note picker keeps five selections when a sixth is clicked", async ({ page, request }) => {
+  await request.post("http://127.0.0.1:8081/test/reset");
+  const course = await (await request.post("http://127.0.0.1:8081/api/courses", {
+    data: { name: "五份资料上限" },
+  })).json();
+  await page.route("**/api/chat/models", route => route.fulfill({
+    json: { items: [{ id: "review", label: "Review" }] },
+  }));
+  await page.route("**/api/courses/*/documents", route => route.fulfill({
+    json: { items: Array.from({ length: 6 }, (_, index) => ({
+      document_id: `selection-${index}`, title: `讲义 ${index}.pptx`,
+      file_name: `讲义 ${index}.pptx`, source_type: "teacher_ppt", parse_status: "ready",
+    })) },
+  }));
+  await page.goto(`/#chat/${course.course_id}`);
+  await expect(page.getByRole("button", { name: "选择聊天模型" })).toContainText("Review");
+  await page.getByRole("textbox", { name: /输入你的问题/ }).fill("生成笔记");
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await page.getByRole("button", { name: "选择资料" }).click();
+  const picker = page.getByRole("dialog", { name: "选择生成依据" });
+  for (let index = 0; index < 5; index++) {
+    await picker.getByRole("checkbox", { name: new RegExp(`选择 讲义 ${index}`) }).check();
+  }
+  await picker.getByRole("checkbox", { name: /选择 讲义 5/ }).click();
+  await expect(picker.getByRole("alert")).toContainText("最多选择 5 份");
+  await expect(picker.getByRole("checkbox", { checked: true })).toHaveCount(5);
+  await picker.getByRole("checkbox", { name: /选择 讲义 0/ }).uncheck();
+  await picker.getByRole("checkbox", { name: /选择 讲义 5/ }).check();
+  await expect(picker.getByRole("checkbox", { checked: true })).toHaveCount(5);
+});
+
 test("note request keeps the form open when chapter does not match chosen material", async ({ page, request }) => {
   await request.post("http://127.0.0.1:8081/test/reset");
   const course = await (await request.post("http://127.0.0.1:8081/api/courses", { data: { name: "Web 服务端" } })).json();
@@ -218,7 +251,6 @@ test("note config keeps composer fixed and cancellation restores ordinary chat",
   await request.post("http://127.0.0.1:8081/test/reset");
   const course = await (await request.post("http://127.0.0.1:8081/api/courses", { data: { name: "计算机网络" } })).json();
   await page.route("**/api/chat/models", route => route.fulfill({ json: { items: [{ id: "review", label: "Review" }] } }));
-  await page.route("**/api/chat", route => route.fulfill({ json: { reply: "可以继续聊天", model: "Review", citations: [] } }));
   await page.goto(`/#chat/${course.course_id}`);
   await expect(page.getByRole("button", { name: "选择聊天模型" })).toContainText("Review");
   const composer = page.locator(".composer");
@@ -254,6 +286,7 @@ test("note config keeps composer fixed and cancellation restores ordinary chat",
   await page.reload();
   await expect(page.getByRole("dialog", { name: "补充笔记要求" })).toHaveCount(0);
   await expect(page.getByText(/已取消笔记生成/)).toBeVisible();
+  await page.route("**/api/chat/dispatch", route => route.fulfill({ json: { kind: "chat", intent: "ask", reply: "可以继续聊天", model: "Review" } }));
   await page.getByRole("textbox", { name: /输入你的问题/ }).fill("现在可以聊天吗");
   await page.getByRole("button", { name: "发送消息" }).click();
   await expect(page.getByText("可以继续聊天", { exact: true })).toBeVisible();
@@ -268,7 +301,7 @@ test("course switcher restores ordinary chat and shows five recent conversations
   await page.route("**/api/chat/models", route => route.fulfill({ json: { items: [{ id: "review", label: "Review" }] } }));
   await page.route("**/api/courses/*/conversations", route => route.fulfill({ json: { items: route.request().url().includes(first.course_id) ? records : [{ conversation_id: "physics", title: "物理对话", updated_at: new Date().toISOString() }] } }));
   await page.route("**/api/courses/*/conversations/*/messages", route => route.fulfill({ json: { items: [{ role: "user", content: "旧问题" }, { role: "assistant", content: "旧回答" }, ...calls.map(call => ({ role: "user", content: call.message }))] } }));
-  await page.route("**/api/chat", route => { calls.push(route.request().postDataJSON()); return route.fulfill({ json: { reply: "继续回答", model: "Review", citations: [] } }); });
+  await page.route("**/api/chat/dispatch", route => { calls.push(route.request().postDataJSON()); return route.fulfill({ json: { kind: "chat", intent: "ask", reply: "继续回答", model: "Review" } }); });
   await page.goto(`/#chat/${first.course_id}/chat-0`);
   await expect(page.getByRole("button", { name: /课程管理/ })).toBeVisible();
   await expect(page.getByRole("button", { name: /课程与考试/ })).toHaveCount(0);
@@ -320,4 +353,203 @@ test("conversation can be renamed from chat title and history context menu", asy
   await expect(page.getByRole("button", { name: "期末重点" })).toBeVisible();
   await page.reload();
   await expect(page.getByRole("button", { name: "期末重点" })).toBeVisible();
+});
+
+for (const cancelBy of ["button", "message"] as const) {
+  test(`queued note can be cancelled by ${cancelBy}`, async ({ page, request }) => {
+    await request.post("http://127.0.0.1:8081/test/reset");
+    const course = await (await request.post("http://127.0.0.1:8081/api/courses", {
+      data: { name: "计算机网络" },
+    })).json();
+    await request.post("http://127.0.0.1:8081/knowledge/ingest", { data: {
+      course_id: course.course_id, title: "TCP 讲义", source_type: "teacher_ppt",
+      markdown: "TCP 三次握手同步初始序列号。",
+    } });
+    await page.route("**/api/chat/models", route => route.fulfill({
+      json: { items: [{ id: "review", label: "Review" }] },
+    }));
+    await page.goto(`/#chat/${course.course_id}`);
+    await page.getByRole("textbox", { name: /输入你的问题/ }).fill("生成笔记");
+    await page.getByRole("button", { name: "发送消息" }).click();
+    await page.getByRole("dialog", { name: "补充笔记要求" }).getByRole("button", { name: "选择资料" }).click();
+    const picker = page.getByRole("dialog", { name: "选择生成依据" });
+    await picker.getByRole("checkbox", { name: /选择 TCP 讲义/ }).check();
+    await picker.getByRole("button", { name: "确认选择" }).click();
+    await page.route("**/agent/queue-note*", route => route.fulfill({
+      json: { job_id: "queued-test", status: "queued" },
+    }));
+    let cancellationCalls = 0;
+    await page.route("**/agent/cancel-note*", route => {
+      cancellationCalls += 1;
+      return route.fulfill({ json: { cancelled: true } });
+    });
+    await page.getByRole("dialog", { name: "补充笔记要求" }).getByRole("button", { name: "生成笔记" }).click();
+    await expect(page.getByRole("button", { name: "取消生成" })).toBeVisible();
+    if (cancelBy === "button") {
+      await page.getByRole("status").screenshot({ path: "test-results/note-cancel-status.png" });
+      await page.getByRole("button", { name: "取消生成" }).click();
+    } else {
+      await page.getByRole("textbox", { name: /输入你的问题/ }).fill("取消生成");
+      await page.getByRole("button", { name: "发送消息" }).click();
+    }
+    await expect(page.getByText(/已取消笔记生成/)).toBeVisible();
+    await expect(page.getByRole("button", { name: "取消生成" })).toHaveCount(0);
+    expect(cancellationCalls).toBe(1);
+  });
+}
+
+test("note request prefills teacher emphasis and uploads an external source", async ({ page, request }) => {
+  await request.post("http://127.0.0.1:8081/test/reset");
+  const course = await (await request.post("http://127.0.0.1:8081/api/courses", {
+    data: { name: "Web 服务端" },
+  })).json();
+  await page.route("**/api/chat/models", route => route.fulfill({
+    json: { items: [{ id: "review", label: "Review" }], note_model: "qwen-plus" },
+  }));
+  await page.goto(`/#chat/${course.course_id}`);
+  await expect(page.getByRole("button", { name: "选择聊天模型" })).toContainText("Review");
+  await expect(page.getByText("今天想从哪里开始？")).toBeVisible();
+  await page.getByRole("textbox", { name: /输入你的问题/ }).fill(
+    "给我生成可以背诵的笔记，老师说第2章和第3章重点",
+  );
+  await page.getByRole("button", { name: "发送消息" }).click();
+  const dialog = page.getByRole("dialog", { name: "补充笔记要求" });
+  await expect(dialog.getByRole("textbox", { name: /写作要求/ })).toHaveValue(
+    "重点处理第二章和第三章，适合背诵",
+  );
+  await dialog.getByRole("textbox", { name: /写作要求/ }).fill("重点处理第二章和第三章，按简答题整理");
+  await page.reload();
+  await expect(dialog.getByRole("textbox", { name: /写作要求/ })).toHaveValue(
+    "重点处理第二章和第三章，按简答题整理",
+  );
+  await expect(dialog).toContainText("qwen-plus");
+  await dialog.getByRole("button", { name: "选择资料" }).click();
+  const picker = page.getByRole("dialog", { name: "选择生成依据" });
+  await picker.getByLabel("上传笔记资料文件").setInputFiles({
+    name: "chapter.md", mimeType: "text/markdown", buffer: Buffer.from("第二章 HTTP 基础知识。第三章服务器环境。"),
+  });
+  await picker.getByRole("button", { name: "上传并处理" }).click();
+  await expect(picker.getByText("外部上传")).toBeVisible();
+  await expect(picker.getByRole("button", { name: "确认选择" })).toBeEnabled();
+  await picker.screenshot({ path: "test-results/note-upload-picker.png" });
+  await picker.getByRole("button", { name: "确认选择" }).click();
+  await expect(dialog.getByText("chapter.md")).toBeVisible();
+  await dialog.getByRole("button", { name: "生成笔记" }).click();
+  await expect(page.getByRole("link", { name: /打开笔记草稿/ })).toBeVisible();
+});
+
+test("pending note upload blocks generation until removed", async ({ page, request }) => {
+  await request.post("http://127.0.0.1:8081/test/reset");
+  const course = await (await request.post("http://127.0.0.1:8081/api/courses", {
+    data: { name: "Web 服务端" },
+  })).json();
+  await page.route("**/api/chat/models", route => route.fulfill({
+    json: { items: [{ id: "review", label: "Review" }] },
+  }));
+  let uploaded = false;
+  await page.route("**/api/courses/*/documents", route => route.fulfill({ json: {
+    items: uploaded ? [{ document_id: "pending-doc", title: "pending.md",
+      file_name: "pending.md", source_type: "external_upload", parse_status: "queued" }] : [],
+  } }));
+  await page.route("**/api/courses/*/material-jobs", route => route.fulfill({
+    json: { items: uploaded ? [{ job_id: "pending-job", document_id: "pending-doc", status: "queued" }] : [] },
+  }));
+  await page.route("**/knowledge/upload", route => {
+    uploaded = true;
+    return route.fulfill({ status: 202, json: {
+      document_id: "pending-doc", job_id: "pending-job", status: "queued", reused: false,
+    } });
+  });
+  await page.goto(`/#chat/${course.course_id}`);
+  await expect(page.getByRole("button", { name: "选择聊天模型" })).toContainText("Review");
+  await page.getByRole("textbox", { name: /输入你的问题/ }).fill("生成笔记");
+  await page.getByRole("button", { name: "发送消息" }).click();
+  const dialog = page.getByRole("dialog", { name: "补充笔记要求" });
+  await dialog.getByRole("button", { name: "选择资料" }).click();
+  const picker = page.getByRole("dialog", { name: "选择生成依据" });
+  await picker.getByLabel("上传笔记资料文件").setInputFiles({
+    name: "pending.md", mimeType: "text/markdown", buffer: Buffer.from("等待处理"),
+  });
+  await picker.getByRole("button", { name: "上传并处理" }).click();
+  await expect(picker.getByRole("button", { name: "确认选择" })).toBeDisabled();
+  await picker.getByRole("button", { name: "取消", exact: true }).click();
+  await expect(dialog.getByRole("button", { name: "生成笔记" })).toBeDisabled();
+  await dialog.getByRole("button", { name: "修改资料" }).click();
+  await picker.getByRole("checkbox", { name: /选择 pending.md/ }).uncheck();
+  await picker.getByRole("button", { name: "移除已选资料" }).click();
+  await expect(dialog.getByRole("button", { name: "生成笔记" })).toBeDisabled();
+});
+
+test("note upload zone accepts a dropped file", async ({ page, request }) => {
+  await request.post("http://127.0.0.1:8081/test/reset");
+  const course = await (await request.post("http://127.0.0.1:8081/api/courses", {
+    data: { name: "Web 服务端" },
+  })).json();
+  await page.route("**/api/chat/models", route => route.fulfill({
+    json: { items: [{ id: "review", label: "Review" }] },
+  }));
+  await page.goto(`/#chat/${course.course_id}`);
+  await expect(page.getByRole("button", { name: "选择聊天模型" })).toContainText("Review");
+  await page.getByRole("textbox", { name: /输入你的问题/ }).fill("生成笔记");
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await page.getByRole("dialog", { name: "补充笔记要求" }).getByRole("button", { name: "选择资料" }).click();
+  const picker = page.getByRole("dialog", { name: "选择生成依据" });
+  await picker.locator(".note-upload-drop").evaluate(element => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(["拖放资料"], "dropped.md", { type: "text/markdown" }));
+    element.dispatchEvent(new DragEvent("drop", { bubbles: true, dataTransfer: transfer }));
+  });
+  await expect(picker.getByRole("textbox", { name: "标题" })).toHaveValue("dropped.md");
+});
+
+test("chat composer accepts multiple dropped files and sends them with a question", async ({ page, request }) => {
+  await request.post("http://127.0.0.1:8081/test/reset");
+  const course = await (await request.post("http://127.0.0.1:8081/api/courses", {
+    data: { name: "拖放附件课程" },
+  })).json();
+  await page.goto(`/#chat/${course.course_id}`);
+  await expect(page.getByRole("button", { name: "选择聊天模型" })).toContainText("Review");
+  const composer = page.locator(".composer");
+  await composer.locator("textarea").evaluate(element => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(["HTTP 是无状态协议。"], "http.md", { type: "text/markdown" }));
+    transfer.items.add(new File(["CSS 用于网页样式。"], "css.md", { type: "text/markdown" }));
+    element.dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer: transfer }));
+  });
+  await expect(composer.getByText("松开以添加到当前课程资料")).toBeVisible();
+  await composer.locator("textarea").evaluate(element => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(["HTTP 是无状态协议。"], "http.md", { type: "text/markdown" }));
+    transfer.items.add(new File(["CSS 用于网页样式。"], "css.md", { type: "text/markdown" }));
+    element.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: transfer }));
+  });
+  await expect(composer.getByText("http.md", { exact: true })).toBeVisible();
+  await expect(composer.getByText("css.md", { exact: true })).toBeVisible();
+  await expect(composer.getByText("可检索", { exact: true })).toHaveCount(2);
+  await composer.locator("textarea").fill("解释这两份资料");
+  const dispatch = page.waitForRequest("**/api/chat/dispatch");
+  await page.getByRole("button", { name: "发送消息" }).click();
+  expect((await dispatch).postDataJSON().attachment_document_ids).toHaveLength(2);
+  await expect(page.getByText("可以继续聊天", { exact: true })).toBeVisible();
+  await expect(page.locator(".chat-error")).toHaveCount(0);
+});
+
+test("chat composer blocks pending attachments and lets the user remove them", async ({ page, request }) => {
+  await request.post("http://127.0.0.1:8081/test/reset");
+  const course = await (await request.post("http://127.0.0.1:8081/api/courses", {
+    data: { name: "等待处理课程" },
+  })).json();
+  await page.route("**/knowledge/upload", route => route.fulfill({ status: 202, json: {
+    document_id: "pending-composer", status: "queued",
+  } }));
+  await page.goto(`/#chat/${course.course_id}`);
+  await expect(page.getByRole("button", { name: "选择聊天模型" })).toContainText("Review");
+  await page.getByLabel("选择聊天资料文件").setInputFiles({
+    name: "pending.md", mimeType: "text/markdown", buffer: Buffer.from("等待处理"),
+  });
+  await page.locator(".composer textarea").fill("解释这个文件");
+  await expect(page.locator(".composer").getByText("处理中", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "发送消息" })).toBeDisabled();
+  await page.getByRole("button", { name: "移除 pending.md" }).click();
+  await expect(page.getByRole("button", { name: "发送消息" })).toBeEnabled();
 });

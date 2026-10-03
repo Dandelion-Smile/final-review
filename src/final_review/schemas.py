@@ -16,6 +16,7 @@ class SourceType(StrEnum):
     teacher_ppt = "teacher_ppt"
     homework = "homework"
     other_practice = "other_practice"
+    external_upload = "external_upload"
     crash_course = "crash_course"
     ai_supplement = "ai_supplement"
 
@@ -118,7 +119,7 @@ AudienceLevel = Literal["beginner", "intermediate", "advanced"]
 
 class NoteInput(Model):
     note_type: NoteType | None = None
-    scope: Annotated[str, Field(max_length=200)] = ""
+    scope: Annotated[str, Field(max_length=1000)] = ""
     duration_minutes: int | None = Field(default=None, ge=1, le=240)
     emphasis: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(
         default_factory=list, max_length=20
@@ -149,6 +150,7 @@ class ChatRequest(Model):
     course_id: Identifier = "software-engineering-basics"
     conversation_id: Identifier = "default"
     model_id: Identifier | None = None
+    attachment_document_ids: list[Identifier] = Field(default_factory=list, max_length=100)
     mode: Literal["auto", "direct"] = "auto"
 
 
@@ -308,7 +310,7 @@ class NotePoint(Model):
 
 class GeneratedNote(Model):
     title: Annotated[str, Field(min_length=1, max_length=200)]
-    points: list[NotePoint] = Field(min_length=1, max_length=20)
+    points: list[NotePoint] = Field(min_length=1, max_length=100)
 
 
 class AgentResponse(Model):

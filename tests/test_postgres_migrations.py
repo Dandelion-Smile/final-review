@@ -8,6 +8,7 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
@@ -85,6 +86,7 @@ def test_empty_database_runner_is_versioned_and_repeatable(database_url):
         "003_m0_database_hardening.sql",
         "004_m1_material_jobs.sql",
         "005_note_jobs.sql",
+        "006_external_upload_dedup.sql",
     ]
     assert apply_migrations(database_url) == []
     with psycopg.connect(database_url) as connection, connection.cursor() as cursor:
@@ -95,6 +97,7 @@ def test_empty_database_runner_is_versioned_and_repeatable(database_url):
             "003_m0_database_hardening.sql",
             "004_m1_material_jobs.sql",
             "005_note_jobs.sql",
+            "006_external_upload_dedup.sql",
         ]
 
 
@@ -126,6 +129,100 @@ def test_note_worker_sees_job_created_after_empty_poll(database_url):
         writer.reset_user(writer_token)
         worker.close()
         writer.close()
+
+
+def test_same_name_and_content_upload_is_unique_under_concurrency(database_url):
+    apply_migrations(database_url)
+    with psycopg.connect(database_url) as connection:
+        _seed_course(connection)
+
+    def upload(index):
+        store = PostgresStore(database_url)
+        token = store.bind_user(str(USER))
+        try:
+            job = store.create_material_job({
+                "document_id": f"new-document-{index}", "course_id": "course-1",
+                "user_id": str(USER), "title": "chapter.md", "file_name": "chapter.md",
+                "content_sha256": "same-content-hash", "source_type": "external_upload",
+                "parse_status": "queued",
+            }, {"job_id": f"new-job-{index}", "document_id": f"new-document-{index}",
+                "course_id": "course-1", "idempotency_key": None,
+                "fingerprint": f"fingerprint-{index}"})
+            return job["document_id"]
+        finally:
+            store.reset_user(token)
+            store.close()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        document_ids = list(executor.map(upload, range(2)))
+    assert document_ids[0] == document_ids[1]
+    with psycopg.connect(database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT count(*) FROM documents WHERE course_id='course-1' "
+                           "AND data->>'file_name'='chapter.md'")
+            assert cursor.fetchone()[0] == 1
+
+
+def test_legacy_uploaded_file_without_hash_can_be_reused(database_url, tmp_path):
+    apply_migrations(database_url)
+    with psycopg.connect(database_url) as connection:
+        _seed_course(connection)
+    raw = b"legacy file content"
+    source = tmp_path / "legacy.md"
+    source.write_bytes(raw)
+    store = PostgresStore(database_url)
+    token = store.bind_user(str(USER))
+    try:
+        document = {"document_id": "legacy-document", "course_id": "course-1",
+                    "user_id": str(USER), "file_name": "legacy.md",
+                    "file_path": str(source), "parse_status": "ready",
+                    "title": "legacy.md", "source_type": "teacher_ppt"}
+        store.put("document", document["document_id"], document)
+        found = store.find_duplicate_material("course-1", "legacy.md",
+                                              sha256(raw).hexdigest())
+        assert found["document"]["document_id"] == document["document_id"]
+        assert found["job"] is None
+        store.put("document", document["document_id"], {**document,
+                  "parse_status": "deleted"})
+        assert store.find_duplicate_material("course-1", "legacy.md",
+                                             sha256(raw).hexdigest()) is None
+    finally:
+        store.reset_user(token)
+        store.close()
+
+
+def test_note_cancel_and_publish_are_fenced_in_postgres(database_url):
+    apply_migrations(database_url)
+    with psycopg.connect(database_url) as connection:
+        _seed_course(connection)
+    store = PostgresStore(database_url)
+    token = store.bind_user(str(USER))
+    try:
+        for status in ("queued", "running"):
+            job_id = f"cancel-{status}"
+            store.put("note_job", job_id, {
+                "job_id": job_id, "user_id": str(USER), "course_id": "course-1",
+                "conversation_id": "conversation-1", "session_id": job_id,
+                "status": status, "attempts": 1 if status == "running" else 0,
+                "available_at": datetime.now(UTC).isoformat(),
+            })
+            assert store.cancel_note_job(job_id) == "cancelled"
+            assert not store.begin_note_publish(job_id, 1)
+            assert store.get("note_job", job_id)["status"] == "cancelled"
+        assert store.claim_note_job() is None
+
+        store.put("note_job", "publishing", {
+            "job_id": "publishing", "user_id": str(USER), "course_id": "course-1",
+            "conversation_id": "conversation-1", "session_id": "publishing",
+            "status": "running", "attempts": 1,
+            "available_at": datetime.now(UTC).isoformat(),
+        })
+        assert store.begin_note_publish("publishing", 1)
+        assert store.cancel_note_job("publishing") == "publishing"
+        assert store.get("note_job", "publishing")["status"] == "running"
+    finally:
+        store.reset_user(token)
+        store.close()
 
 
 def test_checkpoint_thread_does_not_share_draft_transaction_connection(database_url):
@@ -613,7 +710,8 @@ def test_existing_001_002_with_legacy_attempt_upgrades(database_url):
         _sql(connection, "002_m0_domain_contracts.sql")
         _seed_course(connection, legacy=True)
     assert apply_migrations(database_url) == [
-        "003_m0_database_hardening.sql", "004_m1_material_jobs.sql", "005_note_jobs.sql"
+        "003_m0_database_hardening.sql", "004_m1_material_jobs.sql",
+        "005_note_jobs.sql", "006_external_upload_dedup.sql"
     ]
     with psycopg.connect(database_url) as connection, connection.cursor() as cursor:
         cursor.execute("SELECT legacy_session_id FROM attempts WHERE record_key='attempt-key'")
