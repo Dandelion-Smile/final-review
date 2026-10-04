@@ -159,13 +159,15 @@ class MemoryStore:
             if "user_id" in document:
                 self.ensure_material_source(document)
 
-    def search(self, vector, course, chapter, limit):
+    def search(self, vector, course, chapter, limit, document_ids=None):
         rows = []
         for chunk in self.chunks:
             document = self.tables.get("document", {}).get(chunk["document_id"])
             if document and document.get("parse_status", "ready") != "ready":
                 continue
             if chunk["course_id"] != course or (chapter and chunk["chapter"] != chapter):
+                continue
+            if document_ids is not None and chunk["document_id"] not in document_ids:
                 continue
             embedding = chunk["embedding"]
             score = sum(a * b for a, b in zip(vector, embedding, strict=True)) / (
@@ -434,7 +436,7 @@ class ScriptedModel:
 
 @pytest.fixture
 def settings():
-    return Settings(_env_file=None, embedding_dimensions=3)
+    return Settings(_env_file=None, embedding_dimensions=3, material_vision_enabled=False)
 
 
 @pytest.fixture

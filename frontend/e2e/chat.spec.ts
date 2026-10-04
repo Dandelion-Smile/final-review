@@ -1,5 +1,82 @@
 import { expect, test } from "@playwright/test";
 
+test("ordinary chat retains source links after reload", async ({ page, request }) => {
+  await request.post("http://127.0.0.1:8081/test/reset");
+  const course = await (await request.post("http://127.0.0.1:8081/api/courses", {
+    data: { name: "Web服务端" },
+  })).json();
+  const citation = { course_id: course.course_id, document_id: "http-doc", chunk_id: "http-chunk",
+    title: "HTTP", file_name: "HTTP.pptx", position_kind: "slide", position: 3, citation_number: 1 };
+  let sent = false;
+  await page.route("**/api/chat/dispatch", route => {
+    sent = true;
+    return route.fulfill({ json: { kind: "chat", intent: "ask", model: "Review",
+      reply: "HTTP 是无状态协议。[资料1]", citations: [citation] } });
+  });
+  await page.route("**/api/courses/*/conversations/*/messages", route => route.fulfill({ json: {
+    items: sent ? [{ role: "user", content: "解释 HTTP" },
+      { role: "assistant", content: "HTTP 是无状态协议。[资料1]", citations: [citation] }] : [],
+  } }));
+  await page.route("**/api/courses/*/documents/http-doc/chunks?include_content=true", route => route.fulfill({ json: {
+    file_name: "HTTP.pptx", document_id: "http-doc", material_version_id: "v1",
+    source_type: "teacher_ppt", items: [{ ...citation, locator_id: "http-chunk", excerpt: "HTTP 是无状态协议。" }],
+  } }));
+  await page.route("**/api/courses/*/documents/http-doc/chunks/http-chunk", route => route.fulfill({ json: {
+    ...citation, content: "HTTP 是无状态协议。",
+  } }));
+  await page.goto(`/#chat/${course.course_id}`);
+  await expect(page.getByRole("button", { name: "选择聊天模型" })).toContainText("Review");
+  await page.getByRole("textbox", { name: /输入你的问题/ }).fill("解释 HTTP");
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await expect(page.getByRole("link", { name: /HTTP.pptx · 第 3 张幻灯片/ })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("link", { name: /HTTP.pptx · 第 3 张幻灯片/ })).toBeVisible();
+  await page.screenshot({ path: "test-results/course-chat-sources.png" });
+  await page.getByRole("link", { name: /HTTP.pptx · 第 3 张幻灯片/ }).click();
+  await expect(page.getByRole("dialog", { name: "整理后的资料" })).toContainText("HTTP 是无状态协议。");
+});
+
+test("chat quiz loads actual questions, reveals answers and survives reload", async ({ page, request }) => {
+  await request.post("http://127.0.0.1:8081/test/reset");
+  const course = await (await request.post("http://127.0.0.1:8081/api/courses", {
+    data: { name: "计算机网络" },
+  })).json();
+  const quiz = { session_id: "chat-practice", question_count: 5 };
+  let sent = false;
+  await page.route("**/api/chat/dispatch", route => {
+    sent = true;
+    return route.fulfill({ json: { kind: "quiz", intent: "quiz", model: "Review",
+      reply: "已生成五道练习题。", quiz } });
+  });
+  await page.route("**/api/courses/*/conversations/*/messages", route => route.fulfill({ json: {
+    items: sent ? [{ role: "user", content: "随机出五道题" },
+      { role: "assistant", content: "已生成五道练习题。", quiz }] : [],
+  } }));
+  await page.route("**/api/courses/*/chat-quizzes/chat-practice*", route => {
+    const answers = route.request().url().includes("include_answers=true");
+    return route.fulfill({ json: { questions: Array.from({ length: 5 }, (_, index) => ({
+      id: `q${index}`, stem: `问题 ${index + 1}`, options: [], knowledge_point: "TCP", citations: [],
+      ...(answers ? { reference_answer: `参考答案 ${index + 1}`, explanation: "答题解析", must_include: ["序列号"] } : {}),
+    })) } });
+  });
+  await page.goto(`/#chat/${course.course_id}`);
+  await page.getByRole("textbox", { name: /输入你的问题/ }).fill("随机出五道题");
+  await page.getByRole("button", { name: "发送消息" }).click();
+  const card = page.getByRole("region", { name: "课程练习题" });
+  await expect(card.getByRole("heading", { name: /问题/ })).toHaveCount(5);
+  expect((await card.boundingBox())!.width).toBeGreaterThan(450);
+  await expect(page.getByText("参考答案 1", { exact: true })).toHaveCount(0);
+  await card.getByRole("button", { name: "查看答案与解析" }).click();
+  await expect(card.getByText("参考答案 1", { exact: true })).toBeVisible();
+  await page.screenshot({ path: "test-results/course-chat-quiz.png" });
+  await page.reload();
+  await expect(card.getByRole("heading", { name: /问题/ })).toHaveCount(5);
+  await expect(card.getByRole("button", { name: "查看答案与解析" })).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect((await card.boundingBox())!.width).toBeGreaterThan(200);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
+});
+
 test("chat switches models and sends conversation history", async ({ page, request }) => {
   await request.post("http://127.0.0.1:8081/test/reset");
   const calls: Record<string, unknown>[] = [];
@@ -62,8 +139,7 @@ test("note request creates an openable sourced draft", async ({ page, request })
   });
   expect(ingested.ok()).toBeTruthy();
   await page.getByRole("button", { name: "AI 对话" }).click();
-  await page.getByRole("textbox", { name: /输入你的问题/ }).fill("生成笔记");
-  await page.getByRole("button", { name: "发送消息" }).click();
+  await page.getByRole("button", { name: "生成背诵笔记", exact: true }).click();
   await expect(page.getByText("补充笔记要求")).toBeVisible();
   await expect(page.getByRole("dialog", { name: "补充笔记要求" }).getByRole("button", { name: "生成笔记" })).toBeDisabled();
   await page.reload();
@@ -72,6 +148,18 @@ test("note request creates an openable sourced draft", async ({ page, request })
   const picker = page.getByRole("dialog", { name: "选择生成依据" });
   await expect(picker).toBeVisible();
   await expect(picker).toHaveCSS("background-color", "rgb(255, 254, 250)");
+  const resizeHandle = picker.getByRole("separator", { name: "上下拖动调整资料列表高度" });
+  const list = picker.getByRole("group", { name: "当前课程资料" });
+  const originalList = await list.boundingBox();
+  const handleBox = await resizeHandle.boundingBox();
+  await page.mouse.move(handleBox!.x + handleBox!.width / 2, handleBox!.y + handleBox!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(handleBox!.x + handleBox!.width / 2, handleBox!.y - 200, { steps: 10 });
+  await page.mouse.up();
+  expect((await list.boundingBox())!.height).toBeGreaterThan(originalList!.height + 100);
+  await expect(picker.getByRole("button", { name: "取消", exact: true })).toBeVisible();
+  await resizeHandle.press("ArrowDown");
+  expect((await list.boundingBox())!.height).toBeLessThan(originalList!.height + 200);
   await picker.getByRole("checkbox", { name: /选择 TCP 讲义/ }).check();
   await picker.getByRole("button", { name: "确认选择" }).click();
   await expect(page.getByText("TCP 讲义", { exact: true })).toBeVisible();
@@ -98,7 +186,7 @@ test("note request creates an openable sourced draft", async ({ page, request })
   await expect(preview.getByRole("link", { name: /查看 \d+ 处引用/ })).toBeVisible();
   await page.route("**/api/courses/*/material-jobs", route => route.fulfill({ status: 500, json: {} }));
   await preview.getByRole("link", { name: /查看 \d+ 处引用/ }).first().click();
-  await expect(page.getByRole("dialog", { name: "资料片段预览" })).toContainText("TCP 三次握手同步双方初始序列号");
+  await expect(page.getByRole("dialog", { name: "整理后的资料" })).toContainText("TCP 三次握手同步双方初始序列号");
   await expect(page.getByRole("status")).toContainText("处理状态加载失败");
 });
 
@@ -119,7 +207,7 @@ test("one source file links to every cited location", async ({ page, request }) 
         document_id: "file-one", chunk_id, file_name: "HTML.pptx", source_type: "teacher_ppt",
       })) }] }, references: [],
   } }));
-  await page.route("**/api/courses/*/documents/file-one/chunks", route => route.fulfill({ json: {
+  await page.route("**/api/courses/*/documents/file-one/chunks?include_content=true", route => route.fulfill({ json: {
     document_id: "file-one", material_version_id: "v1", file_name: "HTML.pptx",
     source_type: "teacher_ppt", items: chunks,
   } }));
@@ -132,10 +220,9 @@ test("one source file links to every cited location", async ({ page, request }) 
   const note = page.getByRole("dialog", { name: "笔记草稿预览" });
   await expect(note.getByRole("link", { name: /HTML.pptx/ })).toHaveCount(1);
   await note.getByRole("link", { name: /查看 3 处引用/ }).click();
-  const source = page.getByRole("dialog", { name: "资料片段预览" });
-  await expect(source).toContainText("本条笔记引用 3 处位置");
-  await expect(source.getByRole("button", { name: /引用 \d/ })).toHaveCount(3);
-  await source.getByRole("button", { name: /引用 3 · 第 4 张幻灯片/ }).click();
+  const source = page.getByRole("dialog", { name: "整理后的资料" });
+  await expect(source).toContainText("本条内容引用 3 处位置");
+  await expect(source.locator(".material-reading-section.cited")).toHaveCount(3);
   await expect(source.locator(".material-preview-content")).toContainText("第 4 张幻灯片内容");
 });
 
@@ -289,7 +376,7 @@ test("note config keeps composer fixed and cancellation restores ordinary chat",
   await page.route("**/api/chat/dispatch", route => route.fulfill({ json: { kind: "chat", intent: "ask", reply: "可以继续聊天", model: "Review" } }));
   await page.getByRole("textbox", { name: /输入你的问题/ }).fill("现在可以聊天吗");
   await page.getByRole("button", { name: "发送消息" }).click();
-  await expect(page.getByText("可以继续聊天", { exact: true })).toBeVisible();
+  await expect(page.getByText(/可以继续聊天/).first()).toBeVisible();
 });
 
 test("course switcher restores ordinary chat and shows five recent conversations", async ({ page, request }) => {
@@ -530,7 +617,7 @@ test("chat composer accepts multiple dropped files and sends them with a questio
   const dispatch = page.waitForRequest("**/api/chat/dispatch");
   await page.getByRole("button", { name: "发送消息" }).click();
   expect((await dispatch).postDataJSON().attachment_document_ids).toHaveLength(2);
-  await expect(page.getByText("可以继续聊天", { exact: true })).toBeVisible();
+  await expect(page.getByText(/可以继续聊天/).first()).toBeVisible();
   await expect(page.locator(".chat-error")).toHaveCount(0);
 });
 

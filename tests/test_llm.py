@@ -6,8 +6,18 @@ import httpx
 import pytest
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
-from final_review.llm import ModelError, ReviewModel
+from final_review.config import ChatModelConfig, Settings
+from final_review.llm import ModelError, ReviewModel, build_fast_quiz_model, build_review_model
 from final_review.schemas import GeneratedNote, Route
+
+
+@pytest.mark.parametrize("base_url", ["https://api.deepseek.com", "https://api.deepseek.com/v1"])
+def test_deepseek_structured_flows_disable_incompatible_thinking_mode(base_url):
+    config = ChatModelConfig(id="deepseek", label="DeepSeek", model="deepseek-flash",
+                             base_url=base_url, api_key="test-key")
+    settings = Settings(_env_file=None)
+    for builder in (build_fast_quiz_model, build_review_model):
+        assert builder(config, settings).model.extra_body == {"thinking": {"type": "disabled"}}
 
 
 def completion(name=None, arguments=None):

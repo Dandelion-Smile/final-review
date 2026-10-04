@@ -118,6 +118,7 @@ AudienceLevel = Literal["beginner", "intermediate", "advanced"]
 
 
 class NoteInput(Model):
+    chapter: Annotated[str, Field(max_length=200)] = ""
     note_type: NoteType | None = None
     scope: Annotated[str, Field(max_length=1000)] = ""
     duration_minutes: int | None = Field(default=None, ge=1, le=240)
@@ -152,6 +153,28 @@ class ChatRequest(Model):
     model_id: Identifier | None = None
     attachment_document_ids: list[Identifier] = Field(default_factory=list, max_length=100)
     mode: Literal["auto", "direct"] = "auto"
+    source_document_ids: list[Identifier] | None = Field(default=None, max_length=100)
+    chapter: Annotated[str, Field(max_length=200)] = ""
+    materials_only: bool = False
+    retrieval_action: Literal["general", "overview", "search", "read"] = "search"
+    retrieval_query: Annotated[str, Field(max_length=2000)] = ""
+    overview_kind: Literal["course", "statistics", "list", "all"] = "all"
+
+
+class ChatDecision(Model):
+    intent: Literal["note", "quiz", "ask", "clarify"] = "ask"
+    action: Literal["general", "overview", "search", "read"] = "search"
+    overview_kind: Literal["course", "statistics", "list", "all"] = "all"
+    query: Annotated[str, Field(max_length=2000)] = ""
+    source_document_ids: list[Identifier] | None = Field(default=None, max_length=100)
+    chapter: Annotated[str, Field(max_length=200)] | None = None
+    materials_only: bool | None = None
+    clarification: Annotated[str, Field(max_length=500)] = ""
+    task_message: Annotated[str, Field(max_length=4000)] = ""
+    question_count: int = Field(default=5, ge=1, le=10)
+    question_types: list[QuestionType] = Field(default_factory=lambda: ["short_answer"],
+                                              min_length=1, max_length=6)
+    random: bool = True
 
 
 class ChatResponse(Model):
@@ -189,6 +212,9 @@ class FastQuizRequest(Model):
     question_types: list[QuestionType] = Field(min_length=1, max_length=6)
     question_count: int = Field(default=5, ge=1, le=10)
     model_id: Identifier | None = None
+    source_document_ids: list[Identifier] | None = Field(default=None, max_length=100)
+    query: Annotated[str, Field(max_length=2000)] = ""
+    random: bool = True
 
 
 class FastQuizQuestion(Model):
@@ -217,6 +243,8 @@ class Evidence(Model):
     chunk_ordinal: int = 0
     document_id: str
     title: str
+    file_name: str = ""
+    citation_number: int = 0
     course_id: str
     chapter: str
     source_type: SourceType

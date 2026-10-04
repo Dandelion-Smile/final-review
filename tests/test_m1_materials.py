@@ -15,6 +15,29 @@ from final_review.policy import SOURCE_PRIORITY
 from final_review.schemas import SourceType
 
 
+@pytest.mark.parametrize("names,setting", [
+    (("pdftoppm",), "poppler_executable"),
+    (("libreoffice", "soffice"), "libreoffice_executable"),
+    (("tesseract",), "tesseract_executable"),
+])
+def test_explicit_conversion_tool_path_works_without_path(tmp_path, monkeypatch, names, setting):
+    from final_review import material_conversion
+
+    executable = tmp_path / "tool.exe"
+    executable.write_bytes(b"test")
+    monkeypatch.setattr(material_conversion, "Settings", lambda: SimpleNamespace(**{setting: str(executable)}))
+    monkeypatch.setattr(material_conversion.shutil, "which", lambda _name: None)
+    assert material_conversion._find_executable(names, "") == str(executable)
+
+
+def test_invalid_explicit_conversion_tool_path_is_reported(monkeypatch):
+    from final_review import material_conversion
+
+    monkeypatch.setattr(material_conversion, "Settings", lambda: SimpleNamespace(poppler_executable="missing.exe"))
+    with pytest.raises(ValueError, match="POPPLER_EXECUTABLE"):
+        material_conversion._find_executable(("pdftoppm",), "")
+
+
 def _image(format_name: str) -> bytes:
     output = BytesIO()
     Image.new("RGB", (80, 40), "white").save(output, format=format_name)
@@ -178,6 +201,10 @@ def test_ppt_images_are_ocr_searchable_with_slide_locations_and_no_duplicate_tex
         assert {(item["position_kind"], item["position"]) for item in listing["items"]} == {
             ("slide", 1), ("slide", 2)
         }
+        full_listing = client.get(f"/api/courses/net/documents/{document_id}/chunks?include_content=true").json()
+        assert all("content" not in item for item in listing["items"])
+        assert all(item["content"] for item in full_listing["items"])
+        assert [item["chunk_id"] for item in full_listing["items"]] == [item["chunk_id"] for item in listing["items"]]
         document = system.store.get("document", document_id)
         assert "图片中的网络拓扑" in document["cleaned_markdown"]
         assert "图片中的握手时序" in document["cleaned_markdown"]

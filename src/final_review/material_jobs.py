@@ -11,6 +11,7 @@ from .material_conversion import IMAGE_FORMATS, convert_material
 from .postgres import PostgresStore
 from .rag import KnowledgeBase
 from .schemas import MaterialInput
+from .slide_understanding import SlideInterpreter, VisionServiceUnavailable
 from .source_locators import located_sections, material_version
 
 logger = logging.getLogger(__name__)
@@ -19,6 +20,7 @@ logger = logging.getLogger(__name__)
 def process_material_job(store, kb: KnowledgeBase, job: dict, max_bytes: int) -> None:
     """Process a claimed job; the attempt number fences out stale workers."""
     token = store.bind_user(job["user_id"]) if hasattr(store, "bind_user") else None
+    interpreter = None
     try:
         document = store.get("document", job["document_id"])
         if not document:
@@ -35,11 +37,14 @@ def process_material_job(store, kb: KnowledgeBase, job: dict, max_bytes: int) ->
         if path.suffix.lower() in IMAGE_FORMATS:
             store.update_material_job(job["job_id"], job["attempts"], stage="ocr")
         content = path.read_bytes()
+        if path.suffix.lower() in {".ppt", ".pptx"} and kb.settings.material_vision_enabled:
+            interpreter = SlideInterpreter(kb.settings)
         converted = convert_material(
             content, document["file_name"], max_bytes,
             stage_callback=lambda stage: store.update_material_job(
                 job["job_id"], job["attempts"], stage=stage
             ),
+            interpreter=interpreter, cache_dir=path.with_suffix(".analysis"),
         )
         markdown = converted.markdown
         sections = converted.sections or located_sections(content, document["file_name"])
@@ -51,14 +56,31 @@ def process_material_job(store, kb: KnowledgeBase, job: dict, max_bytes: int) ->
         prepared, chunks = kb.prepare(
             material, source_origin="user_upload",
             sections=sections,
+            plain_text=converted.pipeline is not None or path.suffix.lower() == ".txt",
             stage_callback=lambda stage: store.update_material_job(
                 job["job_id"], job["attempts"], stage=stage
             ),
         )
         ready = {**document, **prepared, "parse_status": "ready"}
+        if converted.pages is not None:
+            ready["analysis_pages"] = converted.pages
+            ready["processing_pipeline"] = converted.pipeline
+            ready["quality_status"] = (
+                "review_needed" if any(p["quality"] != "verified" for p in converted.pages)
+                else "verified"
+            )
+            ready.pop("material_version_id", None)
+            for chunk in chunks:
+                from .storage import stable_key
+
+                chunk["chunk_id"] = stable_key(chunk["chunk_id"], converted.pipeline,
+                                               chunk["content"])
         ready["material_version_id"] = material_version(ready)["material_version_id"]
         ready.pop("parse_error", None)
         store.publish_material_job(job["job_id"], job["attempts"], ready, chunks)
+    except VisionServiceUnavailable as exc:
+        store.fail_material_job(job["job_id"], job["attempts"],
+                                code="vision_unavailable", message=str(exc), retry=False)
     except ValueError as exc:
         store.fail_material_job(job["job_id"], job["attempts"], code="invalid_material",
                                 message=str(exc), retry=False)
@@ -70,6 +92,8 @@ def process_material_job(store, kb: KnowledgeBase, job: dict, max_bytes: int) ->
             retry=job["attempts"] < job["max_attempts"],
         )
     finally:
+        if interpreter is not None:
+            interpreter.close()
         if token is not None:
             store.reset_user(token)
 

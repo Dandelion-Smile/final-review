@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 from final_review.api import create_app
 from final_review.config import ChatModelConfig
 from final_review.material_jobs import process_material_job
+from final_review.schemas import MaterialInput
 
 
 def _run_queued_job(system):
@@ -433,7 +434,8 @@ def test_selected_chat_model_routes_note_ask_quiz_and_ambiguity(system, monkeypa
         def create(self, **kwargs):
             calls.append(kwargs)
             if kwargs["messages"][0]["content"].startswith("判断用户当前消息的意图"):
-                text = kwargs["messages"][-1]["content"]
+                import json
+                text = json.loads(kwargs["messages"][-1]["content"])["message"]
                 content = '{"intent":"' + intents[text] + '"}'
             else:
                 content = "普通聊天回复"
@@ -445,6 +447,16 @@ def test_selected_chat_model_routes_note_ask_quiz_and_ambiguity(system, monkeypa
             self.chat = SimpleNamespace(completions=FakeCompletions())
 
     monkeypatch.setattr("final_review.api.OpenAI", FakeOpenAI)
+    class FastModel:
+        def fast_quiz(self, data):
+            return {"questions": [{
+                "id": f"q{index}", "knowledge_point": f"知识点{index}",
+                "question_type": "short_answer", "stem": f"练习题{index}？", "options": [],
+                "reference_answer": "答案", "explanation": "解析", "must_include": [],
+                "source_chunk_ids": [data["evidence"][0]["chunk_id"]],
+            } for index in range(data["question_count"])]}
+
+    monkeypatch.setattr("final_review.api.build_fast_quiz_model", lambda *_: FastModel())
     with TestClient(create_app(system.settings, system)) as client:
         for index, (message, intent) in enumerate(intents.items()):
             conversation_id = f"route-{index}"
@@ -458,9 +470,12 @@ def test_selected_chat_model_routes_note_ask_quiz_and_ambiguity(system, monkeypa
                 assert response.json()["kind"] == "note"
                 assert response.json()["result"]["status"] == "needs_input"
             elif intent == "clarify":
-                assert "希望我直接生成" in response.json()["reply"]
+                assert message in response.json()["reply"]
+            elif intent == "quiz":
+                assert response.json()["kind"] == "quiz"
+                assert response.json()["quiz"]["question_count"] == 5
             else:
-                assert response.json()["reply"] == "普通聊天回复"
+                assert "普通聊天回复" in response.json()["reply"]
             history = client.get(f"/api/courses/net/conversations/{conversation_id}/messages")
             assert [row["role"] for row in history.json()["items"]] == ["user", "assistant"]
     assert all(call["model"] == "selected-model" for call in calls)
@@ -517,10 +532,9 @@ def test_chat_uses_only_ready_attachments_from_current_course(system, monkeypatc
                 message=SimpleNamespace(content=content))])
 
     monkeypatch.setattr("final_review.api.OpenAI", FakeOpenAI)
-    system.store.put("document", "attached", {
-        "document_id": "attached", "course_id": "net", "parse_status": "ready",
-        "file_name": "chapter.md", "cleaned_markdown": "HTTP 是无状态协议。",
-    })
+    system.kb.ingest(MaterialInput(document_id="attached", course_id="net", title="chapter.md",
+                                   source_type="teacher_ppt", markdown="HTTP 是无状态协议。"),
+                     user_id="local-user")
     system.store.put("document", "pending", {
         "document_id": "pending", "course_id": "net", "parse_status": "queued",
     })

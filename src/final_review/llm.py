@@ -217,6 +217,8 @@ class ReviewModel:
             FastQuiz,
             "基于给定资料片段一次性生成题目。严格输出指定总题数，且所有题型都属于允许题型。"
             "每题引用 source_chunk_ids 中的至少一个真实 chunk_id；答案、解析和考点不得超出资料。"
+            "尽量覆盖不同知识点和来源位置，题干与考法避免重复；资料不足以支撑题量时"
+            "不得靠重复题凑数。用户具体知识点要求见request。"
             "选择题必须提供四个选项；非选择题 options 为空。",
             data,
         )
@@ -232,6 +234,9 @@ def build_review_model(config: ChatModelConfig, settings: Settings,
             timeout=settings.note_model_timeout if note_generation else settings.model_timeout,
             max_retries=settings.note_model_max_retries if note_generation else 2,
             temperature=0,
+            **({"extra_body": {"thinking": {"type": "disabled"}}}
+               if config.base_url.rstrip("/").removesuffix("/v1") == "https://api.deepseek.com"
+               else {}),
         )
     )
 
@@ -274,5 +279,8 @@ def build_fast_quiz_model(config: ChatModelConfig, settings: Settings) -> Review
             timeout=settings.fast_quiz_timeout,
             max_retries=0,
             temperature=0,
+            **({"extra_body": {"thinking": {"type": "disabled"}}}
+               if config.base_url.rstrip("/").removesuffix("/v1") == "https://api.deepseek.com"
+               else {}),
         )
     )

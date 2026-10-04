@@ -15,7 +15,15 @@
 .note-source-select-all span{margin-right:auto}
 .note-source-select-all button{padding:4px 0;border:0;background:transparent;color:#215f70;font-size:12px;font-weight:700}
 .note-source-select-all button:disabled{color:#a0adb0;cursor:not-allowed}
-.note-source-list{min-height:150px;overflow:auto;padding:8px 18px 14px;overscroll-behavior:contain}
+.note-source-controls{flex:0 1 auto;min-height:80px;overflow-y:auto;overscroll-behavior:contain}
+.note-source-head,.note-source-footer{flex-shrink:0}
+.note-source-resize{display:flex;flex:0 0 26px;align-items:center;justify-content:center;gap:8px;border-top:1px solid #d7e3de;border-bottom:1px solid #d7e3de;background:#f3f8f4;color:#617987;font-size:11px;cursor:ns-resize;touch-action:none;user-select:none}
+.note-source-resize>span:first-child{transform:rotate(90deg);font-size:18px;line-height:1}
+.note-source-resize:hover,.note-source-resize:focus-visible,.resizing .note-source-resize{background:#e2f0e8;color:#1d655e}
+.note-source-resize:focus-visible{outline:2px solid #4b8295;outline-offset:-2px}
+.note-source-dialog.resizing{user-select:none;cursor:ns-resize}
+.note-source-error{flex-shrink:0}
+.note-source-list{flex:1;min-height:150px;overflow:auto;padding:8px 18px 14px;overscroll-behavior:contain}
 .note-source-row{display:flex;align-items:flex-start;gap:13px;margin:4px 0;padding:14px 12px;border:1px solid transparent;border-radius:9px;cursor:pointer;transition:background .15s,border-color .15s}
 .note-source-row:hover{background:#f4f8f4}
 .note-source-row.selected{border-color:#a8c9bd;background:#ecf5ee}

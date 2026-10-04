@@ -10,6 +10,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pydantic import ConfigDict
 
 from .config import Settings
+from .plain_material_text import plain_material_text
 from .policy import SOURCE_PRIORITY
 from .schemas import Evidence, MaterialInput
 from .storage import Store, stable_key
@@ -60,7 +61,7 @@ class KnowledgeBase:
                     "chunks": existing["chunk_count"], "cached": True,
                 }
         else:
-            cleaned = clean_markdown(material.markdown)
+            cleaned = clean_markdown(plain_material_text(material.markdown))
             key = stable_key(material.course_id, material.title, material.chapter,
                              material.source_type.value, sha256(cleaned.encode()).hexdigest())
             existing = self.store.get("document", key)
@@ -77,10 +78,12 @@ class KnowledgeBase:
         self, material: MaterialInput, *, source_origin: str = "user_entry",
         stage_callback: Callable[[str], None] | None = None,
         sections: list[dict] | None = None,
+        plain_text: bool = False,
     ) -> tuple[dict, list[dict]]:
         if stage_callback:
             stage_callback("clean")
-        cleaned = clean_markdown(material.markdown)
+        cleaned = clean_markdown(material.markdown if plain_text
+                                 else plain_material_text(material.markdown))
         document_id = material.document_id or stable_key(
             material.course_id,
             material.title,
@@ -91,7 +94,9 @@ class KnowledgeBase:
         units = []
         if sections:
             for section in sections:
-                source_text = clean_markdown(section["text"]) if section["text"].strip() else ""
+                source_text = (section["text"] if plain_text
+                               else plain_material_text(section["text"]))
+                source_text = clean_markdown(source_text) if source_text.strip() else ""
                 if not source_text:
                     continue
                 cursor = 0
@@ -146,11 +151,31 @@ class KnowledgeBase:
             "chunk_count": len(chunks),
         }, chunks)
 
-    def search(self, query: str, course: str, chapter: str = "", broaden: bool = False):
+    def search(self, query: str, course: str, chapter: str = "", broaden: bool = False,
+               document_ids: list[str] | None = None):
         vector = self.embeddings.embed_query(query)
         validate_vectors([vector], 1, self.settings.embedding_dimensions)
         limit = min(100, self.settings.retrieval_candidates * (2 if broaden else 1))
-        rows = self.store.search(vector, course, chapter, limit)
+        rows = (self.store.search(vector, course, chapter, limit) if document_ids is None
+                else self.store.search(vector, course, chapter, limit, document_ids=document_ids))
+        return self._rank(rows)
+
+    def search_chunks(self, query: str, chunks: list[dict]):
+        vector = self.embeddings.embed_query(query)
+        validate_vectors([vector], 1, self.settings.embedding_dimensions)
+        rows = []
+        for chunk in chunks:
+            embedding = chunk["embedding"]
+            validate_vectors([embedding], 1, self.settings.embedding_dimensions)
+            score = sum(a * b for a, b in zip(vector, embedding, strict=True)) / (
+                math.sqrt(sum(a * a for a in vector))
+                * math.sqrt(sum(b * b for b in embedding))
+            )
+            rows.append({**{key: value for key, value in chunk.items() if key != "embedding"},
+                         "similarity": score})
+        return self._rank(rows)
+
+    def _rank(self, rows):
         candidates = []
         for row in rows:
             item = Evidence.model_validate(row)

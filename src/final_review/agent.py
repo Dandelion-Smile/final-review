@@ -598,8 +598,16 @@ class FinalReviewAgent:
                                 legacy: bool) -> dict | None:
         grouped = {}
         file_names = {}
+        chapter_scoped = {}
+        if config.get("chapter"):
+            from .course_chat import CourseMaterials
+
+            chapter_scoped = {document["document_id"]: document for document in CourseMaterials(
+                self.store, request["course_id"], request["owner_id"],
+            ).select(config["source_document_ids"], config["chapter"])}
         for document_id in config["source_document_ids"]:
-            document = self.store.get("document", document_id)
+            document = (chapter_scoped.get(document_id) if config.get("chapter")
+                        else self.store.get("document", document_id))
             if (
                 document is None
                 or document.get("user_id") != request.get("owner_id")
@@ -609,7 +617,7 @@ class FinalReviewAgent:
                 raise ValueError("所选资料已不可用")
             file_names[document_id] = document.get("file_name") or document["title"]
             grouped[document_id] = []
-            for chunk in self.store.list_material_chunks(document_id):
+            for chunk in document.get("_chat_chunks", self.store.list_material_chunks(document_id)):
                 if not chunk["content"].strip():
                     continue
                 grouped[document_id].append({

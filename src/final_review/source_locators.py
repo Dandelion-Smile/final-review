@@ -92,5 +92,6 @@ def chunk_locator(version: dict, chunk: dict, ordinal: int) -> dict:
             "position": chunk.get("position"),
             "text_start": chunk.get("text_start"),
             "text_end": chunk.get("text_end"),
+            "content": chunk.get("content", ""),
         },
     }

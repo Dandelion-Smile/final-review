@@ -17,7 +17,8 @@ class Store(Protocol):
     def deindex_document(self, key: str) -> None: ...
     def update_material_metadata(self, key: str, changes: dict) -> dict | None: ...
     def ingest(self, document: dict, chunks: list[dict]) -> None: ...
-    def search(self, vector: list[float], course: str, chapter: str, limit: int) -> list[dict]: ...
+    def search(self, vector: list[float], course: str, chapter: str, limit: int,
+               document_ids: list[str] | None = None) -> list[dict]: ...
     def list_material_chunks(self, document_id: str) -> list[dict]: ...
     def ensure_material_source(self, document: dict) -> dict: ...
 
@@ -228,14 +229,16 @@ class SurrealStore:
         if "user_id" in document:
             self.ensure_material_source(document)
 
-    def search(self, vector, course, chapter, limit):
+    def search(self, vector, course, chapter, limit, document_ids=None):
         # Exact cosine search over the filtered course, suitable for a small course corpus.
         # No global TopK-before-filter bug; HNSW is a future scaling choice, not a claim here.
         rows = self.query(
             "SELECT chunk_id, document_id, title, course_id, chapter, source_type, content, "
             "vector::similarity::cosine(embedding, $vector) AS similarity "
             "FROM chunk WHERE course_id = $course AND ($chapter = '' OR chapter = $chapter) "
+            "AND ($all_documents OR document_id IN $document_ids) "
             "ORDER BY similarity DESC LIMIT $limit;",
-            {"vector": vector, "course": course, "chapter": chapter, "limit": limit},
+            {"vector": vector, "course": course, "chapter": chapter, "limit": limit,
+             "all_documents": document_ids is None, "document_ids": document_ids or []},
         )[0]
         return rows

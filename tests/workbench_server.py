@@ -15,7 +15,7 @@ from final_review.rag import KnowledgeBase
 
 
 def app():
-    settings = Settings(_env_file=None, embedding_dimensions=3)
+    settings = Settings(_env_file=None, embedding_dimensions=3, material_vision_enabled=False)
     settings.chat_models = [ChatModelConfig(
         id=model_id, label=label, model=model_id,
         base_url="https://example.invalid/v1", api_key="test-key",
@@ -26,7 +26,8 @@ def app():
         def create(self, **kwargs):
             messages = kwargs["messages"]
             if messages[0]["content"].startswith("判断用户当前消息的意图"):
-                message = messages[-1]["content"]
+                import json
+                message = json.loads(messages[-1]["content"])["message"]
                 intent = "note" if any(term in message for term in (
                     "生成笔记", "生成一份笔记", "可背诵的资料", "考前总结手记",
                 )) or ("生成" in message and "笔记" in message) else "ask"

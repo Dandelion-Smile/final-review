@@ -8,6 +8,7 @@ import sys
 import tempfile
 import time
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from io import BytesIO
@@ -17,6 +18,8 @@ from zipfile import BadZipFile, ZipFile
 
 from markitdown import MarkItDown
 from PIL import Image, UnidentifiedImageError
+
+from .config import Settings
 
 SUPPORTED_SUFFIXES = {
     ".md",
@@ -43,9 +46,22 @@ LEGACY_OFFICE_TIMEOUT_SECONDS = 120
 class ConvertedMaterial:
     markdown: str
     sections: list[dict] | None = None
+    pages: list[dict] | None = None
+    pipeline: str | None = None
 
 
 def _find_executable(names: tuple[str, ...], windows_relative_path: str) -> str | None:
+    setting_name = {
+        "pdftoppm": "poppler_executable",
+        "libreoffice": "libreoffice_executable",
+        "tesseract": "tesseract_executable",
+    }.get(names[0])
+    configured = getattr(Settings(), setting_name, "") if setting_name else ""
+    if configured:
+        candidate = Path(configured).expanduser()
+        if not candidate.is_absolute() or not candidate.is_file():
+            raise ValueError(f"{setting_name.upper()} 配置无效，请设置可执行文件的绝对路径")
+        return str(candidate)
     for name in names:
         executable = shutil.which(name)
         if executable:
@@ -61,7 +77,7 @@ def _find_executable(names: tuple[str, ...], windows_relative_path: str) -> str 
 
 
 def _tessdata_dir() -> Path | None:
-    configured = os.environ.get("TESSDATA_PREFIX")
+    configured = Settings().tessdata_prefix
     local_app_data = os.environ.get("LOCALAPPDATA") if sys.platform == "win32" else None
     candidates = [Path(configured)] if configured else []
     if local_app_data:
@@ -230,6 +246,7 @@ def _markitdown_slides(markdown: str, count: int) -> list[str]:
 
 def _convert_presentation(
     path: Path, directory: Path, *, stage_callback: Callable[[str], None] | None = None,
+    interpreter=None, cache_dir: Path | None = None, page_filter: set[int] | None = None,
 ) -> ConvertedMaterial:
     import pdfplumber
     from pptx import Presentation
@@ -260,15 +277,21 @@ def _convert_presentation(
     if stage_callback:
         stage_callback("ocr")
     markitdown_slides = _markitdown_slides(markdown, len(native))
+    if interpreter is not None:
+        return _understand_rendered_slides(pdf, renderer, native, markitdown_slides,
+                                          interpreter, cache_dir or directory,
+                                          stage_callback, page_filter)
     sections = []
     additions = []
     for index, section in enumerate(native, 1):
+        if page_filter is not None and index not in page_filter:
+            continue
         if time.monotonic() - started > PRESENTATION_TIMEOUT_SECONDS:
             raise ValueError("PPT 处理超时，请拆分后上传")
         prefix = directory / f"slide-{index:03d}"
+        image = prefix.with_suffix(".png")
         _run([renderer, "-f", str(index), "-l", str(index), "-singlefile",
               "-scale-to", "2000", "-png", str(pdf), str(prefix)], "PDF 页面渲染")
-        image = prefix.with_suffix(".png")
         if not image.is_file():
             raise ValueError(f"第 {index} 页 PDF 渲染失败")
         try:
@@ -288,9 +311,48 @@ def _convert_presentation(
     return ConvertedMaterial(markdown=(markdown + "".join(additions)).strip(), sections=sections)
 
 
+def _understand_rendered_slides(pdf, renderer, native, extracted, interpreter, cache_dir,
+                               stage_callback, page_filter):
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def read_page(index):
+        prefix = cache_dir / f"slide-{index:03d}"
+        image = prefix.with_suffix(".png")
+        if not image.is_file():
+            _run([renderer, "-f", str(index), "-l", str(index), "-singlefile",
+                  "-scale-to", "2000", "-png", str(pdf), str(prefix)], "PDF 页面渲染")
+        return interpreter.read(image, native[index - 1]["text"], extracted[index - 1],
+                                cache_dir / "readings")
+
+    positions = [index for index in range(1, len(native) + 1)
+                 if page_filter is None or index in page_filter]
+    records = {}
+    with ThreadPoolExecutor(max_workers=getattr(interpreter, "concurrency", 1)) as pool:
+        futures = {pool.submit(read_page, index): index for index in positions}
+        for future in as_completed(futures):
+            index = futures[future]
+            records[index] = future.result()
+            if stage_callback:
+                stage_callback(f"理解与核验 {len(records)}/{len(positions)} 页")
+    sections, pages = [], []
+    for index in positions:
+        record = records[index]
+        pages.append({"position": index, "title": record["title"], "kind": record["kind"],
+                      "quality": record["quality"], "issues": record["issues"]})
+        if record["quality"] == "verified" and record["kind"] == "knowledge":
+            for block in record["blocks"]:
+                text = f"{block['title']}\n\n{block.get('text', block.get('markdown', ''))}"
+                sections.append({"position_kind": "slide", "position": index, "text": text})
+    if not sections:
+        raise ValueError("PPT 没有通过质量核验的知识页，请核对原页；未将原始文字入库")
+    return ConvertedMaterial(markdown="\n\n".join(item["text"] for item in sections),
+                             sections=sections, pages=pages, pipeline="visual-slides-v1")
+
+
 def convert_material(
     content: bytes, filename: str, max_bytes: int,
     *, stage_callback: Callable[[str], None] | None = None,
+    interpreter=None, cache_dir: Path | None = None, page_filter: set[int] | None = None,
 ) -> ConvertedMaterial:
     suffix = Path(filename).suffix.lower()
     if suffix not in SUPPORTED_SUFFIXES:
@@ -314,7 +376,9 @@ def convert_material(
             path = _convert_legacy(path, directory)
             _check_office_archive(path.read_bytes(), max_bytes)
         if suffix in {".ppt", ".pptx"}:
-            return _convert_presentation(path, directory, stage_callback=stage_callback)
+            return _convert_presentation(path, directory, stage_callback=stage_callback,
+                                         interpreter=interpreter, cache_dir=cache_dir,
+                                         page_filter=page_filter)
         try:
             markdown = MarkItDown(enable_plugins=False).convert(str(path)).text_content
         except Exception as exc:

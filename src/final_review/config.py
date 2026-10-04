@@ -45,6 +45,16 @@ class Settings(BaseSettings):
     auth_session_days: int = Field(default=30, ge=1, le=365)
     api_token: SecretStr = SecretStr("")
     uploads_dir: str = "uploads"
+    poppler_executable: str = ""
+    libreoffice_executable: str = ""
+    tesseract_executable: str = ""
+    tessdata_prefix: str = ""
+    material_vision_enabled: bool = False
+    material_vision_model_id: str = "gemini-3-flash"
+    material_vision_model: str = ""
+    material_vision_timeout: float = Field(default=90, gt=0, le=300)
+    material_vision_repairs: int = Field(default=1, ge=0, le=2)
+    material_vision_concurrency: int = Field(default=4, ge=1, le=4)
     max_upload_mb: int = Field(default=10, ge=1, le=50)
     top_k: int = Field(default=5, ge=1, le=20)
     retrieval_candidates: int = Field(default=20, ge=1, le=100)

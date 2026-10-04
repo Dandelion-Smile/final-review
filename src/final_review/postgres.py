@@ -842,7 +842,8 @@ class PostgresStore:
     def _vector(vector: list[float]) -> str:
         return "[" + ",".join(str(value) for value in vector) + "]"
 
-    def search(self, vector: list[float], course: str, chapter: str, limit: int) -> list[dict]:
+    def search(self, vector: list[float], course: str, chapter: str, limit: int,
+               document_ids: list[str] | None = None) -> list[dict]:
         try:
             with self.connection.cursor() as cursor:
                 cursor.execute(
@@ -854,6 +855,7 @@ class PostgresStore:
                     WHERE document_chunks.user_id = %s AND document_chunks.course_id = %s
                       AND COALESCE(documents.data->>'parse_status','ready') = 'ready'
                       AND (%s = '' OR document_chunks.data->>'chapter' = %s)
+                      AND (%s OR document_chunks.document_id = ANY(%s))
                     ORDER BY document_chunks.embedding <=> %s::vector LIMIT %s""",
                     (
                         self._vector(vector),
@@ -861,6 +863,8 @@ class PostgresStore:
                         course,
                         chapter,
                         chapter,
+                        document_ids is None,
+                        document_ids or [],
                         self._vector(vector),
                         limit,
                     ),
