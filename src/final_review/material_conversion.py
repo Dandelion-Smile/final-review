@@ -11,6 +11,7 @@ import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
 from typing import Callable
@@ -280,7 +281,8 @@ def _convert_presentation(
     if interpreter is not None:
         return _understand_rendered_slides(pdf, renderer, native, markitdown_slides,
                                           interpreter, cache_dir or directory,
-                                          stage_callback, page_filter)
+                                          stage_callback, page_filter,
+                                          source_signature=sha256(path.read_bytes()).hexdigest())
     sections = []
     additions = []
     for index, section in enumerate(native, 1):
@@ -312,15 +314,18 @@ def _convert_presentation(
 
 
 def _understand_rendered_slides(pdf, renderer, native, extracted, interpreter, cache_dir,
-                               stage_callback, page_filter):
+                               stage_callback, page_filter, *, source_signature):
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     def read_page(index):
         prefix = cache_dir / f"slide-{index:03d}"
         image = prefix.with_suffix(".png")
-        if not image.is_file():
+        stamp = prefix.with_suffix(".source")
+        if (not image.is_file() or not stamp.is_file()
+                or stamp.read_text(encoding="ascii") != source_signature):
             _run([renderer, "-f", str(index), "-l", str(index), "-singlefile",
                   "-scale-to", "2000", "-png", str(pdf), str(prefix)], "PDF 页面渲染")
+            stamp.write_text(source_signature, encoding="ascii")
         return interpreter.read(image, native[index - 1]["text"], extracted[index - 1],
                                 cache_dir / "readings")
 
@@ -338,9 +343,14 @@ def _understand_rendered_slides(pdf, renderer, native, extracted, interpreter, c
     for index in positions:
         record = records[index]
         pages.append({"position": index, "title": record["title"], "kind": record["kind"],
-                      "quality": record["quality"], "issues": record["issues"]})
-        if record["quality"] == "verified" and record["kind"] == "knowledge":
+                      "quality": record["quality"], "issues": record["issues"],
+                      "blocks": [{key: block.get(key) for key in (
+                          "block_id", "title", "quality", "issues", "evidence", "warnings"
+                      )} for block in record["blocks"]]})
+        if record["quality"] in {"verified", "partial"} and record["kind"] == "knowledge":
             for block in record["blocks"]:
+                if block.get("quality", record["quality"]) != "verified":
+                    continue
                 text = f"{block['title']}\n\n{block.get('text', block.get('markdown', ''))}"
                 sections.append({"position_kind": "slide", "position": index, "text": text})
     if not sections:

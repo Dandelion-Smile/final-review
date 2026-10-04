@@ -14,7 +14,7 @@ from final_review.material_conversion import convert_material
 from final_review.postgres import PostgresStore
 from final_review.rag import KnowledgeBase
 from final_review.schemas import MaterialInput
-from final_review.slide_understanding import SlideInterpreter
+from final_review.slide_understanding import SlideInterpreter, material_quality
 from final_review.source_locators import material_version
 from final_review.storage import stable_key
 
@@ -106,7 +106,7 @@ def main():
             **prepared,
             "processing_pipeline": converted.pipeline,
             "analysis_pages": converted.pages,
-            "quality_status": "review_needed" if uncertain else "verified",
+            "quality_status": material_quality(converted.pages),
         }
         history = {item["chunk_id"]: item for item in document.get("historical_chunks", [])}
         for old in store.list_material_chunks(document["document_id"]):

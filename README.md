@@ -46,11 +46,11 @@ flowchart TD
 
 本机处理 PPT/PPTX/DOC 需安装 LibreOffice；PPT 页面渲染需安装 Poppler 的 `pdftoppm`；图片 OCR 需安装 Tesseract 及 `chi_sim`、`eng` 语言包。使用 Docker Compose 启动 Agent 时，这些依赖由镜像安装。缺少工具或语言包时，上传会显示明确失败原因。PPT 最多处理 80 页，检索结果保留幻灯片位置。
 
-PPT/PPTX 的视觉理解由 `MATERIAL_VISION_ENABLED=true` 开启。`MATERIAL_VISION_MODEL_ID` 选择现有 `CHAT_MODELS` 中的提供商 ID；`MATERIAL_VISION_MODEL` 指定该账号可用的视觉模型，例如 [Qwen3-VL](https://help.aliyun.com/zh/model-studio/qwen3-vl-plus)。这组设置只影响资料处理，不改变聊天模型。worker 将原页图片、原生文字与备注交给模型逐页理解，再独立对照原页核验；只对核验通过的知识块建立索引。目录页不参与检索；看不清或核验未通过的页标记“需要核对”，可在预览中查看原页和原因。最终片段是纯文本，保留代码的有效符号。关闭该设置会使用旧版提取流程，预览会明确标示尚未视觉核验。
+PPT/PPTX 的视觉理解由 `MATERIAL_VISION_ENABLED=true` 开启。`MATERIAL_VISION_MODEL_ID` 选择现有 `CHAT_MODELS` 中的提供商 ID；`MATERIAL_VISION_MODEL` 指定该账号可用的视觉模型，例如 [Qwen3-VL](https://help.aliyun.com/zh/model-studio/qwen3-vl-plus)。这组设置只影响资料处理，不改变聊天模型。worker 将原生文字、教学备注与原页图片分别编号，逐页整理知识块并绑定来源摘录，再逐块对照证据核验；本地 OCR 仅提供辅助提示，不能作为原始事实或直接入库。只有核验通过的块建立索引；一块待核对时保留同页其他已通过内容，页面标记“部分通过”，预览列出每个块的状态、来源类型和问题。整理阶段的疑点必须由核验阶段明确消除，目录页另经导航核验且不参与检索。最终片段是纯文本，保留代码的有效符号。关闭该设置会使用旧版提取流程，预览会明确标示尚未视觉核验。
 
 模型单次请求超时由 `MATERIAL_VISION_TIMEOUT` 控制，修复次数由 `MATERIAL_VISION_REPAIRS` 控制，每份资料最多同时处理 `MATERIAL_VISION_CONCURRENCY` 页（1–4）。页级缓存位于原始上传文件同名的 `.analysis` 目录，模型/提示词/来源变化会使缓存失效。已核验的页可在失败重试时复用；模型欠费或通道不可用会明确失败，不会回退到原始 OCR 入库。
 
-旧资料不会自动改变。可用 `uv run python scripts/rebuild_materials.py --document-id DOCUMENT_ID --pages 6,7` 检查候选页；候选位于 `.analysis/candidate.json`，局部检查不能发布。完整重建使用 `--publish`，完成核验与 Embedding 后事务替换索引，期间保留旧版本；待核对页排除检索，历史引用片段另行保留。批量重建使用 `uv run python scripts/rebuild_course_materials.py --course-id COURSE_ID --workers 2`。从项目根目录运行这些命令，更新后重启资料 worker 和后端使新流程、原页预览接口生效。
+旧资料不会自动改变。可用 `uv run python scripts/rebuild_materials.py --document-id DOCUMENT_ID --pages 6,7` 检查候选页；候选位于 `.analysis/candidate.json`，局部检查不能发布。完整重建使用 `--publish`，完成核验与 Embedding 后事务替换索引，期间保留旧版本；待核对知识块排除检索，历史引用片段另行保留。批量重建使用 `uv run python scripts/rebuild_course_materials.py --course-id COURSE_ID --workers 2`。从项目根目录运行这些命令，更新后重启资料 worker 和后端使新流程、原页预览接口生效。
 
 如果工具没有加入 worker 的 PATH，可在项目 `.env` 中配置可执行文件的绝对路径：`POPPLER_EXECUTABLE`（pdftoppm）、`LIBREOFFICE_EXECUTABLE`（soffice）、`TESSERACT_EXECUTABLE`。`TESSDATA_PREFIX` 指向包含 `chi_sim.traineddata` 和 `eng.traineddata` 的目录。Windows 路径建议使用 `/`；显式配置优先于 PATH，配置无效时会报告对应配置项。修改后从项目根目录重启资料处理 worker，再对失败资料点击“重试”。同名同内容的重复上传会复用已有资料，不会自动重试处理失败的任务。
 

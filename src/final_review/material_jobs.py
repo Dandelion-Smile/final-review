@@ -11,7 +11,7 @@ from .material_conversion import IMAGE_FORMATS, convert_material
 from .postgres import PostgresStore
 from .rag import KnowledgeBase
 from .schemas import MaterialInput
-from .slide_understanding import SlideInterpreter, VisionServiceUnavailable
+from .slide_understanding import SlideInterpreter, VisionServiceUnavailable, material_quality
 from .source_locators import located_sections, material_version
 
 logger = logging.getLogger(__name__)
@@ -65,10 +65,7 @@ def process_material_job(store, kb: KnowledgeBase, job: dict, max_bytes: int) ->
         if converted.pages is not None:
             ready["analysis_pages"] = converted.pages
             ready["processing_pipeline"] = converted.pipeline
-            ready["quality_status"] = (
-                "review_needed" if any(p["quality"] != "verified" for p in converted.pages)
-                else "verified"
-            )
+            ready["quality_status"] = material_quality(converted.pages)
             ready.pop("material_version_id", None)
             for chunk in chunks:
                 from .storage import stable_key

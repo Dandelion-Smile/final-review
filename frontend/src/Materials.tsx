@@ -11,7 +11,8 @@ type UploadResult = { key: string; name: string; status: "waiting" | "uploading"
 const MAX_UPLOAD_FILES = 5;
 type DeletePreview = { blocking_references: number; affected_assets: number; confirmation_id: string; expires_at: string };
 type SourceChunk = { chunk_id: string; locator_id: string; position_kind: string; position: number | null; text_start: number | null; text_end: number | null; excerpt: string; content?: string; historical?: boolean };
-type SourcePage = { position: number; title: string; kind: "knowledge" | "navigation"; quality: "verified" | "review_needed"; issues: string[] };
+type SourceBlock = { block_id: string; title: string; quality: "verified" | "review_needed"; issues: string[]; evidence?: { source_id: string; origin: "native" | "note" | "image"; quote: string }[] };
+type SourcePage = { position: number; title: string; kind: "knowledge" | "navigation"; quality: "verified" | "partial" | "review_needed"; issues: string[]; blocks?: SourceBlock[] };
 type SourcePreview = { document_id: string; material_version_id: string; file_name: string; source_type: SourceType; items: SourceChunk[]; processing_pipeline?: string; quality_status?: string; pages?: SourcePage[] };
 const stageLabel: Record<string, string> = { parse: "解析", convert: "转换 PDF", ocr: "文字识别", clean: "清洗", index: "建立索引" };
 
@@ -62,7 +63,7 @@ export default function Materials({ selectedCourse }: { selectedCourse: Course |
   const citedChunks = sourcePreview?.items.filter(chunk => referencedChunkIds.includes(chunk.chunk_id)) ?? [];
   const previewChunks = sourcePreview?.items ?? [];
   const excludedPages = sourcePreview?.pages?.filter(page => page.kind === "navigation" && page.quality !== "review_needed") ?? [];
-  const reviewPages = sourcePreview?.pages?.filter(page => page.quality === "review_needed") ?? [];
+  const reviewPages = sourcePreview?.pages?.filter(page => page.quality !== "verified") ?? [];
 
   async function refresh() {
     const [documents, currentJobs] = await Promise.all([
@@ -320,7 +321,7 @@ export default function Materials({ selectedCourse }: { selectedCourse: Course |
       const job = jobs.find(candidate => candidate.document_id === item.document_id);
       const status = item.parse_status;
       const editable = status === "ready" || status === "failed";
-      return <li key={item.document_id}><div className="material-detail"><strong>{item.title}</strong><small>{item.file_name} · {sourceLabel[item.source_type] ?? item.source_type} · {item.chapter || "未归类"}</small>{item.processing_pipeline === "visual-slides-v1" && <small>{item.quality_status === "review_needed" ? "已整理知识内容；存在待核对页，已排除检索，可在预览查看" : "知识内容已通过逐页视觉核验"}</small>}{status === "failed" && <p className="material-error">{job?.error_message ?? item.parse_error}</p>}</div><span className={`material-status ${status}`}>{status === "ready" ? "可检索" : status === "failed" ? "处理失败" : status === "queued" ? "排队中" : `处理中${job?.stage ? ` · ${stageLabel[job.stage] ?? job.stage}` : ""}`}</span><div className="material-actions">{status === "ready" && <button type="button" onClick={() => void openSource(item)} disabled={busy}>预览</button>}<button type="button" onClick={() => openEdit(item)} disabled={!editable || busy} title={!editable ? "处理完成后可编辑" : undefined}>编辑</button>{status === "failed" && job && <button type="button" onClick={() => void retry(job.job_id)} disabled={busy}>重试</button>}<button type="button" className="material-delete" onClick={() => void openDelete(item)} disabled={busy}>删除</button></div></li>;
+      return <li key={item.document_id}><div className="material-detail"><strong>{item.title}</strong><small>{item.file_name} · {sourceLabel[item.source_type] ?? item.source_type} · {item.chapter || "未归类"}</small>{item.processing_pipeline === "visual-slides-v1" && <small>{item.quality_status === "partial" ? "部分知识已通过核验；待核对内容已排除检索" : item.quality_status === "review_needed" ? "存在待核对内容，可在预览中查看" : "知识内容已通过逐块视觉核验"}</small>}{status === "failed" && <p className="material-error">{job?.error_message ?? item.parse_error}</p>}</div><span className={`material-status ${status}`}>{status === "ready" ? "可检索" : status === "failed" ? "处理失败" : status === "queued" ? "排队中" : `处理中${job?.stage ? ` · ${stageLabel[job.stage] ?? job.stage}` : ""}`}</span><div className="material-actions">{status === "ready" && <button type="button" onClick={() => void openSource(item)} disabled={busy}>预览</button>}<button type="button" onClick={() => openEdit(item)} disabled={!editable || busy} title={!editable ? "处理完成后可编辑" : undefined}>编辑</button>{status === "failed" && job && <button type="button" onClick={() => void retry(job.job_id)} disabled={busy}>重试</button>}<button type="button" className="material-delete" onClick={() => void openDelete(item)} disabled={busy}>删除</button></div></li>;
     })}</ul>}</section>
     {sourcePreview && <div className="wb-overlay" role="presentation"><section className="wb-dialog material-dialog material-preview" role="dialog" aria-modal="true" aria-labelledby="material-preview-title">
       <header className="material-reading-header">
@@ -356,11 +357,11 @@ export default function Materials({ selectedCourse }: { selectedCourse: Course |
             </article>;
           })}
         </div> : <div className="material-reading-pages">
-          <p className="material-reading-intro">{previewTab === "excluded" ? "这些页面是封面、目录或分隔页，保留原页供查阅，不参与知识检索。" : "以下页面暂未通过 AI 核验，不参与检索。可对照原页查看具体问题。"}</p>
+          <p className="material-reading-intro">{previewTab === "excluded" ? "这些页面是封面、目录或分隔页，保留原页供查阅，不参与知识检索。" : "以下页面存在待核对内容。仅未通过的知识块排除检索，已通过内容仍可使用；可对照原页查看问题。"}</p>
           {(previewTab === "excluded" ? excludedPages : reviewPages).length === 0 && <p className="material-reading-empty">{previewTab === "excluded" ? "没有不参与检索的页面。" : "没有待审核的页面。"}</p>}
           {(previewTab === "excluded" ? excludedPages : reviewPages).map(page => <article key={page.position} className="material-review-card">
             <div className="material-reading-section-head"><div><small>第 {page.position} 页</small><h3>{page.title}</h3></div><button type="button" className="material-reading-link" onClick={() => setOriginalPage(page.position)}>查看原页 ↗</button></div>
-            {previewTab === "review" ? <><h4>AI 核验提示</h4>{page.issues.length ? <ul>{page.issues.map((issue, index) => <li key={index}>{issue}</li>)}</ul> : <p>本页未通过核验，AI 未记录具体原因，请对照原页核对。</p>}</> : <p>导航页 · 不包含可检索的知识内容</p>}
+            {previewTab === "review" ? <><h4>AI 核验提示</h4>{page.quality === "partial" && <p className="material-quality">部分通过 · 已核验知识保留，待核对知识不参与检索</p>}{page.blocks?.map(block => <div key={block.block_id}><strong>{block.title} · {block.quality === "verified" ? "已通过" : "待核对"}</strong>{block.evidence?.length ? <small>依据：{Array.from(new Set(block.evidence.map(reference => reference.origin))).map(origin => ({ native: "原生文字", note: "教学备注", image: "原页图片" }[origin])).join("、")}</small> : null}{block.quality !== "verified" && block.issues?.map((issue, index) => <p key={index}>{issue}</p>)}</div>)}{page.issues.length ? <ul>{page.issues.map((issue, index) => <li key={index}>{issue}</li>)}</ul> : <p>本页未通过核验，AI 未记录具体原因，请对照原页核对。</p>}</> : <p>导航页 · 不包含可检索的知识内容</p>}
           </article>)}
         </div>}
       </div>

@@ -301,6 +301,46 @@ test("plain knowledge preview offers original slides and excluded page warnings"
   await page.screenshot({ path: test.info().outputPath("reading-mobile.png") });
 });
 
+test("partial page retains verified knowledge and lists only failed blocks for review", async ({ page, request }) => {
+  await request.post("http://127.0.0.1:8081/api/courses", { data: { name: "逐块核验预览" } });
+  await page.goto("/");
+  await page.getByRole("button", { name: "我的资料" }).first().click();
+  await page.getByLabel("文件", { exact: true }).setInputFiles({
+    name: "partial.md", mimeType: "text/markdown", buffer: Buffer.from("# 正确代码\n\nservice()"),
+  });
+  await page.getByRole("button", { name: "上传并处理" }).click();
+  await expect(page.locator(".material-status.ready")).toBeVisible();
+  await page.route("**/documents/*/chunks?include_content=true", async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.processing_pipeline = "visual-slides-v1";
+    body.quality_status = "partial";
+    body.pages = [{ position: 1, title: "混合知识页", kind: "knowledge", quality: "partial",
+      issues: ["有一处无来源结论"], blocks: [
+        { block_id: "b1", title: "正确代码", quality: "verified", issues: [] },
+        { block_id: "b2", title: "无来源结论", quality: "review_needed", issues: ["图片未包含此事实"] },
+      ] }];
+    body.items[0].position = 1;
+    body.items[0].position_kind = "slide";
+    await route.fulfill({ json: body });
+  });
+  await page.getByRole("button", { name: "预览", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "整理后的资料" });
+  await expect(dialog.locator(".material-reading-text")).toHaveText("service()");
+  await expect(dialog.getByText("图片未包含此事实")).toHaveCount(0);
+  await dialog.getByRole("button", { name: "待审核 1" }).click();
+  await expect(dialog.getByText("正确代码 · 已通过", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("无来源结论 · 待核对", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("图片未包含此事实")).toBeVisible();
+  await expect(dialog.getByText("部分通过 · 已核验知识保留，待核对知识不参与检索")).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath("partial-blocks-desktop.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await page.screenshot({ path: test.info().outputPath("partial-blocks-mobile.png") });
+  await dialog.getByRole("button", { name: "整理内容", exact: true }).click();
+  await expect(dialog.locator(".material-reading-text")).toHaveText("service()");
+});
+
 test("continuous reading scrolls while tabs and actions stay visible", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto("/");
