@@ -102,8 +102,8 @@ export default function CourseSwitcher({ courses, course, conversationId, onCour
     return () => { active = false; };
   }, [open, course?.course_id, refreshKey]);
   return <div className="course-switcher">
+    <span className="course-label">当前课程</span>
     <button ref={triggerRef} className="course course-button" type="button" aria-expanded={open} aria-haspopup="dialog" aria-label={`当前课程 ${course?.name ?? "选择课程"}`} onClick={() => setOpen(value => !value)}>
-      <span className="course-label">当前课程</span>
       <strong className="course-name">{course?.name ?? "选择课程"}</strong>
       <span className="course-chevron" aria-hidden="true" />
     </button>

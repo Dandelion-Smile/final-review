@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     auth_session_days: int = Field(default=30, ge=1, le=365)
     api_token: SecretStr = SecretStr("")
     uploads_dir: str = "uploads"
+    exports_dir: str = "exports"
+    export_pandoc_executable: str = ""
+    export_chromium_executable: str = ""
     poppler_executable: str = ""
     libreoffice_executable: str = ""
     tesseract_executable: str = ""

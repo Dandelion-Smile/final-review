@@ -36,6 +36,34 @@ class MemoryStore:
                     return deepcopy(job)
         return None
 
+    def claim_export_job(self):
+        from datetime import UTC, datetime, timedelta
+
+        with self.lock:
+            now = datetime.now(UTC)
+            for job in self.tables.get("export_job", {}).values():
+                if job["status"] == "queued" or (
+                    job["status"] == "running" and
+                    datetime.fromisoformat(job["lease_until"]) < now
+                ):
+                    job["attempts"] += 1
+                    if job["attempts"] > job["max_attempts"]:
+                        job.update(status="failed", error="导出多次中断，请重试", lease_until=None)
+                        continue
+                    job.update(status="running", error=None,
+                               lease_until=(now + timedelta(minutes=10)).isoformat())
+                    return deepcopy(job)
+        return None
+
+    def finish_export_job(self, job_id, attempt, *, result=None, error=None):
+        with self.lock:
+            job = self.tables.get("export_job", {}).get(job_id)
+            if not job or job["status"] != "running" or job["attempts"] != attempt:
+                return False
+            job.update(status="failed" if error else "succeeded", result=result,
+                       error=error, lease_until=None)
+            return True
+
     def finish_note_job(self, job_id, attempt, *, result=None, error=None):
         with self.lock:
             job = self.tables["note_job"][job_id]

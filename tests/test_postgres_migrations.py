@@ -88,6 +88,7 @@ def test_empty_database_runner_is_versioned_and_repeatable(database_url):
         "005_note_jobs.sql",
         "006_external_upload_dedup.sql",
         "007_note_review.sql",
+        "008_note_exports.sql",
     ]
     assert apply_migrations(database_url) == []
     with psycopg.connect(database_url) as connection, connection.cursor() as cursor:
@@ -100,6 +101,7 @@ def test_empty_database_runner_is_versioned_and_repeatable(database_url):
             "005_note_jobs.sql",
             "006_external_upload_dedup.sql",
             "007_note_review.sql",
+            "008_note_exports.sql",
         ]
 
 
@@ -713,7 +715,8 @@ def test_existing_001_002_with_legacy_attempt_upgrades(database_url):
         _seed_course(connection, legacy=True)
     assert apply_migrations(database_url) == [
         "003_m0_database_hardening.sql", "004_m1_material_jobs.sql",
-        "005_note_jobs.sql", "006_external_upload_dedup.sql", "007_note_review.sql"
+        "005_note_jobs.sql", "006_external_upload_dedup.sql", "007_note_review.sql",
+        "008_note_exports.sql"
     ]
     with psycopg.connect(database_url) as connection, connection.cursor() as cursor:
         cursor.execute("SELECT legacy_session_id FROM attempts WHERE record_key='attempt-key'")

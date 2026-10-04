@@ -756,19 +756,9 @@ class FinalReviewAgent:
         if fallback_count:
             title = f"{title}（含 {fallback_count} 部分资料摘录）"
         coverage = plan["coverage"]
-        coverage_text = (f"已选 {coverage['selected_files']} 份资料；共有 "
-                         f"{coverage['readable_chunks']} 个可读片段；本次读取 "
-                         f"{coverage['read_chunks']} 个"
-                         f"{'，部分覆盖' if coverage['partial'] else '，已读取范围内全部片段'}。")
-        lines = [f"# {title}", "", coverage_text]
-        for file in coverage["files"]:
-            lines.append(f"- {file['file_name']}（{file['document_id'][:8]}）：读取 "
-                         f"{file['read_chunks']}/{file['readable_chunks']} 个片段")
+        lines = [f"# {title}"]
         for point in points:
-            label = {"source": "资料来源", "synthesis": "综合改编", "ai_supplement": "AI 补充"}[
-                point["provenance"]
-            ]
-            lines.extend(["", f"## {point['heading']}", "", point["content"], "", f"来源：{label}"])
+            lines.extend(["", f"## {point['heading']}", "", point["content"]])
         created = DomainService(self.store, request["owner_id"]).create_note_draft(
             request["course_id"],
             {

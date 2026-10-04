@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ApiError, api } from "./workbench-api";
 import NoteConfigDialog from "./NoteConfigDialog";
 import { ChatQuiz, ChatSources, type ChatCitation, type ChatQuizCard } from "./ChatSources";
@@ -49,7 +49,7 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
   const [messages, setMessages] = useState<Message[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyFailed, setHistoryFailed] = useState(false);
-  const [conversationTitle, setConversationTitle] = useState("AI 对话");
+  const [conversationTitle, setConversationTitle] = useState("新对话");
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [savingTitle, setSavingTitle] = useState(false);
@@ -71,6 +71,7 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
   const [noteMaterials, setNoteMaterials] = useState<NoteMaterial[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [noteCancelling, setNoteCancelling] = useState(false);
+  const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
   const modelPickerRef = useRef<HTMLDivElement>(null);
   const modelTriggerRef = useRef<HTMLButtonElement>(null);
@@ -79,6 +80,24 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
   const conversationId = useRef(`chat-${crypto.randomUUID()}`);
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+
+  useLayoutEffect(() => {
+    const textarea = composerTextareaRef.current;
+    if (!textarea) return;
+    const resize = () => {
+      textarea.style.height = "0px";
+      textarea.style.height = `${Math.min(textarea.scrollHeight, 132)}px`;
+      textarea.style.overflowY = textarea.scrollHeight > 132 ? "auto" : "hidden";
+    };
+    resize();
+    let width = textarea.getBoundingClientRect().width;
+    const observer = new ResizeObserver(entries => {
+      const nextWidth = entries[0].contentRect.width;
+      if (nextWidth !== width) { width = nextWidth; resize(); }
+    });
+    observer.observe(textarea);
+    return () => observer.disconnect();
+  }, [draft]);
 
   function restoreNoteInput(activeNote: ActiveNote | null | undefined, currentCourse: string, active: () => boolean) {
     const input = activeNote?.note_input;
@@ -249,11 +268,11 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
 
   useEffect(() => {
     setEditingTitle(false);
-    setConversationTitle("AI 对话");
+    setConversationTitle("新对话");
     if (!courseId || !selectedConversationId) return;
     let active = true;
     api<{ items: { conversation_id: string; title: string }[] }>(`/api/courses/${encodeURIComponent(courseId)}/conversations`)
-      .then(data => { if (active) setConversationTitle(data.items.find(item => item.conversation_id === selectedConversationId)?.title || "AI 对话"); })
+      .then(data => { if (active) setConversationTitle(data.items.find(item => item.conversation_id === selectedConversationId)?.title || "新对话"); })
       .catch(() => {});
     return () => { active = false; };
   }, [courseId, selectedConversationId, titleRefreshKey]);
@@ -478,9 +497,26 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
   }
 
   return <div className="dialog-page" inert={Boolean(notePrompt)}><section className="box chat">
-    <header><div className="chat-title-area"><small>AI 对话</small>{editingTitle ? <form className="chat-title-editor" onSubmit={event => { event.preventDefault(); void saveTitle(); }}><input autoFocus aria-label="对话名称" maxLength={100} value={titleDraft} onChange={event => setTitleDraft(event.target.value)} onKeyDown={event => { if (event.key === "Escape") setEditingTitle(false); }} /><button type="submit" disabled={savingTitle}>保存</button><button type="button" onClick={() => setEditingTitle(false)}>取消</button></form> : <button className="chat-title-button" type="button" disabled={!selectedConversationId} title={selectedConversationId ? "点击重命名对话" : "发送消息后可重命名"} onClick={() => { setTitleDraft(conversationTitle); setEditingTitle(true); }}><h2>{conversationTitle}</h2>{selectedConversationId && <span aria-hidden="true">✎</span>}</button>}</div><button className="new-chat" type="button" onClick={newConversation} disabled={isSending}>＋ 新对话</button></header>
+    <header><div className="chat-title-area">{editingTitle ? <form className="chat-title-editor" onSubmit={event => { event.preventDefault(); void saveTitle(); }}><input autoFocus aria-label="对话名称" maxLength={100} value={titleDraft} onChange={event => setTitleDraft(event.target.value)} onKeyDown={event => { if (event.key === "Escape") setEditingTitle(false); }} /><button type="submit" disabled={savingTitle}>保存</button><button type="button" onClick={() => setEditingTitle(false)}>取消</button></form> : <button className="chat-title-button" type="button" disabled={!selectedConversationId} title={selectedConversationId ? "点击重命名对话" : "发送消息后可重命名"} onClick={() => { setTitleDraft(conversationTitle); setEditingTitle(true); }}><h2>{conversationTitle}</h2>{selectedConversationId && <span aria-hidden="true">✎</span>}</button>}</div><button className="new-chat" type="button" onClick={newConversation} disabled={isSending}>＋ 新对话</button></header>
     <div className="messages" ref={messagesRef} aria-live="polite">
-      {historyLoading ? <div className="empty-chat" role="status">正在加载对话…</div> : messages.length === 0 && <div className="empty-chat"><i>✦</i><h1>今天想从哪里开始？</h1><p>可以让我整理重点、解析难题，或根据你的课程资料出一组练习题。</p></div>}
+      {historyLoading ? <div className="empty-chat" role="status">正在加载对话…</div> : messages.length === 0 && <div className="empty-chat chat-welcome">
+        <div className="chat-welcome-content">
+          <div className="chat-welcome-heading">
+            <i className="chat-welcome-icon" aria-hidden="true"><span>✦</span></i>
+            <h1>今天想从哪里开始？</h1>
+          </div>
+          <div className="chat-starters" role="group" aria-label="快捷提问">
+            {[
+              { label: "生成练习题", emoji: "📝", prompt: "请根据当前课程资料，给我生成一组练习题，并附上答案和解析。" },
+              { label: "整理课程笔记", emoji: "📒", prompt: "请根据当前课程资料，帮我生成一份重点清晰的复习笔记。" },
+              { label: "总结课程重点", emoji: "💡", prompt: "请根据当前课程资料，帮我总结核心知识点、常考内容和易错点。" },
+            ].map(item => <button key={item.label} type="button" disabled={!courseId || isSending || historyFailed} onClick={() => {
+              setDraft(item.prompt);
+              composerTextareaRef.current?.focus();
+            }}><span className="chat-starter-emoji" aria-hidden="true">{item.emoji}</span>{item.label}<span className="chat-starter-arrow" aria-hidden="true">↗</span></button>)}
+          </div>
+        </div>
+      </div>}
       {messages.map((item, index) => <article className={`message ${item.from}${item.quiz ? " quiz-message" : ""}`} key={index}>
         <i aria-hidden="true">{item.from === "agent" ? "✦" : "你"}</i>
         <div><label>{item.from === "agent" ? item.model || "助手" : "你"}</label><p>{item.text}</p>{Boolean(item.citations?.length) && <ChatSources citations={item.citations!} />}{item.quiz && courseId && <ChatQuiz courseId={courseId} quiz={item.quiz} />}{item.draft && <a className="note-draft-card" href={item.draft.url}><strong>{item.draft.title}</strong><span>打开笔记草稿 →</span></a>}</div>
@@ -494,12 +530,13 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
     <div className={`composer composer-attachment${composerDragOver ? " drag-over" : ""}`} onDragOver={event => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; setComposerDragOver(true); } }} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setComposerDragOver(false); }} onDrop={event => { event.preventDefault(); setComposerDragOver(false); void attachComposerFiles(Array.from(event.dataTransfer.files)); }}>
       {composerDragOver && <div className="composer-drop-hint">松开以添加到当前课程资料</div>}
       {(composerUploading || composerMaterials.length > 0) && <div className="composer-attachments" aria-label="已添加的资料">{composerUploading && <span className="composer-attachment-chip">正在上传文件…</span>}{composerMaterials.map(item => <span className="composer-attachment-chip" key={item.document_id}><strong>{item.file_name || item.title}</strong><small>{item.parse_status === "ready" ? "可检索" : item.parse_status === "failed" ? "处理失败" : "处理中"}</small><button type="button" aria-label={`移除 ${item.file_name || item.title}`} onClick={() => setComposerMaterials(current => current.filter(candidate => candidate.document_id !== item.document_id))}>×</button></span>)}</div>}
-      <textarea value={draft} disabled={!courseId || isSending || historyLoading || historyFailed} onChange={event => setDraft(event.target.value)} onKeyDown={event => {
-        if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); }
-      }} placeholder={isSending ? "助手正在思考……" : "输入你的问题，或让 AI 帮你制定学习计划、解析难题、生成练习题……"} />
-      <div><div className="composer-left-actions"><button type="button" className="composer-attach-trigger" aria-label="添加课程文件" title="添加文件，也可直接拖入输入框" disabled={Boolean(noteSession) || isSending || composerUploading} onClick={() => composerFileInputRef.current?.click()}>＋</button><input ref={composerFileInputRef} className="composer-file-input" type="file" multiple accept=".md,.txt,.pdf,.ppt,.pptx,.doc,.docx,.png,.jpg,.jpeg,.webp" aria-label="选择聊天资料文件" onChange={event => void attachComposerFiles(Array.from(event.target.files ?? []))} /><div className="model-picker" ref={modelPickerRef} onKeyDown={handleModelKeys}>
-        <button className="model-trigger" ref={modelTriggerRef} type="button" aria-label="选择聊天模型" aria-haspopup="listbox" aria-expanded={modelMenuOpen} disabled={isSending || models.length === 0} onClick={() => setModelMenuOpen(open => !open)}>
-          <span className="model-sparkle" aria-hidden="true">✦</span><span>{models.find(model => model.id === modelId)?.label ?? "加载模型中…"}</span><span className={`model-chevron ${modelMenuOpen ? "open" : ""}`} aria-hidden="true">⌄</span>
+      <div className="composer-row">
+      <textarea ref={composerTextareaRef} rows={1} aria-label="输入你的问题" value={draft} disabled={!courseId || isSending || historyLoading || historyFailed} onChange={event => setDraft(event.target.value)} onKeyDown={event => {
+        if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); }
+      }} placeholder={isSending ? "助手正在思考……" : "输入你的问题…"} />
+      <div className="composer-controls"><div className="composer-left-actions"><button type="button" className="composer-attach-trigger" aria-label="添加课程文件" title="添加文件，也可直接拖入输入框" disabled={Boolean(noteSession) || isSending || composerUploading} onClick={() => composerFileInputRef.current?.click()}>＋</button><input ref={composerFileInputRef} className="composer-file-input" type="file" multiple accept=".md,.txt,.pdf,.ppt,.pptx,.doc,.docx,.png,.jpg,.jpeg,.webp" aria-label="选择聊天资料文件" onChange={event => void attachComposerFiles(Array.from(event.target.files ?? []))} /><div className="model-picker" ref={modelPickerRef} onKeyDown={handleModelKeys}>
+        <button className="model-trigger" ref={modelTriggerRef} type="button" aria-label="选择聊天模型" title={models.find(model => model.id === modelId)?.label ?? "加载模型中…"} aria-haspopup="listbox" aria-expanded={modelMenuOpen} disabled={isSending || models.length === 0} onClick={() => setModelMenuOpen(open => !open)}>
+          <span>{models.find(model => model.id === modelId)?.label ?? "加载模型中…"}</span>
         </button>
         {modelMenuOpen && <div className="model-menu" role="listbox" aria-label="聊天模型">
           <div className="model-menu-title">选择聊天模型</div>
@@ -511,6 +548,6 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
         </div>}
       </div></div><button className="send" disabled={isSending || historyLoading || historyFailed || composerUploading || composerMaterials.some(item => item.parse_status !== "ready") || !draft.trim() || !modelId} onClick={() => void send()} aria-label="发送消息">{isSending ? "…" : "➤"}</button></div>
     </div>
-    <footer className="quick"><span>试试这样问：</span>{["制定今天的复习计划", "出 10 道需求分析题", "总结第 3 章重点"].map(text => <button disabled={isSending || !modelId} key={text} onClick={() => void send(text)}>{text}</button>)}<button type="button" disabled={!courseId || isSending || historyLoading || historyFailed || composerUploading || Boolean(noteSession) || !modelId} onClick={() => void send("生成笔记，整理成适合背诵的考点清单")} aria-haspopup="dialog">生成背诵笔记</button></footer>
+    </div>
   </section></div>;
 }

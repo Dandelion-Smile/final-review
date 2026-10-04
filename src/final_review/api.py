@@ -18,6 +18,15 @@ from .auth import CurrentUser, DatabaseAuth
 from .config import Settings
 from .course_chat import CHAT_POLICY, CourseMaterials, cited_evidence, parse_chat_decision
 from .domain import DomainConflict, DomainNotFound, DomainService
+from .export_jobs import result_path
+from .exports import (
+    MEDIA_TYPES,
+    ExportRenderError,
+    create_export,
+    download_name,
+    public_export,
+    read_export,
+)
 from .llm import ModelError, build_fast_quiz_model, build_models, build_review_model
 from .material_conversion import SUPPORTED_SUFFIXES
 from .postgres import PostgresStore
@@ -48,6 +57,7 @@ from .schemas import (
     MaterialUpdate,
     NoteConfirm,
     NoteConfirmPreview,
+    NoteExportCreate,
     NoteRevisionEdit,
     ResumeNoteRequest,
     ResumeRequest,
@@ -752,6 +762,79 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
     @app.get("/api/courses/{course_id}/notes", dependencies=[Depends(authorize)])
     def list_notes(course_id: Identifier, user: CurrentUser = Depends(authorize)):
         return domain(user).list_notes(course_id)
+
+    @app.post("/api/notes/{asset_id}/exports", status_code=202,
+              dependencies=[Depends(authorize)])
+    def queue_export(asset_id: Identifier, request: NoteExportCreate,
+                     user: CurrentUser = Depends(authorize)):
+        service = domain(user)
+        job = create_export(service, asset_id, request.revision_id, request.format)
+        return public_export(check_export_file(service, job))
+
+    def check_export_file(service, job):
+        if job["status"] == "succeeded":
+            try:
+                result_path(settings, job)
+            except ExportRenderError:
+                with service._transaction():
+                    locked_get = getattr(service.store, "get_for_update", service.store.get)
+                    current = locked_get("export_job", job["export_id"])
+                    if current and current["status"] == "succeeded":
+                        current.update(status="failed", result=None,
+                                       error="导出文件不可用，请重试导出")
+                        service.store.put("export_job", job["export_id"], current)
+                    job = current or job
+        return job
+
+    @app.get("/api/exports/{export_id}", dependencies=[Depends(authorize)])
+    def get_export(export_id: Identifier, user: CurrentUser = Depends(authorize)):
+        service = domain(user)
+        return public_export(check_export_file(service, read_export(service, export_id)))
+
+    @app.post("/api/exports/{export_id}/retry", status_code=202,
+              dependencies=[Depends(authorize)])
+    def retry_export(export_id: Identifier, user: CurrentUser = Depends(authorize)):
+        service = domain(user)
+        with service._transaction():
+            locked_get = getattr(service.store, "get_for_update", service.store.get)
+            locked_get("export_job", export_id)
+            job = read_export(service, export_id)
+            if job["status"] == "failed":
+                job.update(status="queued", error=None, result=None, lease_until=None,
+                           max_attempts=job["attempts"] + 3)
+                service.store.put("export_job", export_id, job)
+        return public_export(job)
+
+    def export_response(export_id, user, *, preview=False):
+        job = read_export(domain(user), export_id)
+        if job["status"] != "succeeded":
+            raise DomainConflict("导出尚未完成，请稍后重试")
+        if preview and job["format"] != "print":
+            raise DomainConflict("请创建打印预览任务")
+        try:
+            path = result_path(settings, job)
+        except ExportRenderError as exc:
+            raise DomainConflict(str(exc)) from exc
+        headers = {"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",
+                   "X-Revision-Id": job["revision_id"],
+                   "X-Content-Hash": job["snapshot"]["content_hash"],
+                   "X-File-Hash": job["result"]["file_hash"]}
+        if job["format"] == "print":
+            headers["Content-Security-Policy"] = (
+                "default-src 'none'; style-src 'unsafe-inline'; font-src 'none'; "
+                "script-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
+            )
+        return FileResponse(path, media_type=MEDIA_TYPES[job["format"]], headers=headers,
+                            filename=None if preview else download_name(job),
+                            content_disposition_type="inline" if preview else "attachment")
+
+    @app.get("/api/exports/{export_id}/download", dependencies=[Depends(authorize)])
+    def download_export(export_id: Identifier, user: CurrentUser = Depends(authorize)):
+        return export_response(export_id, user)
+
+    @app.get("/api/exports/{export_id}/preview", dependencies=[Depends(authorize)])
+    def preview_export(export_id: Identifier, user: CurrentUser = Depends(authorize)):
+        return export_response(export_id, user, preview=True)
 
     @app.post("/api/notes/{asset_id}/revisions", dependencies=[Depends(authorize)])
     def edit_note(asset_id: Identifier, request: NoteRevisionEdit,

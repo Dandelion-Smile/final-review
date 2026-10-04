@@ -48,3 +48,23 @@ export async function api<T>(path: string, method = "GET", data?: unknown): Prom
   }
   return body as T;
 }
+
+export async function downloadFile(path: string): Promise<void> {
+  const response = await fetch(path, { credentials: "same-origin" });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new ApiError(typeof body.detail === "string" ? body.detail : "下载失败", response.status);
+  }
+  const disposition = response.headers.get("Content-Disposition") || "";
+  const encoded = /filename\*=UTF-8''([^;]+)/i.exec(disposition);
+  const quoted = /filename="([^"]+)"/i.exec(disposition);
+  const filename = encoded ? decodeURIComponent(encoded[1]) : quoted?.[1] || "笔记导出";
+  const url = URL.createObjectURL(await response.blob());
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}

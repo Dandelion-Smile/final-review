@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from uuid import uuid4
 
+from .note_content import note_body, split_source_appendix
 from .source_locators import material_version
 from .storage import Store, stable_key
 
@@ -387,6 +388,20 @@ class DomainService:
             if row.get("revision_id") == revision_id
         ]
         revision = deepcopy(revision)
+        revision["body_markdown"], revision["source_appendix"] = split_source_appendix(
+            revision["markdown"]
+        )
+        revision["body_markdown"] = note_body(revision)
+        if not revision.get("points"):
+            references = deepcopy(references)
+            for ref in references:
+                version = self._owned("material_version", ref["material_version_id"])
+                document = self.store.get("document", ref["document_id"])
+                ref.update(
+                    file_name=version["file_name"], source_type=version["source_type"],
+                    chunk_id=ref["locator_id"],
+                    available=bool(document and document.get("parse_status") == "ready"),
+                )
         snapshots = self.store.scan("source_snapshot", {"course_id": asset["course_id"]})
         for point in revision.get("points", []):
             for ref in point["references"]:
@@ -583,7 +598,6 @@ class DomainService:
                         chunk_ordinal=chunk.get("chunk_ordinal", 0),
                     )
             now, revision_id = _now(), _id("revision")
-            labels = {"source": "资料来源", "synthesis": "综合改编", "ai_supplement": "AI 补充"}
             lines = [f"# {payload['title']}"]
             for point in points:
                 lines.extend(
@@ -592,8 +606,6 @@ class DomainService:
                         f"## {point['heading']}",
                         "",
                         point["content"],
-                        "",
-                        f"来源：{labels[point['provenance']]}",
                     ]
                 )
             revision = {

@@ -31,6 +31,7 @@ class PostgresStore:
         "conversation": "conversations",
         "message": "messages",
         "note_job": "note_jobs",
+        "export_job": "export_jobs",
         "review_session": "review_sessions",
         "knowledge_point": "knowledge_points",
         "checkpoint": "checkpoints",
@@ -120,6 +121,9 @@ class PostgresStore:
                 cursor.execute("SELECT to_regclass('public.note_jobs') AS table_name")
                 if cursor.fetchone()["table_name"] is None:
                     raise StorageError("缺少笔记 Job 表；请先运行数据库迁移")
+                cursor.execute("SELECT to_regclass('public.export_jobs') AS table_name")
+                if cursor.fetchone()["table_name"] is None:
+                    raise StorageError("缺少导出 Job 表；请先运行数据库迁移")
         except psycopg.Error as exc:
             raise StorageError("PostgreSQL 初始化检查失败") from exc
 
@@ -503,6 +507,44 @@ class PostgresStore:
                 "ORDER BY created_at DESC", (self._user(), course_id),
             )
             return [self._job(row) for row in cursor.fetchall()]
+
+    def claim_export_job(self) -> dict | None:
+        """Claim across owners; every subsequent operation binds the returned owner."""
+        from datetime import UTC, datetime, timedelta
+
+        with self.transaction():
+            with self.connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT record_key,user_id,data FROM export_jobs WHERE "
+                    "data->>'status'='queued' OR (data->>'status'='running' AND "
+                    "(data->>'lease_until')::timestamptz<now()) "
+                    "ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1"
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    return None
+                job = row["data"]
+                attempts = job.get("attempts", 0) + 1
+                job = {**job, "attempts": attempts, "error": None,
+                       "status": "running", "lease_until": (
+                           datetime.now(UTC) + timedelta(minutes=10)).isoformat()}
+                if attempts > job.get("max_attempts", 3):
+                    job.update(status="failed", lease_until=None,
+                               error="导出多次中断，请重试")
+                cursor.execute("UPDATE export_jobs SET data=%s WHERE record_key=%s",
+                               (Jsonb(job), row["record_key"]))
+        return {**job, "user_id": str(row["user_id"])} if job["status"] == "running" else None
+
+    def finish_export_job(self, job_id: str, attempt: int, *, result: dict | None = None,
+                          error: str | None = None) -> bool:
+        with self.transaction():
+            job = self.get_for_update("export_job", job_id)
+            if not job or job["status"] != "running" or job["attempts"] != attempt:
+                return False
+            job.update(status="failed" if error else "succeeded", result=result,
+                       error=error, lease_until=None)
+            self.put("export_job", job_id, job)
+        return True
 
     def claim_note_job(self) -> dict | None:
         """Claim a queued note or an expired lease, across worker processes."""

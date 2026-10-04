@@ -9,13 +9,17 @@ from conftest import MemoryStore, ScriptedModel, TestEmbeddings
 from final_review.agent import FinalReviewAgent
 from final_review.api import create_app
 from final_review.config import ChatModelConfig, Settings
+from final_review.export_jobs import process_export_job
 from final_review.material_jobs import process_material_job
 from final_review.note_jobs import process_note_job
 from final_review.rag import KnowledgeBase
 
 
 def app():
+    from tempfile import mkdtemp
+
     settings = Settings(_env_file=None, embedding_dimensions=3, material_vision_enabled=False)
+    settings.exports_dir = mkdtemp(prefix="final_review_e2e_exports_")
     settings.chat_models = [ChatModelConfig(
         id=model_id, label=label, model=model_id,
         base_url="https://example.invalid/v1", api_key="test-key",
@@ -80,6 +84,18 @@ def app():
                 time.sleep(0.1)
 
     Thread(target=note_work, daemon=True).start()
+
+    def export_work():
+        import time
+
+        while True:
+            job = store.claim_export_job()
+            if job:
+                process_export_job(store, settings, job)
+            else:
+                time.sleep(0.1)
+
+    Thread(target=export_work, daemon=True).start()
 
     def reset():
         with store.lock:

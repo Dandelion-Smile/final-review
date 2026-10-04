@@ -53,18 +53,29 @@
 .notes-page a {
   color: #246756;
 }
+.notes-page.note-detail { padding-top: 0; }
+.note-detail-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+.note-detail > .top { height: auto; min-height: 32px; margin-top: 6px; gap: 16px; flex-wrap: wrap; }
+.note-detail .note-detail-head { margin: 10px 0 20px; }
 .notes-page button.note-back {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
+  min-height: 34px;
+  padding: 7px 11px;
+  background: #fffefa;
+  border-color: #cbd6d8;
+  color: #193650;
+  font-size: 13px;
+  font-weight: 500;
+}
+.note-back > svg { flex: none; color: #637a87; }
+.notes-page button.note-back:hover {
   background: #edf5ef;
-  border-color: #cbdcd5;
+  border-color: #78a48f;
   color: #246756;
 }
-.notes-page button.note-back:hover {
-  background: #e2eee5;
-  border-color: #78a48f;
-}
+.note-back:hover > svg { color: #246756; }
 .notes-filters {
   display: flex;
   gap: 8px;
@@ -291,6 +302,25 @@
 .note-point-body {
   min-width: 0;
 }
+.note-point-reading { grid-template-columns: minmax(0, 1fr); }
+.note-sources-footer { padding: 24px 0; }
+.note-sources-dialog {
+  width: min(760px, calc(100vw - 32px));
+  max-height: 85vh;
+  overflow: auto;
+  border: 1px solid #bdcccd;
+  border-radius: 12px;
+  padding: 24px;
+  background: #fffefa;
+  color: #193650;
+  overflow-wrap: anywhere;
+}
+.note-sources-dialog::backdrop { background: #102b3a99; }
+.note-source-group { padding: 12px 0; border-bottom: 1px solid #dce4de; }
+.note-sources-dialog blockquote { margin: 0; white-space: pre-wrap; line-height: 1.7; }
+@media print {
+  .note-sources-footer, .note-sources-dialog, .note-point-sources { display: none !important; }
+}
 .note-point-number {
   font-size: 12px;
   color: #637a87;
@@ -488,4 +518,57 @@
     max-height: 85vh;
     overflow: auto;
   }
+}
+.notes-page button.note-print-trigger {
+  display: inline-flex; align-items: center; gap: 8px; min-height: 34px; padding: 7px 14px;
+  background: #123c5c; border-color: #123c5c; color: #fffefa;
+  font-size: 14px; font-weight: 600;
+}
+.notes-page button.note-print-trigger:hover { background: #265573; }
+.note-export-dialog, .note-print-dialog {
+  box-sizing: border-box; color: #193650; background: #fffefa;
+  border: 1px solid #cbdcd5; border-radius: 12px;
+  box-shadow: 0 20px 70px #071d3155; padding: 28px;
+  max-height: 88dvh; overflow: auto;
+}
+.note-export-dialog { width: min(760px, calc(100vw - 36px)); }
+body:has(.note-export-dialog[open]) { overflow: hidden; }
+.note-export-dialog::backdrop, .note-print-dialog::backdrop { background: #0c2c42a6; }
+.note-export-dialog-head { display: flex; justify-content: space-between; align-items: center; gap: 18px; }
+.note-export-dialog-head small { color: #637a87; font-size: 12px; letter-spacing: .06em; }
+.note-export-dialog-head h2 { margin: 8px 0 0; font: 28px/1.35 "Songti SC", "SimSun", serif; }
+.notes-page button.note-dialog-close { padding: 2px; width: 32px; height: 32px; font-size: 24px; border: 0; background: transparent; color: #637a87; }
+.notes-page button.note-dialog-close:hover { background: #edf5ef; color: #193650; }
+.note-export-description { margin: 22px 0 18px; color: #637a87; font-size: 13px; line-height: 1.7; }
+.note-export-formats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.notes-page .note-export-formats button { text-align: left; padding: 17px 14px; background: #edf5ef; border-color: #d0dfd4; }
+.note-export-formats strong { display: block; font-size: 16px; font-weight: 600; }
+.note-export-formats small { display: block; margin-top: 9px; font-size: 12px; color: #637a87; }
+.notes-page .note-export-formats button:hover:not(:disabled) { background: #e2eee5; border-color: #78a48f; }
+.note-export-files-head { display: flex; justify-content: space-between; align-items: center; margin-top: 28px; padding-bottom: 12px; border-bottom: 1px solid #dce4de; }
+.note-export-files-head h3 { margin: 0; font-size: 14px; }
+.note-export-files-head span { font-size: 12px; color: #637a87; }
+.note-export-empty { padding: 24px 0; color: #637a87; font-size: 13px; line-height: 1.8; }
+.note-export-file { display: flex; align-items: center; gap: 14px; padding: 16px 0; border-bottom: 1px solid #dce4de; }
+.note-export-file-icon { display: grid; place-items: center; flex: none; width: 42px; height: 48px; border: 1px solid #d0dfd4; border-radius: 5px; background: #edf5ef; font: 11px/1 Consolas, monospace; color: #246756; }
+.note-export-file-info { flex: 1; min-width: 0; }
+.note-export-file-info strong { font-size: 14px; }
+.note-export-file-info p { margin: 6px 0 0; font-size: 12px; color: #637a87; overflow-wrap: anywhere; }
+.note-export-file-info p[role="alert"] { color: #923b2b; }
+.notes-page .note-export-file button { padding: 8px 11px; font-size: 12px; }
+.notes-page button.note-file-download { background: #e2eee5; border-color: #cbdcd5; color: #246756; }
+.note-export-footer { margin-top: 22px; color: #637a87; font-size: 12px; line-height: 1.7; }
+.note-export-hint { color:#65726a; font-size:14px; }
+.note-export-hint a { margin-left:10px; }
+.note-print-dialog[open] { display: flex; flex-direction: column; width: min(1100px, calc(100vw - 36px)); height: 88dvh; gap: 16px; }
+.note-print-dialog .note-export-dialog-head { flex: none; }
+.note-preview-hint { margin: 0; color: #637a87; font-size: 12px; line-height: 1.7; }
+.note-print-dialog iframe { width: 100%; flex: 1; min-height: 0; border: 1px solid #dce4de; border-radius: 6px; background: white; }
+@media (max-width: 760px) {
+  .notes-page.note-detail { padding-top: 0; }
+  .note-export-dialog, .note-print-dialog { padding: 18px; }
+  .note-export-formats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .note-export-file { flex-wrap: wrap; gap: 10px; }
+  .note-export-file .note-actions { width: 100%; justify-content: flex-end; }
+  .note-print-dialog .note-export-dialog-head { align-items: flex-start; flex-direction: column; }
 }

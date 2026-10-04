@@ -103,6 +103,11 @@ class NoteConfirmPreview(Model):
     revision_id: Identifier
 
 
+class NoteExportCreate(Model):
+    revision_id: Identifier
+    format: Literal["markdown", "docx", "pdf", "print"]
+
+
 class NoteConfirm(NoteConfirmPreview):
     confirmation_id: Identifier
 

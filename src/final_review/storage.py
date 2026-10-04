@@ -34,6 +34,7 @@ class StorageError(RuntimeError):
 class SurrealStore:
     TABLES = {
         "course",
+        "export_job",
         "document",
         "chunk",
         "conversation",

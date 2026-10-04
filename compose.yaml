@@ -14,10 +14,12 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql://final_review:${POSTGRES_PASSWORD}@postgres:5432/final_review
+      EXPORTS_DIR: /app/exports
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
       - ./uploads:/app/uploads
+      - ./exports:/app/exports
     depends_on:
       postgres:
         condition: service_started
@@ -46,6 +48,21 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql://final_review:${POSTGRES_PASSWORD}@postgres:5432/final_review
+    depends_on:
+      agent:
+        condition: service_healthy
+    restart: on-failure:3
+  export-worker:
+    build: .
+    command: ["uv", "run", "--no-sync", "python", "-m", "final_review.export_jobs"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://final_review:${POSTGRES_PASSWORD}@postgres:5432/final_review
+      EXPORTS_DIR: /app/exports
+      EXPORT_CHROMIUM_EXECUTABLE: ""
+      EXPORT_PANDOC_EXECUTABLE: ""
+    volumes:
+      - ./exports:/app/exports
     depends_on:
       agent:
         condition: service_healthy

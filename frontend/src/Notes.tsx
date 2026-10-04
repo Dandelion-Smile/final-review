@@ -3,6 +3,8 @@ import ReactMarkdown from "react-markdown";
 import { ConfigProvider, Select } from "antd";
 import { api, type Course } from "./workbench-api";
 import "./notes.css";
+import NoteExport from "./NoteExport";
+import Topbar from "./Topbar";
 
 type Reference = {
   document_id: string;
@@ -28,7 +30,10 @@ type Revision = {
   revision_no: number;
   title: string;
   markdown: string;
+  body_markdown?: string;
+  source_appendix?: string;
   state: string;
+  confirmed_at?: string;
   note_type: string;
   points?: Point[];
   edit_source?: string;
@@ -58,7 +63,7 @@ type Asset = {
   sources: string[];
   has_pending_changes: boolean;
 };
-type Detail = { asset: Asset; revision: Revision; history: Revision[] };
+type Detail = { asset: Asset; revision: Revision; history: Revision[]; references?: Reference[] };
 type Confirmation = {
   confirmation_id: string;
   expires_at: string;
@@ -276,6 +281,7 @@ function NoteEditor({
   const [busy, setBusy] = useState(false);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [sourcePoint, setSourcePoint] = useState<string | null>(null);
+  const [sourcesOpen, setSourcesOpen] = useState(false);
   useModalKeyboard(Boolean(confirmation || sourcePoint), () => {
     if (!busy) {
       setConfirmation(null);
@@ -398,8 +404,9 @@ function NoteEditor({
   }
   if (!data)
     return (
-      <section className="notes-page">
-        <BackToNotes />
+      <section className="notes-page note-detail">
+        <div className="note-detail-toolbar"><BackToNotes /></div>
+        <Topbar />
         {error ? (
           <p role="alert">{error}</p>
         ) : (
@@ -413,7 +420,14 @@ function NoteEditor({
     latest && data.asset.status !== "archived" && points.length > 0;
   return (
     <section className="notes-page note-detail" aria-label="笔记详情">
-      <BackToNotes />
+      <div className="note-detail-toolbar">
+        <BackToNotes />
+        {revision.confirmed_at && ["confirmed", "superseded", "archived"].includes(revision.state) && (
+          <NoteExport key={revisionId} assetId={assetId} revisionId={revisionId}
+            revisionNo={revision.revision_no} historical={data.asset.current_revision_id !== revisionId} />
+        )}
+      </div>
+      <Topbar />
       <header className="note-detail-head">
         <div>
           <small>
@@ -474,6 +488,11 @@ function NoteEditor({
           />
         </div>
       </div>
+      {!(revision.confirmed_at && ["confirmed", "superseded", "archived"].includes(revision.state)) && (
+        <p className="note-export-hint">草稿需确认后才能导出。
+          {data.asset.current_revision_id && <a href={`#note/${assetId}/${data.asset.current_revision_id}`}>打开正式版本</a>}
+        </p>
+      )}
       {error && (
         <p className="notes-error" role="alert">
           {error}
@@ -512,7 +531,7 @@ function NoteEditor({
       )}
       {points.length ? (
         points.map((point, index) => (
-          <article className="note-point" key={point.point_id}>
+          <article className={`note-point${editing ? "" : " note-point-reading"}`} key={point.point_id}>
             <div className="note-point-body">
               <small className="note-point-number">考点 {index + 1}</small>
               {editing ? (
@@ -565,7 +584,7 @@ function NoteEditor({
                 </>
               )}
             </div>
-            <aside
+            {editing && <aside
               className="note-point-sources"
               aria-label={`考点 ${index + 1} 来源`}
             >
@@ -662,12 +681,12 @@ function NoteEditor({
                   添加资料引用
                 </button>
               )}
-            </aside>
+            </aside>}
           </article>
         ))
       ) : (
         <div className="note-markdown">
-          <ReactMarkdown>{revision.markdown}</ReactMarkdown>
+          <ReactMarkdown>{revision.body_markdown ?? revision.markdown}</ReactMarkdown>
           <p>历史笔记没有考点结构，暂只支持查看。</p>
         </div>
       )}
@@ -691,6 +710,12 @@ function NoteEditor({
           ＋ 添加考点
         </button>
       )}
+      {!editing && <footer className="note-sources-footer">
+        <button type="button" onClick={() => setSourcesOpen(true)}>查看来源与引用</button>
+      </footer>}
+      {sourcesOpen && <NoteSources points={points} references={data.references || []}
+        appendix={revision.source_appendix || ""} courseId={data.asset.course_id}
+        revisionNo={revision.revision_no} onClose={() => setSourcesOpen(false)} />}
       {sourcePoint && (
         <SourcePicker
           courseId={data.asset.course_id}
@@ -790,9 +815,52 @@ function NoteEditor({
 function BackToNotes() {
   return (
     <button type="button" className="note-back" onClick={() => { window.location.hash = "#notes"; }}>
-      <span aria-hidden="true">←</span> 我的笔记
+      <svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="m8 5-5 5 5 5M3 10h14" />
+      </svg>
+      我的笔记
     </button>
   );
+}
+
+function NoteSources({ points, references, appendix, courseId, revisionNo, onClose }: {
+  points: Point[]; references: Reference[]; appendix: string; courseId: string;
+  revisionNo: number; onClose: () => void;
+}) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const element = dialog.current!;
+    const previous = document.activeElement as HTMLElement | null;
+    element.showModal();
+    return () => { element.close(); if (previous?.isConnected) previous.focus(); };
+  }, []);
+  const groups = points.length ? points : [{ point_id: "legacy", heading: "历史笔记来源",
+    provenance: "source" as const, references }];
+  return <dialog ref={dialog} className="note-sources-dialog" aria-label="来源与引用" aria-modal="true"
+    onCancel={(event) => { event.preventDefault(); onClose(); }}>
+    <header className="note-export-dialog-head">
+      <div><small>第 {revisionNo} 版</small><h2>来源与引用</h2></div>
+      <button type="button" onClick={onClose} aria-label="关闭来源与引用">关闭</button>
+    </header>
+    {!points.length && <p>历史笔记未保存逐条考点来源关系，以下为笔记级来源。</p>}
+    {groups.map((point) => <section className="note-source-group" key={point.point_id}>
+      <h3>{point.heading}</h3>
+      {points.length > 0 && <p>{provenance[point.provenance]}</p>}
+      {point.references.map((ref, index) => <div className="note-reference" key={`${ref.chunk_id}-${index}`}>
+        <b>{ref.file_name || ref.document_id}</b>
+        <small>{sourceNames[ref.source_type || ""] || ref.source_type || "资料"} · {ref.position != null
+          ? ref.position_kind === "slide" ? `第 ${ref.position} 张幻灯片` : ref.position_kind === "page"
+            ? `第 ${ref.position} 页` : `片段 ${ref.position}`
+          : `片段 ${(ref.chunk_ordinal || 0) + 1}`}</small>
+        <span>引用摘录</span><blockquote>{ref.quote || ref.snapshot?.excerpt || "未保存引用摘录"}</blockquote>
+        {ref.available !== false ? <a href={`#materials/${courseId}/${ref.document_id}/${ref.chunk_id}`} onClick={onClose}>查看原文 →</a>
+          : <span>原资料已删除或不可用，以上为保留的引用内容。</span>}
+      </div>)}
+      {!point.references.length && <p>{point.provenance === "ai_supplement"
+        ? "AI 补充内容，没有课程资料引用。" : "未保存来源引用。"}</p>}
+    </section>)}
+    {appendix && <div className="note-markdown"><ReactMarkdown>{appendix}</ReactMarkdown></div>}
+  </dialog>;
 }
 
 function NoteSelect({ label, value, options, onChange }: {

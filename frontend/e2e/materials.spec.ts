@@ -148,8 +148,7 @@ test("student edits, filters and deletes an unreferenced material", async ({ pag
 
 test("referenced material requires an explicit source snapshot choice", async ({ page, request }) => {
   const course = await (await request.post("http://127.0.0.1:8081/api/courses", { data: { name: "数据库" } })).json();
-  await page.goto("/");
-  await page.getByRole("button", { name: "我的资料" }).first().click();
+  await page.goto("/#materials");
   await page.getByLabel("文件").setInputFiles({ name: "source.md", mimeType: "text/markdown", buffer: Buffer.from("事务与并发控制") });
   await page.getByRole("button", { name: "上传并处理" }).click();
   await expect(page.locator(".material-status.ready")).toBeVisible();
@@ -205,8 +204,7 @@ test("student opens a material excerpt and returns to its link", async ({ page }
 
 test("duplicate uploads report ready and failed material states truthfully", async ({ page, request }) => {
   await request.post("http://127.0.0.1:8081/api/courses", { data: { name: "重复资料" } });
-  await page.goto("/");
-  await page.getByRole("button", { name: "我的资料" }).first().click();
+  await page.goto("/#materials");
   const ready = { name: "ready.md", mimeType: "text/markdown", buffer: Buffer.from("测试文字") };
   const broken = { name: "broken.png", mimeType: "image/png", buffer: Buffer.from("broken image") };
   await page.getByLabel("文件", { exact: true }).setInputFiles(ready);

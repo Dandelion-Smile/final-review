@@ -101,7 +101,7 @@ test("chat switches models and sends conversation history", async ({ page, reque
   await page.getByRole("textbox", { name: /输入你的问题/ }).focus();
   const focusStyle = await page.getByRole("textbox", { name: /输入你的问题/ }).evaluate(element => {
     const textarea = getComputedStyle(element);
-    const composer = getComputedStyle(element.parentElement!);
+    const composer = getComputedStyle(element.closest(".composer")!);
     return { outline: textarea.outlineStyle, shadow: composer.boxShadow, border: composer.borderColor };
   });
   expect(focusStyle).toEqual({ outline: "none", shadow: "none", border: "rgb(179, 198, 211)" });
@@ -139,7 +139,8 @@ test("note request creates an openable sourced draft", async ({ page, request })
   });
   expect(ingested.ok()).toBeTruthy();
   await page.getByRole("button", { name: "AI 对话" }).click();
-  await page.getByRole("button", { name: "生成背诵笔记", exact: true }).click();
+  await page.getByRole("textbox", { name: "输入你的问题" }).fill("生成笔记，整理成适合背诵的考点清单");
+  await page.getByRole("button", { name: "发送消息" }).click();
   await expect(page.getByText("补充笔记要求")).toBeVisible();
   await expect(page.getByRole("dialog", { name: "补充笔记要求" }).getByRole("button", { name: "生成笔记" })).toBeDisabled();
   await page.reload();
@@ -183,9 +184,9 @@ test("note request creates an openable sourced draft", async ({ page, request })
   await expect(preview).toContainText("TCP 讲义");
   await expect(preview).toContainText("已选 1 份资料");
   await expect(preview).toContainText("读取 1/1 个片段");
-  await expect(preview.getByRole("link", { name: /查看 \d+ 处引用/ })).toBeVisible();
+  await expect(preview.getByRole("link", { name: "查看原文 →" })).toBeVisible();
   await page.route("**/api/courses/*/material-jobs", route => route.fulfill({ status: 500, json: {} }));
-  await preview.getByRole("link", { name: /查看 \d+ 处引用/ }).first().click();
+  await preview.getByRole("link", { name: "查看原文 →" }).first().click();
   await expect(page.getByRole("dialog", { name: "整理后的资料" })).toContainText("TCP 三次握手同步双方初始序列号");
   await expect(page.getByRole("status")).toContainText("处理状态加载失败");
 });
@@ -219,11 +220,15 @@ test("one source file links to every cited location", async ({ page, request }) 
   });
   await page.goto("/#note/example/draft");
   const note = page.getByRole("region", { name: "笔记详情" });
-  await expect(note.getByRole("link", { name: /HTML.pptx/ })).toHaveCount(1);
-  await note.getByRole("link", { name: /查看 3 处引用/ }).click();
+  const links = note.getByRole("link", { name: "查看原文 →" });
+  await expect(links).toHaveCount(3);
+  for (let index = 0; index < chunkIds.length; index++) {
+    await expect(links.nth(index)).toHaveAttribute("href", new RegExp(chunkIds[index]));
+  }
+  await links.last().click();
   const source = page.getByRole("dialog", { name: "整理后的资料" });
-  await expect(source).toContainText("本条内容引用 3 处位置");
-  await expect(source.locator(".material-reading-section.cited")).toHaveCount(3);
+  await expect(source).toContainText("本条内容引用 1 处位置");
+  await expect(source.locator(".material-reading-section.cited")).toHaveCount(1);
   await expect(source.locator(".material-preview-content")).toContainText("第 4 张幻灯片内容");
 });
 

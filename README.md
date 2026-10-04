@@ -66,6 +66,10 @@ uv run uvicorn final_review.api:create_app --factory --host 127.0.0.1 --port 808
 uv run python -m final_review.material_jobs
 # 在第三个终端启动笔记生成 worker
 uv run python -m final_review.note_jobs
+# 首次使用 PDF 导出先安装 Chromium
+uv run playwright install chromium
+# 在第四个终端启动笔记导出 worker（无需模型 Key）
+uv run python -m final_review.export_jobs
 ```
 
 打开 [接口文档](http://127.0.0.1:8080/docs)。迁移命令会从 `.env` 读取
@@ -97,6 +101,8 @@ docker compose up --build -d
 | --- | --- |
 | LLM_API_KEY / LLM_BASE_URL / LLM_MODEL | 聊天模型，须支持工具调用 |
 | NOTE_MODEL_TIMEOUT / NOTE_MODEL_MAX_RETRIES | 笔记 worker 单次模型请求超时（默认 120 秒）和底层重试次数（默认 1）；独立于网页聊天的 MODEL_TIMEOUT |
+| EXPORTS_DIR | 私有导出文件目录（默认 exports）；后端与导出 worker 必须指向同一目录，不可作为静态目录公开 |
+| EXPORT_PANDOC_EXECUTABLE / EXPORT_CHROMIUM_EXECUTABLE | 可选转换器绝对路径；默认使用随依赖安装的 Pandoc 和 Playwright Chromium |
 | EMBEDDING_API_KEY / EMBEDDING_BASE_URL / EMBEDDING_MODEL | Embedding 提供商 |
 | EMBEDDING_DIMENSIONS | 必须匹配实际维度；提供商接口需接受 dimensions 参数 |
 | DATABASE_URL | 本机 PostgreSQL 连接串 |
