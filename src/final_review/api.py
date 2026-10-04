@@ -46,6 +46,9 @@ from .schemas import (
     MaterialDelete,
     MaterialInput,
     MaterialUpdate,
+    NoteConfirm,
+    NoteConfirmPreview,
+    NoteRevisionEdit,
     ResumeNoteRequest,
     ResumeRequest,
     SourceType,
@@ -745,6 +748,25 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
         asset_id: Identifier, revision_id: Identifier, user: CurrentUser = Depends(authorize)
     ):
         return domain(user).note_draft(asset_id, revision_id)
+
+    @app.get("/api/courses/{course_id}/notes", dependencies=[Depends(authorize)])
+    def list_notes(course_id: Identifier, user: CurrentUser = Depends(authorize)):
+        return domain(user).list_notes(course_id)
+
+    @app.post("/api/notes/{asset_id}/revisions", dependencies=[Depends(authorize)])
+    def edit_note(asset_id: Identifier, request: NoteRevisionEdit,
+                  user: CurrentUser = Depends(authorize)):
+        return domain(user).edit_note(asset_id, request.model_dump())
+
+    @app.post("/api/notes/{asset_id}/confirm-preview", dependencies=[Depends(authorize)])
+    def note_confirm_preview(asset_id: Identifier, request: NoteConfirmPreview,
+                             user: CurrentUser = Depends(authorize)):
+        return domain(user).note_confirm_preview(asset_id, request.revision_id)
+
+    @app.post("/api/notes/{asset_id}/confirm", dependencies=[Depends(authorize)])
+    def confirm_note(asset_id: Identifier, request: NoteConfirm,
+                     user: CurrentUser = Depends(authorize)):
+        return domain(user).confirm_note(asset_id, request.revision_id, request.confirmation_id)
 
     @app.post("/api/assets/{asset_id}/revisions", dependencies=[Depends(authorize)])
     def create_asset_revision(

@@ -5,14 +5,17 @@ import zhCN from "antd/locale/zh_CN";
 import "./styles.css";
 import Workbench from "./Workbench";
 import Materials from "./Materials";
+import Notes from "./Notes";
 import ChatHome from "./ChatHome";
 import { api, type Course } from "./workbench-api";
 import CourseSwitcher from "./CourseSwitcher";
+import NavigationIcon, { type NavigationIconName } from "./NavigationIcon";
 
-type Page = "home" | "workbench" | "materials" | "quiz" | "report";
-const navigation: [Page, string, string][] = [["home", "▢", "AI 对话"], ["workbench", "◫", "课程管理"], ["materials", "▱", "我的资料"], ["quiz", "✎", "模拟测验"], ["report", "▥", "学习报告"]];
+type Page = "home" | "workbench" | "materials" | "notes" | "quiz" | "report";
+const navigation: [Page, NavigationIconName, string][] = [["home", "chat", "AI 对话"], ["workbench", "courses", "课程管理"], ["materials", "materials", "我的资料"], ["notes", "notes", "我的笔记"], ["quiz", "quiz", "模拟测验"], ["report", "report", "学习报告"]];
 function App() {
-  const [page, setPage] = useState<Page>(window.location.hash.startsWith("#materials/") ? "materials" : /^(#note\/|#chat\/)/.test(window.location.hash) ? "home" : "workbench");
+  const [page, setPage] = useState<Page>(/^#materials(?:\/|$)/.test(window.location.hash) ? "materials" : /^#note\//.test(window.location.hash) || window.location.hash === "#notes" ? "notes" : /^#chat\//.test(window.location.hash) ? "home" : "workbench");
+  const [routeHash, setRouteHash] = useState(window.location.hash);
   const [course, setCourse] = useState<Course | null>(null);
   const [courseReady, setCourseReady] = useState(false);
   const [courses, setCourses] = useState<Course[]>([]);
@@ -39,18 +42,23 @@ function App() {
     return () => { active = false; };
   }, []);
   useEffect(() => {
-    const onHashChange = () => {
+    let acceptedHash = window.location.hash;
+    const onHashChange = (event: HashChangeEvent) => {
+      if (window.location.hash === acceptedHash) return;
+      if (!window.dispatchEvent(new Event("note-navigation", { cancelable: true }))) { event.stopImmediatePropagation(); window.history.replaceState(null, "", acceptedHash); return; }
+      acceptedHash = window.location.hash;
+      setRouteHash(window.location.hash);
       const hash = window.location.hash;
-      if (hash.startsWith("#materials/")) setPage("materials");
-      else if (hash.startsWith("#note/")) setPage("home");
+      if (/^#materials(?:\/|$)/.test(hash)) setPage("materials");
+      else if (hash.startsWith("#note/") || hash === "#notes") setPage("notes");
       else if (hash.startsWith("#chat/")) {
         setPage("home");
         const match = /^#chat\/([^/]+)(?:\/([^/]+))?$/.exec(hash);
         if (match) { setConversationId(match[2] ?? null); const linked = courses.find(item => item.course_id === match[1] && item.status !== "deleted"); if (linked) { setCourse(linked); localStorage.setItem("current-course-id", linked.course_id); if (match[2]) localStorage.setItem(`current-conversation-${linked.course_id}`, match[2]); } }
-      }
+      } else { const target = hash.slice(1) as Page; setPage(["workbench", "quiz", "report", "home"].includes(target) ? target : "workbench"); }
     };
-    window.addEventListener("hashchange", onHashChange);
-    return () => window.removeEventListener("hashchange", onHashChange);
+    window.addEventListener("hashchange", onHashChange, true);
+    return () => window.removeEventListener("hashchange", onHashChange, true);
   }, [courses]);
   const onSelectCourse = useCallback((value: Course | null) => {
     if (course?.course_id !== value?.course_id) { setConversationId(value ? localStorage.getItem(`current-conversation-${value.course_id}`) : null); setChatKey(key => key + 1); }
@@ -60,21 +68,25 @@ function App() {
     if (value && value.status !== "deleted") localStorage.setItem("current-course-id", value.course_id);
   }, [course?.course_id]);
   const selectCourse = (value: Course) => {
+    if (!window.dispatchEvent(new Event("note-navigation", { cancelable: true }))) return;
     onSelectCourse(value);
+    if (page === "notes") window.location.hash = "#notes";
     if (page === "home") { const remembered = localStorage.getItem(`current-conversation-${value.course_id}`); window.location.hash = `#chat/${value.course_id}${remembered ? `/${remembered}` : ""}`; }
     if (page === "materials" && window.location.hash.startsWith("#materials/")) window.location.hash = "#materials";
   };
   const selectConversation = (id: string) => {
+    if (!window.dispatchEvent(new Event("note-navigation", { cancelable: true }))) return;
     if (!course) return;
     localStorage.setItem(`current-conversation-${course.course_id}`, id);
     setConversationId(id); setPage("home"); window.location.hash = `#chat/${course.course_id}/${id}`;
   };
   const newConversation = () => {
+    if (!window.dispatchEvent(new Event("note-navigation", { cancelable: true }))) return;
     setConversationId(null); setChatKey(key => key + 1); setPage("home");
     if (course) { localStorage.removeItem(`current-conversation-${course.course_id}`); window.location.hash = `#chat/${course.course_id}`; }
   };
-  const navigate = (id: Page) => { setPage(id); if (id === "home" && course) window.location.hash = `#chat/${course.course_id}${conversationId ? `/${conversationId}` : ""}`; else if (id !== "home") window.location.hash = `#${id}`; };
-  return <div className="shell"><aside><div className="brand"><span>✦</span><div><b>考前笔记</b><small>让努力，更有方向。</small></div></div><CourseSwitcher courses={courses} course={course} conversationId={conversationId} onCourse={selectCourse} onConversation={selectConversation} onNew={newConversation} onRenamed={() => setRefreshKey(key => key + 1)} refreshKey={refreshKey}/><nav>{navigation.map(([id, icon, text]) => <button className={page === id ? "active" : ""} onClick={() => navigate(id)} key={id}><i>{icon}</i>{text}</button>)}</nav><p className="quote">复习不是把资料看完，<br />是把会考的写出来。</p><small className="sign">— 考前笔记</small></aside><main className={page === "home" ? "dialog-main" : ""}>{page !== "home" && <Topbar />}{page === "home" && <ChatHome key={`${course?.course_id}-${chatKey}`} courseId={course?.status === "deleted" ? null : course?.course_id ?? null} selectedConversationId={conversationId} titleRefreshKey={refreshKey} onConversationRenamed={() => setRefreshKey(key => key + 1)} onConversationCreated={id => { setConversationId(id); setRefreshKey(key => key + 1); if (course) localStorage.setItem(`current-conversation-${course.course_id}`, id); if (course) window.location.hash = `#chat/${course.course_id}/${id}`; }} onNewConversation={newConversation} />}{page === "workbench" && courseReady && <Workbench selectedId={course?.course_id ?? null} onSelect={onSelectCourse} />}{page === "materials" && <Materials selectedCourse={course} />}{page === "quiz" && <Quiz />}{page === "report" && <Report />}</main><div className="mobile-course"><CourseSwitcher courses={courses} course={course} conversationId={conversationId} onCourse={selectCourse} onConversation={selectConversation} onNew={newConversation} onRenamed={() => setRefreshKey(key => key + 1)} refreshKey={refreshKey}/></div><div className="mobile-nav">{navigation.map(([id, icon, text]) => <button className={page === id ? "active" : ""} key={id} onClick={() => navigate(id)}><span>{icon}</span>{text}</button>)}</div></div>;
+  const navigate = (id: Page) => { if (id === "home" && course) window.location.hash = `#chat/${course.course_id}${conversationId ? `/${conversationId}` : ""}`; else if (id !== "home") window.location.hash = `#${id}`; };
+  return <div className="shell"><aside><CourseSwitcher courses={courses} course={course} conversationId={conversationId} onCourse={selectCourse} onConversation={selectConversation} onNew={newConversation} onRenamed={() => setRefreshKey(key => key + 1)} refreshKey={refreshKey}/><nav>{navigation.map(([id, icon, text]) => <button className={page === id ? "active" : ""} onClick={() => navigate(id)} key={id}><NavigationIcon name={icon} />{text}</button>)}</nav><p className="quote">复习不是把资料看完，<br />是把会考的写出来。</p><small className="sign">— 考前笔记</small></aside><main className={page === "home" ? "dialog-main" : ""}>{page !== "home" && <Topbar />}{page === "home" && <ChatHome key={`${course?.course_id}-${chatKey}`} courseId={course?.status === "deleted" ? null : course?.course_id ?? null} selectedConversationId={conversationId} titleRefreshKey={refreshKey} onConversationRenamed={() => setRefreshKey(key => key + 1)} onConversationCreated={id => { setConversationId(id); setRefreshKey(key => key + 1); if (course) localStorage.setItem(`current-conversation-${course.course_id}`, id); if (course) window.location.hash = `#chat/${course.course_id}/${id}`; }} onNewConversation={newConversation} />}{page === "workbench" && courseReady && <Workbench selectedId={course?.course_id ?? null} onSelect={onSelectCourse} />}{page === "materials" && <Materials selectedCourse={course} />}{page === "notes" && courseReady && <Notes hash={routeHash} course={course} onCourseResolved={id => { const linked = courses.find(item => item.course_id === id); if (linked && linked.course_id !== course?.course_id) { setCourse(linked); localStorage.setItem("current-course-id", linked.course_id); } }} />}{page === "quiz" && <Quiz />}{page === "report" && <Report />}</main><div className="mobile-course"><CourseSwitcher courses={courses} course={course} conversationId={conversationId} onCourse={selectCourse} onConversation={selectConversation} onNew={newConversation} onRenamed={() => setRefreshKey(key => key + 1)} refreshKey={refreshKey}/></div><div className="mobile-nav">{navigation.map(([id, icon, text]) => <button className={page === id ? "active" : ""} key={id} onClick={() => navigate(id)}><NavigationIcon name={icon} />{text}</button>)}</div></div>;
 }
 function Topbar(){return <header className="top"><span>{new Date().toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric", weekday: "long" })}</span><span>我的复习工作台</span></header>}
 function Box({children,className=""}:{children:React.ReactNode,className?:string}){return <section className={"box "+className}>{children}</section>}

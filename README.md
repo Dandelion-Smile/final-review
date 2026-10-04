@@ -17,6 +17,7 @@
 | 复习策略 | 真题优先；按知识点分配 1～6 题；验证考试题型与题量；保留得分解析 |
 | 反馈闭环 | 出题 → 用户作答 → 评分 → 更新会话薄弱点 → 下一轮优先覆盖 |
 | 恢复 | 自定义 PostgreSQL Checkpointer，保存图状态、父检查点、pending writes |
+| 笔记复核 | “我的笔记”找回草稿、按考点编辑 Markdown 和引用、差异预览、确认归档与不可变正式版本历史；见 [笔记编辑与确认](docs/note-review.md) |
 | 交付 | FastAPI /docs、JSON 响应、题答分离 Markdown 导出、Docker Compose |
 
 ```mermaid

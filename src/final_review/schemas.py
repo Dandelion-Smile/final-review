@@ -78,6 +78,35 @@ class AssetRevisionCreate(Model):
     source_document_ids: list[Identifier] = Field(default_factory=list, max_length=100)
 
 
+class NoteReferenceEdit(Model):
+    document_id: Identifier
+    chunk_id: Identifier
+    quote: Annotated[str, Field(min_length=1, max_length=10000)]
+
+
+class NotePointEdit(Model):
+    point_id: Identifier
+    heading: Annotated[str, Field(min_length=1, max_length=200)]
+    content: Annotated[str, Field(min_length=1, max_length=50000)]
+    provenance: Literal["source", "synthesis", "ai_supplement"]
+    # Generation merges references/content from up to twelve reading batches.
+    references: list[NoteReferenceEdit] = Field(default_factory=list, max_length=128)
+
+
+class NoteRevisionEdit(Model):
+    base_revision_id: Identifier
+    title: Annotated[str, Field(min_length=1, max_length=200)]
+    points: list[NotePointEdit] = Field(min_length=1, max_length=100)
+
+
+class NoteConfirmPreview(Model):
+    revision_id: Identifier
+
+
+class NoteConfirm(NoteConfirmPreview):
+    confirmation_id: Identifier
+
+
 class ConfirmationConsume(Model):
     confirmation_id: Identifier
 

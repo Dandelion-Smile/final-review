@@ -102,7 +102,11 @@ export default function CourseSwitcher({ courses, course, conversationId, onCour
     return () => { active = false; };
   }, [open, course?.course_id, refreshKey]);
   return <div className="course-switcher">
-    <button ref={triggerRef} className="course course-button" type="button" aria-expanded={open} aria-haspopup="dialog" aria-label={`当前课程 ${course?.name ?? "选择课程"}`} onClick={() => setOpen(value => !value)}><small>当前课程</small><strong>{course?.name ?? "选择课程"}</strong><em>⌄</em></button>
+    <button ref={triggerRef} className="course course-button" type="button" aria-expanded={open} aria-haspopup="dialog" aria-label={`当前课程 ${course?.name ?? "选择课程"}`} onClick={() => setOpen(value => !value)}>
+      <span className="course-label">当前课程</span>
+      <strong className="course-name">{course?.name ?? "选择课程"}</strong>
+      <span className="course-chevron" aria-hidden="true" />
+    </button>
     {open && createPortal(<div ref={panelRef} className="course-panel" role="dialog" aria-label="课程与对话" style={placement}>
       <div className="course-panel-heading course-panel-title"><div><small>学习空间</small><strong>切换课程与对话</strong></div><button type="button" onClick={() => setOpen(false)} aria-label="关闭切换面板">×</button></div>
       <div className="course-panel-course" ref={pickerRef} onKeyDown={handleCourseKeys}><span className="course-picker-label">当前课程</span><button type="button" className="course-picker-trigger" aria-label="切换课程" aria-haspopup="listbox" aria-expanded={courseListOpen} onClick={() => setCourseListOpen(value => !value)}><span className="course-picker-mark">▤</span><strong>{course?.name ?? "选择课程"}</strong><span className="course-picker-chevron" aria-hidden="true" /></button>{courseListOpen && <div className="course-picker-options" ref={optionsRef} role="listbox" aria-label="课程列表">{courses.filter(item => item.status !== "deleted").map(item => <button type="button" role="option" aria-selected={item.course_id === course?.course_id} key={item.course_id} onClick={() => { onCourse(item); setCourseListOpen(false); }}><span className="course-option-mark" aria-hidden="true">▤</span><span>{item.name}</span></button>)}</div>}</div>

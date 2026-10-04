@@ -9,9 +9,7 @@ type DraftCard = { asset_id: string; revision_id: string; title: string; note_ty
 type AgentResult = { session_id: string; status: string; answer: string; prompt?: { message: string; required: string[] }; note_config?: { note_type?: string; scope?: string; duration_minutes?: number }; draft?: DraftCard };
 type DispatchResult = { kind: "note"; intent: "note"; session_id: string; result: AgentResult; source_document_ids?: string[] | null }
   | { kind: "chat" | "quiz"; intent: "ask" | "quiz" | "clarify"; reply: string; model: string; citations?: ChatCitation[]; quiz?: ChatQuizCard };
-type NoteReference = { document_id: string; chunk_id: string; file_name: string; source_type: string };
 type NoteCoverage = { selected_files: number; readable_chunks: number; read_chunks: number; partial: boolean; files: { document_id: string; file_name: string; readable_chunks: number; read_chunks: number }[] };
-type NotePreviewData = { asset: { title: string; course_id: string }; revision: { markdown: string; coverage?: NoteCoverage; points: { point_id: string; heading: string; content: string; provenance: string; references: NoteReference[] }[] }; references: { point_id: string; locator_id: string }[] };
 type Message = { from: "agent" | "user"; text: string; model?: string; draft?: DraftCard; citations?: ChatCitation[]; quiz?: ChatQuizCard };
 type StoredMessage = { role: "user" | "assistant"; content: string; model?: string; draft?: DraftCard; citations?: ChatCitation[]; quiz?: ChatQuizCard };
 function restoreMessage(item: StoredMessage): Message {
@@ -22,19 +20,6 @@ type ActiveNote = { session_id: string; status: "needs_input" | "queued" | "runn
 
 function coverageSummary(coverage?: NoteCoverage): string {
   return coverage ? `已选 ${coverage.selected_files} 份资料；共有 ${coverage.readable_chunks} 个可读片段；本次读取 ${coverage.read_chunks} 个${coverage.partial ? "，部分覆盖" : "，已读取范围内全部片段"}。` : "";
-}
-
-function groupNoteReferences(references: NoteReference[]) {
-  const files = new Map<string, { file_name: string; source_type: string; document_id: string; chunk_ids: string[] }>();
-  for (const reference of references) {
-    const file = files.get(reference.document_id) ?? {
-      document_id: reference.document_id, file_name: reference.file_name,
-      source_type: reference.source_type, chunk_ids: [],
-    };
-    if (!file.chunk_ids.includes(reference.chunk_id)) file.chunk_ids.push(reference.chunk_id);
-    files.set(reference.document_id, file);
-  }
-  return [...files.values()];
 }
 
 async function noteRequest(path: string, body?: unknown): Promise<AgentResult> {
@@ -86,7 +71,6 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
   const [noteMaterials, setNoteMaterials] = useState<NoteMaterial[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [noteCancelling, setNoteCancelling] = useState(false);
-  const [preview, setPreview] = useState<NotePreviewData | null>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
   const modelPickerRef = useRef<HTMLDivElement>(null);
   const modelTriggerRef = useRef<HTMLButtonElement>(null);
@@ -142,7 +126,6 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
     setNoteScope("");
     setPickerOpen(false);
     setNoteCancelling(false);
-    setPreview(null);
     conversationId.current = selectedConversationId ?? `chat-${crypto.randomUUID()}`;
     if (courseId && selectedConversationId) {
       setHistoryLoading(true);
@@ -287,17 +270,7 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
     finally { setSavingTitle(false); }
   }
 
-  useEffect(() => {
-    const openHash = () => {
-      const match = /^#note\/([\w.-]+)\/([\w.-]+)$/.exec(window.location.hash);
-      if (!match) { setPreview(null); return; }
-      api<NotePreviewData>(`/api/assets/${match[1]}/revisions/${match[2]}`)
-        .then(setPreview).catch(() => setModelError("无法打开这份笔记草稿"));
-    };
-    window.addEventListener("hashchange", openHash);
-    openHash();
-    return () => window.removeEventListener("hashchange", openHash);
-  }, []);
+
 
   function showAgentResult(result: AgentResult) {
     setNoteRecovery(null);
@@ -518,7 +491,6 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
     {modelError && <p className="chat-error" role="alert">{modelError}</p>}
     {notePrompt && !pickerOpen && <NoteConfigDialog noteType={noteType} onNoteType={setNoteType} duration={noteDuration} onDuration={setNoteDuration} materials={noteMaterials} onChooseMaterials={() => setPickerOpen(true)} requirements={noteScope} onRequirements={value => { setNoteScope(value); if (courseId && noteSession) localStorage.setItem(`note-scope-${courseId}-${noteSession}`, value); }} onGenerate={() => void resumeNote()} onCancel={() => void cancelNote()} busy={isSending || noteCancelling} error={modelError} promptMessage={notePrompt.message} generationModel={noteModel} />}
     {pickerOpen && courseId && <NoteMaterialPicker courseId={courseId} selected={noteMaterials} onUploaded={item => { setNoteMaterials(current => current.some(existing => existing.document_id === item.document_id) ? current.map(existing => existing.document_id === item.document_id ? item : existing) : [...current, item]); if (noteSession) { const key = `note-uploads-${courseId}-${noteSession}`; const ids = JSON.parse(localStorage.getItem(key) || "[]") as string[]; localStorage.setItem(key, JSON.stringify([...new Set([...ids, item.document_id])])); } }} onConfirm={items => { setNoteMaterials(items); if (noteSession) { const key = `note-uploads-${courseId}-${noteSession}`; const ids = JSON.parse(localStorage.getItem(key) || "[]") as string[]; localStorage.setItem(key, JSON.stringify(ids.filter(id => items.some(item => item.document_id === id)))); } setPickerOpen(false); }} onClose={() => setPickerOpen(false)} />}
-    {preview && <div className="note-preview-backdrop"><section className="note-preview" role="dialog" aria-modal="true" aria-label="笔记草稿预览"><button type="button" onClick={() => { window.location.hash = ""; setPreview(null); }}>关闭</button><small>草稿 · 尚未确认</small><h2>{preview.asset.title}</h2>{preview.revision.coverage && <div className="note-preview-coverage"><p>{coverageSummary(preview.revision.coverage)}</p>{preview.revision.coverage.files.map(file => <p key={file.document_id}>{file.file_name}（{file.document_id.slice(0, 8)}）：读取 {file.read_chunks}/{file.readable_chunks} 个片段</p>)}</div>}{preview.revision.points.map(point => <article key={point.point_id}><h3>{point.heading}</h3><p>{point.content}</p><small>{point.provenance === "ai_supplement" ? "AI 补充" : point.provenance === "synthesis" ? "综合改编" : "资料来源"}</small>{groupNoteReferences(point.references).map(file => <a key={file.document_id} href={`#materials/${encodeURIComponent(preview.asset.course_id)}/${encodeURIComponent(file.document_id)}/${file.chunk_ids.map(encodeURIComponent).join(",")}`}>{file.file_name} · {file.source_type} · 查看 {file.chunk_ids.length} 处引用</a>)}</article>)}</section></div>}
     <div className={`composer composer-attachment${composerDragOver ? " drag-over" : ""}`} onDragOver={event => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; setComposerDragOver(true); } }} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setComposerDragOver(false); }} onDrop={event => { event.preventDefault(); setComposerDragOver(false); void attachComposerFiles(Array.from(event.dataTransfer.files)); }}>
       {composerDragOver && <div className="composer-drop-hint">松开以添加到当前课程资料</div>}
       {(composerUploading || composerMaterials.length > 0) && <div className="composer-attachments" aria-label="已添加的资料">{composerUploading && <span className="composer-attachment-chip">正在上传文件…</span>}{composerMaterials.map(item => <span className="composer-attachment-chip" key={item.document_id}><strong>{item.file_name || item.title}</strong><small>{item.parse_status === "ready" ? "可检索" : item.parse_status === "failed" ? "处理失败" : "处理中"}</small><button type="button" aria-label={`移除 ${item.file_name || item.title}`} onClick={() => setComposerMaterials(current => current.filter(candidate => candidate.document_id !== item.document_id))}>×</button></span>)}</div>}

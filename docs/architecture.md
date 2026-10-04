@@ -29,6 +29,11 @@ priority: past_exam=4, teacher_ppt=3, homework=2, other_practice=1, crash_course
 
 ## PostgreSQL 表
 
+笔记资产使用 `learning_assets`、`asset_revisions` 与 `source_references`。
+生成即持久化草稿，编辑创建新版本；确认令牌绑定内容和版本指针，资产行锁防止并发
+覆盖。正式版本与编辑中的草稿分别保存，历史来源保留资料版本与删除快照。
+接口、状态与升级说明见 [笔记编辑与确认](note-review.md)。
+
 | 表 | 内容 |
 | --- | --- |
 | app_users / auth_sessions | 邮箱、Argon2id 密码哈希；Session 哈希、过期与撤销状态 |

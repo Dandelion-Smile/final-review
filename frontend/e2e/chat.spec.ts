@@ -178,7 +178,7 @@ test("note request creates an openable sourced draft", async ({ page, request })
   await page.getByRole("button", { name: "保存" }).click();
   await expect(page.getByRole("button", { name: "TCP 笔记记录" })).toBeVisible();
   await page.getByRole("link", { name: /打开笔记草稿/ }).click();
-  const preview = page.getByRole("dialog", { name: "笔记草稿预览" });
+  const preview = page.getByRole("region", { name: "笔记详情" });
   await expect(preview).toContainText("三次握手");
   await expect(preview).toContainText("TCP 讲义");
   await expect(preview).toContainText("已选 1 份资料");
@@ -201,8 +201,9 @@ test("one source file links to every cited location", async ({ page, request }) 
     text_start: null, text_end: null, excerpt: `第 ${index + 2} 张幻灯片内容`,
   }));
   await page.route("**/api/assets/example/revisions/draft", route => route.fulfill({ json: {
-    asset: { title: "HTML 笔记", course_id: course.course_id },
-    revision: { markdown: "", points: [{ point_id: "point-one", heading: "HTML 本质", content: "考点内容",
+    history: [{ revision_id: "draft", revision_no: 1, state: "draft", title: "HTML 笔记" }],
+    asset: { asset_id: "example", title: "HTML 笔记", status: "draft", course_id: course.course_id },
+    revision: { revision_id: "draft", revision_no: 1, state: "draft", title: "HTML 笔记", markdown: "", points: [{ point_id: "point-one", heading: "HTML 本质", content: "考点内容",
       provenance: "source", references: chunkIds.map(chunk_id => ({
         document_id: "file-one", chunk_id, file_name: "HTML.pptx", source_type: "teacher_ppt",
       })) }] }, references: [],
@@ -217,7 +218,7 @@ test("one source file links to every cited location", async ({ page, request }) 
     return route.fulfill({ json: { ...chunk, content: chunk.excerpt } });
   });
   await page.goto("/#note/example/draft");
-  const note = page.getByRole("dialog", { name: "笔记草稿预览" });
+  const note = page.getByRole("region", { name: "笔记详情" });
   await expect(note.getByRole("link", { name: /HTML.pptx/ })).toHaveCount(1);
   await note.getByRole("link", { name: /查看 3 处引用/ }).click();
   const source = page.getByRole("dialog", { name: "整理后的资料" });
