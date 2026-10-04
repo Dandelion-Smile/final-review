@@ -52,27 +52,35 @@ def process_note_job(store, agent: FinalReviewAgent, job: dict) -> None:
         lease_thread = Thread(target=heartbeat, name="note-job-heartbeat", daemon=True)
         lease_thread.start()
 
-    def update_progress(current_stage: str, *, batch_index=None, batch_result=None,
-                        selection_plan=None) -> bool:
+    def update_progress(
+        current_stage: str, *, batch_index=None, batch_result=None, selection_plan=None
+    ) -> bool:
         nonlocal stage
         if lost_lease.is_set():
             return False
         stage = current_stage
         return store.update_note_job_progress(
-            job["job_id"], job["attempts"], current_stage,
-            batch_index=batch_index, batch_result=batch_result,
+            job["job_id"],
+            job["attempts"],
+            current_stage,
+            batch_index=batch_index,
+            batch_result=batch_result,
             selection_plan=selection_plan,
         )
 
-    progress_token = bind_note_progress(NoteProgress(
-        completed=job.get("partial_batches", {}).copy(), update=update_progress,
-        begin_publish=lambda: store.begin_note_publish(job["job_id"], job["attempts"]),
-        selection_plan=job.get("selection_plan"),
-        policy_version=job.get("note_policy_version", 1),
-    ))
+    progress_token = bind_note_progress(
+        NoteProgress(
+            completed=job.get("partial_batches", {}).copy(),
+            update=update_progress,
+            begin_publish=lambda: store.begin_note_publish(job["job_id"], job["attempts"]),
+            selection_plan=job.get("selection_plan"),
+            policy_version=job.get("note_policy_version", 1),
+        )
+    )
     try:
         request = ResumeNoteRequest(
-            course_id=job["course_id"], session_id=job["session_id"],
+            course_id=job["course_id"],
+            session_id=job["session_id"],
             note_input=job["note_input"],
         )
         try:
@@ -92,24 +100,45 @@ def process_note_job(store, agent: FinalReviewAgent, job: dict) -> None:
             conversation = store.get("conversation", conversation_key)
             if not conversation:
                 return
-            message_key = stable_key(job["course_id"], job["conversation_id"], "note",
-                                     f"{job['event_id']}-assistant")
+            message_key = stable_key(
+                job["course_id"], job["conversation_id"], "note", f"{job['event_id']}-assistant"
+            )
             if not store.get("message", message_key):
-                content = ((result.prompt or {}).get("message")
-                           if result.status == "needs_input" else result.answer)
-                message = {"conversation_id": job["conversation_id"],
-                           "course_id": job["course_id"], "user_id": job["user_id"],
-                           "role": "assistant", "content": content or "笔记任务已完成",
-                           "created_at": datetime.now(UTC).isoformat()}
+                content = (
+                    (result.prompt or {}).get("message")
+                    if result.status == "needs_input"
+                    else result.answer
+                )
+                message = {
+                    "conversation_id": job["conversation_id"],
+                    "course_id": job["course_id"],
+                    "user_id": job["user_id"],
+                    "role": "assistant",
+                    "content": content or "笔记任务已完成",
+                    "created_at": datetime.now(UTC).isoformat(),
+                }
                 if result.draft:
                     message["draft"] = result.draft
                 store.put("message", message_key, message)
-            active = (dict(session_id=job["session_id"], status="needs_input",
-                           prompt=result.prompt, note_input=job["note_input"])
-                      if result.status == "needs_input" else None)
-            store.put("conversation", conversation_key,
-                      {**conversation, "active_note": active,
-                       "updated_at": datetime.now(UTC).isoformat()})
+            active = (
+                dict(
+                    session_id=job["session_id"],
+                    status="needs_input",
+                    prompt=result.prompt,
+                    note_input=job["note_input"],
+                )
+                if result.status == "needs_input"
+                else None
+            )
+            store.put(
+                "conversation",
+                conversation_key,
+                {
+                    **conversation,
+                    "active_note": active,
+                    "updated_at": datetime.now(UTC).isoformat(),
+                },
+            )
     except Exception as exc:
         if (store.get("note_job", job["job_id"]) or {}).get("status") == "cancelled":
             return
@@ -117,8 +146,11 @@ def process_note_job(store, agent: FinalReviewAgent, job: dict) -> None:
         timed_out = isinstance(exc, (APITimeoutError, TimeoutError)) or any(
             cls.__name__ == "OpenAITimeoutError" for cls in type(exc).__mro__
         )
-        error = (f"模型请求超时（{stage}），请缩小范围后重试"
-                 if timed_out else f"笔记生成失败（{stage}），请重试")
+        error = (
+            f"模型请求超时（{stage}），请缩小范围后重试"
+            if timed_out
+            else f"笔记生成失败（{stage}），请重试"
+        )
         store.finish_note_job(job["job_id"], job["attempts"], error=error)
     finally:
         stop_heartbeat.set()

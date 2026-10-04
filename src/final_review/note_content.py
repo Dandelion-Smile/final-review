@@ -27,8 +27,9 @@ def split_source_appendix(markdown: str) -> tuple[str, str]:
         if fence is None and line.strip() == "## 出处与来源标记":
             appendix = markdown[offset:]
             # Only recognize the old generated appendix, not an arbitrary heading.
-            if re.search(r"^(?:来源：|引用摘录：|历史笔记未保存逐条考点来源关系。)",
-                         appendix, re.MULTILINE):
+            if re.search(
+                r"^(?:来源：|引用摘录：|历史笔记未保存逐条考点来源关系。)", appendix, re.MULTILINE
+            ):
                 body = markdown[:offset].rstrip()
                 body = re.sub(r"\n(?:---|\*\*\*|___)\s*$", "", body).rstrip()
                 return body, appendix

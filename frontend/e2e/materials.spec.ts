@@ -4,6 +4,23 @@ test.beforeEach(async ({ request }) => {
   await request.post("http://127.0.0.1:8081/test/reset");
 });
 
+test("course loading preserves a navigation event still in flight", async ({ page, request }) => {
+  await request.post("http://127.0.0.1:8081/api/courses", { data: { name: "导航恢复" } });
+  let finishLoading!: () => void;
+  const loading = new Promise<void>(resolve => { finishLoading = resolve; });
+  await page.route("**/api/courses", async route => {
+    await loading;
+    await route.continue();
+  });
+  await page.goto("/");
+  // Model the hash changing before its queued event is delivered, while courses load.
+  await page.evaluate(() => { window.history.pushState(null, "", "#materials"); });
+  finishLoading();
+  await expect(page.getByRole("button", { name: /当前课程 导航恢复/ })).toBeVisible();
+  await page.evaluate(() => { window.dispatchEvent(new HashChangeEvent("hashchange")); });
+  await expect(page.getByLabel("文件", { exact: true })).toBeVisible();
+});
+
 test("themed material controls support keyboard selection and narrow screens", async ({ page, request }, testInfo) => {
   await request.post("http://127.0.0.1:8081/api/courses", { data: { name: "Web服务端技术原理及应用" } });
   await page.setViewportSize({ width: 1440, height: 1050 });
@@ -237,6 +254,7 @@ test("material polling continues when job and document snapshots differ", async 
     items: [{ job_id: "polling-job", document_id: "polling-document", status: "succeeded", attempts: 1 }],
   } }));
   await page.goto("/");
+  await expect(page.getByRole("button", { name: /当前课程 状态刷新/ })).toBeVisible();
   await page.getByRole("button", { name: "我的资料" }).first().click();
   await expect(page.locator(".material-status.ready")).toHaveCount(1);
   expect(reads).toBeGreaterThan(1);

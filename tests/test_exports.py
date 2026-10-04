@@ -219,8 +219,14 @@ def test_actual_formats_keep_body_math_table_and_exclude_sources(system, tmp_pat
                 text = "\n".join(page.extract_text() or "" for page in pdf.pages)
                 assert len(pdf.pages) >= 1
         assert "共同正文标记" in text and "AI 记忆建议" in text
-        for marker in ("出处与来源标记", "引用摘录", "来源：", "版本信息", edited,
-                       snapshot["content_hash"]):
+        for marker in (
+            "出处与来源标记",
+            "引用摘录",
+            "来源：",
+            "版本信息",
+            edited,
+            snapshot["content_hash"],
+        ):
             assert marker not in text.replace("\n", "")
 
 
@@ -275,10 +281,15 @@ def test_legacy_appendix_is_available_but_excluded_from_export(system):
     service, _, _ = confirmed(system)
     appendix = "## 出处与来源标记\n\n来源：资料来源\n\n引用摘录：\n\n> 原句"
     original = "# 原有知识\n\n继续保留\n\n---\n\n" + appendix
-    generic = service.create_asset("net", {
-        "asset_type": "note", "title": "历史笔记", "markdown": original,
-        "source_document_ids": [],
-    })
+    generic = service.create_asset(
+        "net",
+        {
+            "asset_type": "note",
+            "title": "历史笔记",
+            "markdown": original,
+            "source_document_ids": [],
+        },
+    )
     asset, revision = generic["asset"]["asset_id"], generic["revision"]["revision_id"]
     service.confirm_revision(asset, revision)
     detail = service.note_draft(asset, revision)

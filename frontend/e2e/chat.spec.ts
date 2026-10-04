@@ -133,6 +133,7 @@ test("note request creates an openable sourced draft", async ({ page, request })
   await expect(page.getByRole("button", { name: /当前课程 计算机网络/ })).toBeVisible();
   const courses = await (await request.get("http://127.0.0.1:8081/api/courses")).json();
   const courseId = courses.items[0].course_id as string;
+  await request.post("http://127.0.0.1:8081/api/courses", { data: { name: "历史恢复对照课程" } });
   const ingested = await request.post("http://127.0.0.1:8081/knowledge/ingest", {
     data: { course_id: courseId, title: "TCP 讲义", chapter: "TCP", source_type: "teacher_ppt",
       markdown: "# 三次握手\n\nTCP 三次握手同步双方初始序列号并确认双方收发能力。" },
@@ -174,19 +175,41 @@ test("note request creates an openable sourced draft", async ({ page, request })
   await page.reload();
   await expect(page.getByRole("link", { name: /打开笔记草稿/ })).toBeVisible();
   await expect(page.getByText(/指定资料 TCP 讲义/)).toBeVisible();
+  const draftLink = await page.getByRole("link", { name: /打开笔记草稿/ }).getAttribute("href");
+  await page.getByRole("textbox", { name: "输入你的问题" }).fill("现在可以聊天吗");
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await expect(page.getByText(/可以继续聊天/).last()).toBeVisible();
   await page.getByRole("button", { name: "生成笔记" }).click();
   await page.getByRole("textbox", { name: "对话名称" }).fill("TCP 笔记记录");
   await page.getByRole("button", { name: "保存" }).click();
   await expect(page.getByRole("button", { name: "TCP 笔记记录" })).toBeVisible();
+  await page.getByRole("button", { name: /当前课程 计算机网络/ }).click();
+  const conversations = page.getByRole("dialog", { name: "课程与对话" });
+  await conversations.getByRole("button", { name: "切换课程" }).click();
+  await conversations.getByRole("option", { name: "历史恢复对照课程" }).click();
+  await expect(conversations.getByRole("button", { name: /TCP 笔记记录/ })).toHaveCount(0);
+  await conversations.getByRole("button", { name: "切换课程" }).click();
+  await conversations.getByRole("option", { name: "计算机网络" }).click();
+  await conversations.getByRole("button", { name: /TCP 笔记记录/ }).click();
+  await expect(page.getByText(/生成笔记，整理成适合背诵的考点清单/)).toBeVisible();
+  await expect(page.getByText(/指定资料 TCP 讲义/)).toBeVisible();
+  await expect(page.getByText(/可以继续聊天/).last()).toBeVisible();
+  await expect(page.getByRole("link", { name: /打开笔记草稿/ })).toHaveAttribute("href", draftLink!);
+  const savedNotes = await (await request.get(`http://127.0.0.1:8081/api/courses/${courseId}/notes`)).json();
+  expect(savedNotes.items).toHaveLength(1);
   await page.getByRole("link", { name: /打开笔记草稿/ }).click();
   const preview = page.getByRole("region", { name: "笔记详情" });
   await expect(preview).toContainText("三次握手");
   await expect(preview).toContainText("TCP 讲义");
   await expect(preview).toContainText("已选 1 份资料");
   await expect(preview).toContainText("读取 1/1 个片段");
-  await expect(preview.getByRole("link", { name: "查看原文 →" })).toBeVisible();
+  await preview.getByRole("button", { name: "查看来源与引用" }).click();
+  const sources = page.getByRole("dialog", { name: "来源与引用" });
+  await expect(sources).toContainText("TCP 讲义");
+  await expect(sources.getByRole("link", { name: "查看原文 →" })).toBeVisible();
   await page.route("**/api/courses/*/material-jobs", route => route.fulfill({ status: 500, json: {} }));
-  await preview.getByRole("link", { name: "查看原文 →" }).first().click();
+  await sources.getByRole("link", { name: "查看原文 →" }).first().click();
+  await expect(sources).toHaveCount(0);
   await expect(page.getByRole("dialog", { name: "整理后的资料" })).toContainText("TCP 三次握手同步双方初始序列号");
   await expect(page.getByRole("status")).toContainText("处理状态加载失败");
 });
@@ -220,7 +243,8 @@ test("one source file links to every cited location", async ({ page, request }) 
   });
   await page.goto("/#note/example/draft");
   const note = page.getByRole("region", { name: "笔记详情" });
-  const links = note.getByRole("link", { name: "查看原文 →" });
+  await note.getByRole("button", { name: "查看来源与引用" }).click();
+  const links = page.getByRole("dialog", { name: "来源与引用" }).getByRole("link", { name: "查看原文 →" });
   await expect(links).toHaveCount(3);
   for (let index = 0; index < chunkIds.length; index++) {
     await expect(links.nth(index)).toHaveAttribute("href", new RegExp(chunkIds[index]));

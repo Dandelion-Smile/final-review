@@ -27,8 +27,12 @@ def generate(system, session="note-draft"):
             session_id=session,
             message="生成笔记",
             intent="note",
-            note_input=NoteInput(note_type="key_points", scope="TCP", duration_minutes=10,
-                                 source_document_ids=[document["document_id"]]),
+            note_input=NoteInput(
+                note_type="key_points",
+                scope="TCP",
+                duration_minutes=10,
+                source_document_ids=[document["document_id"]],
+            ),
         ),
         "local-user",
     )
@@ -157,8 +161,12 @@ def test_missing_boundaries_still_create_no_draft(system):
         ResumeNoteRequest(
             course_id="net",
             session_id="clarify",
-            note_input=NoteInput(note_type="chapter", scope="TCP", duration_minutes=10,
-                                 source_document_ids=[document["document_id"]]),
+            note_input=NoteInput(
+                note_type="chapter",
+                scope="TCP",
+                duration_minutes=10,
+                source_document_ids=[document["document_id"]],
+            ),
         ),
         "local-user",
     )

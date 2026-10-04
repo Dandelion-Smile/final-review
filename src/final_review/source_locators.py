@@ -17,8 +17,7 @@ def located_sections(content: bytes, filename: str) -> list[dict] | None:
         try:
             with pdfplumber.open(BytesIO(content)) as pdf:
                 sections = [
-                    {"position_kind": "page", "position": number,
-                     "text": page.extract_text() or ""}
+                    {"position_kind": "page", "position": number, "text": page.extract_text() or ""}
                     for number, page in enumerate(pdf.pages, 1)
                 ]
         except Exception:
@@ -54,15 +53,22 @@ def _slide_sections(presentation) -> list[dict]:
                 text.extend(paragraph.text for paragraph in shape.text_frame.paragraphs)
             if shape.has_table:
                 text.extend(cell.text for row in shape.table.rows for cell in row.cells)
-        sections.append({"position_kind": "slide", "position": number,
-                         "text": "\n".join(part for part in text if part.strip())})
+        sections.append(
+            {
+                "position_kind": "slide",
+                "position": number,
+                "text": "\n".join(part for part in text if part.strip()),
+            }
+        )
     return sections
 
 
 def material_version(document: dict) -> dict:
     version_id = document.get("material_version_id") or stable_key(
-        document["document_id"], document.get("cleaned_markdown", ""),
-        document.get("title", ""), document.get("chapter", ""),
+        document["document_id"],
+        document.get("cleaned_markdown", ""),
+        document.get("title", ""),
+        document.get("chapter", ""),
         document.get("source_type", ""),
     )
     return {

@@ -43,15 +43,17 @@ class MemoryStore:
             now = datetime.now(UTC)
             for job in self.tables.get("export_job", {}).values():
                 if job["status"] == "queued" or (
-                    job["status"] == "running" and
-                    datetime.fromisoformat(job["lease_until"]) < now
+                    job["status"] == "running" and datetime.fromisoformat(job["lease_until"]) < now
                 ):
                     job["attempts"] += 1
                     if job["attempts"] > job["max_attempts"]:
                         job.update(status="failed", error="导出多次中断，请重试", lease_until=None)
                         continue
-                    job.update(status="running", error=None,
-                               lease_until=(now + timedelta(minutes=10)).isoformat())
+                    job.update(
+                        status="running",
+                        error=None,
+                        lease_until=(now + timedelta(minutes=10)).isoformat(),
+                    )
                     return deepcopy(job)
         return None
 
@@ -60,8 +62,12 @@ class MemoryStore:
             job = self.tables.get("export_job", {}).get(job_id)
             if not job or job["status"] != "running" or job["attempts"] != attempt:
                 return False
-            job.update(status="failed" if error else "succeeded", result=result,
-                       error=error, lease_until=None)
+            job.update(
+                status="failed" if error else "succeeded",
+                result=result,
+                error=error,
+                lease_until=None,
+            )
             return True
 
     def finish_note_job(self, job_id, attempt, *, result=None, error=None):
@@ -96,8 +102,9 @@ class MemoryStore:
             job["publish_started"] = True
             return True
 
-    def update_note_job_progress(self, job_id, attempt, stage, *,
-                                 batch_index=None, batch_result=None, selection_plan=None):
+    def update_note_job_progress(
+        self, job_id, attempt, stage, *, batch_index=None, batch_result=None, selection_plan=None
+    ):
         with self.lock:
             job = self.tables["note_job"][job_id]
             if job["status"] != "running" or job["attempts"] != attempt:
@@ -239,14 +246,21 @@ class MemoryStore:
     def find_duplicate_material(self, course_id, file_name, content_sha256):
         with self.lock:
             for document in self.tables.get("document", {}).values():
-                if (document.get("course_id") == course_id
-                        and document.get("file_name") == file_name
-                        and document.get("content_sha256") == content_sha256
-                        and document.get("parse_status") != "deleted"):
-                    job = next((row for row in self.tables.get("material_job", {}).values()
-                                if row["document_id"] == document["document_id"]), None)
-                    return {"document": deepcopy(document),
-                            "job": deepcopy(job) if job else None}
+                if (
+                    document.get("course_id") == course_id
+                    and document.get("file_name") == file_name
+                    and document.get("content_sha256") == content_sha256
+                    and document.get("parse_status") != "deleted"
+                ):
+                    job = next(
+                        (
+                            row
+                            for row in self.tables.get("material_job", {}).values()
+                            if row["document_id"] == document["document_id"]
+                        ),
+                        None,
+                    )
+                    return {"document": deepcopy(document), "job": deepcopy(job) if job else None}
         return None
 
     def get_material_job(self, job_id):

@@ -53,13 +53,16 @@ def chapter_rows(rows, chapter):
     selected, active = [], False
     for row in rows:
         content = row["content"]
-        pattern = (r"(?m)^(?:#{1,6}\s*)?第\s*[零一二三四五六七八九十\d]+\s*章[^\n]*"
-                   if re.match(r"第\d+章", target) else r"(?m)^#{1,6}\s+[^\n]+")
+        pattern = (
+            r"(?m)^(?:#{1,6}\s*)?第\s*[零一二三四五六七八九十\d]+\s*章[^\n]*"
+            if re.match(r"第\d+章", target)
+            else r"(?m)^#{1,6}\s+[^\n]+"
+        )
         headings = list(re.finditer(pattern, content))
         pieces, cursor = [], 0
         for heading in headings:
             if active:
-                pieces.append(content[cursor:heading.start()])
+                pieces.append(content[cursor : heading.start()])
             active = target in normalize_chapter(heading.group())
             cursor = heading.start()
         if active:
@@ -75,7 +78,8 @@ class CourseMaterials:
         self.store, self.course_id, self.user_id = store, course_id, user_id
         self.course = store.get("course", course_id) or {}
         self.documents = [
-            item for item in store.scan("document", {"course_id": course_id})
+            item
+            for item in store.scan("document", {"course_id": course_id})
             if item.get("user_id", user_id) == user_id
             and item.get("parse_status", "ready") not in {"deleted", "purged"}
         ]
@@ -89,20 +93,33 @@ class CourseMaterials:
             "course_name": self.course.get("name") or "课程名称未填写",
             "subject": self.course.get("subject") or "学科未填写",
             "statistics": {
-                "files": len(self.documents), "ready_files": len(ready),
-                "characters": sum(len(re.sub(r"\s", "", item.get("cleaned_markdown")
-                                             or item.get("markdown") or "")) for item in ready),
+                "files": len(self.documents),
+                "ready_files": len(ready),
+                "characters": sum(
+                    len(
+                        re.sub(
+                            r"\s", "", item.get("cleaned_markdown") or item.get("markdown") or ""
+                        )
+                    )
+                    for item in ready
+                ),
                 "chunks": sum(item.get("chunk_count", 0) for item in ready),
-                "queued": statuses["queued"], "running": statuses["running"],
+                "queued": statuses["queued"],
+                "running": statuses["running"],
                 "failed": statuses["failed"],
                 "character_definition": "可检索文件清洗文本的非空白字符数，不累加重叠片段",
             },
-            "documents": [{
-                "document_id": item["document_id"], "file_name": document_name(item),
-                "title": item.get("title", ""), "chapter": item.get("chapter", ""),
-                "source_type": item.get("source_type", "other_practice"),
-                "status": item.get("parse_status", "ready"),
-            } for item in self.documents[:150]],
+            "documents": [
+                {
+                    "document_id": item["document_id"],
+                    "file_name": document_name(item),
+                    "title": item.get("title", ""),
+                    "chapter": item.get("chapter", ""),
+                    "source_type": item.get("source_type", "other_practice"),
+                    "status": item.get("parse_status", "ready"),
+                }
+                for item in self.documents[:150]
+            ],
             "catalog_truncated": len(self.documents) > 150,
         }
 
@@ -122,11 +139,16 @@ class CourseMaterials:
             )
         if kind in {"list", "all"}:
             labels = {"ready": "可检索", "queued": "排队中", "running": "处理中", "failed": "失败"}
-            parts.append("课程资料：\n" + "\n".join(
-                f"{index}. {document_name(item)}"
-                f"（{labels.get(item.get('parse_status', 'ready'), '不可用')}）"
-                for index, item in enumerate(self.documents, 1)
-            ) if self.documents else "当前课程还没有上传资料。")
+            parts.append(
+                "课程资料：\n"
+                + "\n".join(
+                    f"{index}. {document_name(item)}"
+                    f"（{labels.get(item.get('parse_status', 'ready'), '不可用')}）"
+                    for index, item in enumerate(self.documents, 1)
+                )
+                if self.documents
+                else "当前课程还没有上传资料。"
+            )
         return "\n\n".join(parts)
 
     def select(self, document_ids=None, chapter=""):
@@ -134,8 +156,9 @@ class CourseMaterials:
         if ids is not None and not ids <= self.by_id.keys():
             raise ValueError("指定资料不存在、已删除或不属于当前课程，请重新选择资料")
         selected = [item for item in self.documents if ids is None or item["document_id"] in ids]
-        if ids is not None and any(item.get("parse_status", "ready") != "ready"
-                                   for item in selected):
+        if ids is not None and any(
+            item.get("parse_status", "ready") != "ready" for item in selected
+        ):
             raise ValueError("指定资料尚未处理完成或处理失败，请等待完成或重新选择资料")
         ready = [item for item in selected if item.get("parse_status", "ready") == "ready"]
         if not chapter:
@@ -155,10 +178,13 @@ class CourseMaterials:
     def chunks(self, documents):
         rows = []
         for document in documents:
-            for chunk in document.get("_chat_chunks", self.store.list_material_chunks(
-                    document["document_id"])):
-                if (chunk.get("course_id") != self.course_id
-                        or chunk.get("user_id", self.user_id) != self.user_id):
+            for chunk in document.get(
+                "_chat_chunks", self.store.list_material_chunks(document["document_id"])
+            ):
+                if (
+                    chunk.get("course_id") != self.course_id
+                    or chunk.get("user_id", self.user_id) != self.user_id
+                ):
                     continue
                 rows.append(self.evidence(chunk, document))
         return rows
@@ -166,14 +192,21 @@ class CourseMaterials:
     @staticmethod
     def evidence(chunk, document):
         return Evidence(
-            chunk_id=chunk["chunk_id"], document_id=document["document_id"],
-            course_id=document["course_id"], title=document.get("title", document_name(document)),
-            file_name=document_name(document), chapter=document.get("chapter", ""),
-            source_type=document.get("source_type", "other_practice"), content=chunk["content"],
+            chunk_id=chunk["chunk_id"],
+            document_id=document["document_id"],
+            course_id=document["course_id"],
+            title=document.get("title", document_name(document)),
+            file_name=document_name(document),
+            chapter=document.get("chapter", ""),
+            source_type=document.get("source_type", "other_practice"),
+            content=chunk["content"],
             chunk_ordinal=chunk.get("chunk_ordinal", 0),
-            position_kind=chunk.get("position_kind", "document"), position=chunk.get("position"),
-            text_start=chunk.get("text_start"), text_end=chunk.get("text_end"),
-            similarity=chunk.get("similarity", 1), rank_score=chunk.get("rank_score", 0),
+            position_kind=chunk.get("position_kind", "document"),
+            position=chunk.get("position"),
+            text_start=chunk.get("text_start"),
+            text_end=chunk.get("text_end"),
+            similarity=chunk.get("similarity", 1),
+            rank_score=chunk.get("rank_score", 0),
         )
 
     def read(self, documents, budget=60000):
@@ -194,8 +227,11 @@ class CourseMaterials:
                 progress = True
             if not progress:
                 break
-        return evidence, {"read_chunks": len(evidence), "available_chunks": total,
-                          "partial": len(evidence) < total}
+        return evidence, {
+            "read_chunks": len(evidence),
+            "available_chunks": total,
+            "partial": len(evidence) < total,
+        }
 
     def search(self, kb, query, documents, chapter=""):
         ids = [item["document_id"] for item in documents]
@@ -204,13 +240,21 @@ class CourseMaterials:
         if chapter:
             # Text headings can specify chapters even when upload metadata is empty.
             # Rank already scoped chunks so outside chapters cannot occupy TopK.
-            chunks = [row for document in documents for row in document.get(
-                "_chat_chunks", self.store.list_material_chunks(document["document_id"]))]
+            chunks = [
+                row
+                for document in documents
+                for row in document.get(
+                    "_chat_chunks", self.store.list_material_chunks(document["document_id"])
+                )
+            ]
             rows = kb.search_chunks(query, chunks)
         else:
             rows = kb.search(query, self.course_id, document_ids=ids)
-        return [self.evidence(item.model_dump(), self.by_id[item.document_id])
-                for item in rows if item.document_id in ids and item.course_id == self.course_id]
+        return [
+            self.evidence(item.model_dump(), self.by_id[item.document_id])
+            for item in rows
+            if item.document_id in ids and item.course_id == self.course_id
+        ]
 
     def sample(self, documents, count, budget=24000):
         """Weighted source selection with document/position diversity and content deduplication."""
@@ -251,8 +295,9 @@ def cited_evidence(reply, evidence):
     numbers = list(dict.fromkeys(int(number) for number in re.findall(r"\[资料(\d+)\]", reply)))
     if any(number < 1 or number > len(evidence) for number in numbers):
         raise ValueError("模型使用了未读取的资料引用")
-    return [evidence[number - 1].model_copy(update={"citation_number": number})
-            for number in numbers]
+    return [
+        evidence[number - 1].model_copy(update={"citation_number": number}) for number in numbers
+    ]
 
 
 def parse_chat_decision(content):

@@ -51,19 +51,30 @@ class KnowledgeBase:
             separators=["\n## ", "\n\n", "\n", "。", "；", " ", ""],
         )
 
-    def ingest(self, material: MaterialInput, *, source_origin: str = "user_entry",
-               user_id: str | None = None) -> dict:
+    def ingest(
+        self,
+        material: MaterialInput,
+        *,
+        source_origin: str = "user_entry",
+        user_id: str | None = None,
+    ) -> dict:
         if material.document_id is not None:
             existing = self.store.get("document", material.document_id)
             if existing and existing.get("parse_status") == "ready":
                 return {
                     "document_id": material.document_id,
-                    "chunks": existing["chunk_count"], "cached": True,
+                    "chunks": existing["chunk_count"],
+                    "cached": True,
                 }
         else:
             cleaned = clean_markdown(plain_material_text(material.markdown))
-            key = stable_key(material.course_id, material.title, material.chapter,
-                             material.source_type.value, sha256(cleaned.encode()).hexdigest())
+            key = stable_key(
+                material.course_id,
+                material.title,
+                material.chapter,
+                material.source_type.value,
+                sha256(cleaned.encode()).hexdigest(),
+            )
             existing = self.store.get("document", key)
             if existing:
                 return {"document_id": key, "chunks": existing["chunk_count"], "cached": True}
@@ -75,15 +86,19 @@ class KnowledgeBase:
         return {"document_id": document["document_id"], "chunks": len(chunks), "cached": False}
 
     def prepare(
-        self, material: MaterialInput, *, source_origin: str = "user_entry",
+        self,
+        material: MaterialInput,
+        *,
+        source_origin: str = "user_entry",
         stage_callback: Callable[[str], None] | None = None,
         sections: list[dict] | None = None,
         plain_text: bool = False,
     ) -> tuple[dict, list[dict]]:
         if stage_callback:
             stage_callback("clean")
-        cleaned = clean_markdown(material.markdown if plain_text
-                                 else plain_material_text(material.markdown))
+        cleaned = clean_markdown(
+            material.markdown if plain_text else plain_material_text(material.markdown)
+        )
         document_id = material.document_id or stable_key(
             material.course_id,
             material.title,
@@ -94,8 +109,9 @@ class KnowledgeBase:
         units = []
         if sections:
             for section in sections:
-                source_text = (section["text"] if plain_text
-                               else plain_material_text(section["text"]))
+                source_text = (
+                    section["text"] if plain_text else plain_material_text(section["text"])
+                )
                 source_text = clean_markdown(source_text) if source_text.strip() else ""
                 if not source_text:
                     continue
@@ -104,9 +120,15 @@ class KnowledgeBase:
                     start = source_text.find(text, cursor)
                     if start < 0:
                         start = source_text.find(text)
-                    units.append((text, section["position_kind"], section["position"],
-                                  start if start >= 0 else None,
-                                  start + len(text) if start >= 0 else None))
+                    units.append(
+                        (
+                            text,
+                            section["position_kind"],
+                            section["position"],
+                            start if start >= 0 else None,
+                            start + len(text) if start >= 0 else None,
+                        )
+                    )
                     cursor = start + max(1, len(text) - 150) if start >= 0 else 0
         else:
             cursor = 0
@@ -114,8 +136,15 @@ class KnowledgeBase:
                 start = cleaned.find(text, cursor)
                 if start < 0:
                     start = cleaned.find(text)
-                units.append((text, "document", None, start if start >= 0 else None,
-                              start + len(text) if start >= 0 else None))
+                units.append(
+                    (
+                        text,
+                        "document",
+                        None,
+                        start if start >= 0 else None,
+                        start + len(text) if start >= 0 else None,
+                    )
+                )
                 cursor = start + max(1, len(text) - 150) if start >= 0 else 0
         texts = [unit[0] for unit in units]
         if stage_callback:
@@ -142,22 +171,34 @@ class KnowledgeBase:
             }
             for i, content in enumerate(texts)
         ]
-        return ({
-            **metadata,
-            "document_id": document_id,
-            "source_origin": source_origin,
-            "markdown": material.markdown,
-            "cleaned_markdown": cleaned,
-            "chunk_count": len(chunks),
-        }, chunks)
+        return (
+            {
+                **metadata,
+                "document_id": document_id,
+                "source_origin": source_origin,
+                "markdown": material.markdown,
+                "cleaned_markdown": cleaned,
+                "chunk_count": len(chunks),
+            },
+            chunks,
+        )
 
-    def search(self, query: str, course: str, chapter: str = "", broaden: bool = False,
-               document_ids: list[str] | None = None):
+    def search(
+        self,
+        query: str,
+        course: str,
+        chapter: str = "",
+        broaden: bool = False,
+        document_ids: list[str] | None = None,
+    ):
         vector = self.embeddings.embed_query(query)
         validate_vectors([vector], 1, self.settings.embedding_dimensions)
         limit = min(100, self.settings.retrieval_candidates * (2 if broaden else 1))
-        rows = (self.store.search(vector, course, chapter, limit) if document_ids is None
-                else self.store.search(vector, course, chapter, limit, document_ids=document_ids))
+        rows = (
+            self.store.search(vector, course, chapter, limit)
+            if document_ids is None
+            else self.store.search(vector, course, chapter, limit, document_ids=document_ids)
+        )
         return self._rank(rows)
 
     def search_chunks(self, query: str, chunks: list[dict]):
@@ -168,11 +209,14 @@ class KnowledgeBase:
             embedding = chunk["embedding"]
             validate_vectors([embedding], 1, self.settings.embedding_dimensions)
             score = sum(a * b for a, b in zip(vector, embedding, strict=True)) / (
-                math.sqrt(sum(a * a for a in vector))
-                * math.sqrt(sum(b * b for b in embedding))
+                math.sqrt(sum(a * a for a in vector)) * math.sqrt(sum(b * b for b in embedding))
             )
-            rows.append({**{key: value for key, value in chunk.items() if key != "embedding"},
-                         "similarity": score})
+            rows.append(
+                {
+                    **{key: value for key, value in chunk.items() if key != "embedding"},
+                    "similarity": score,
+                }
+            )
         return self._rank(rows)
 
     def _rank(self, rows):

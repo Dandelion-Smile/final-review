@@ -15,11 +15,14 @@ from final_review.policy import SOURCE_PRIORITY
 from final_review.schemas import SourceType
 
 
-@pytest.mark.parametrize("names,setting", [
-    (("pdftoppm",), "poppler_executable"),
-    (("libreoffice", "soffice"), "libreoffice_executable"),
-    (("tesseract",), "tesseract_executable"),
-])
+@pytest.mark.parametrize(
+    "names,setting",
+    [
+        (("pdftoppm",), "poppler_executable"),
+        (("libreoffice", "soffice"), "libreoffice_executable"),
+        (("tesseract",), "tesseract_executable"),
+    ],
+)
 def test_explicit_conversion_tool_path_works_without_path(tmp_path, monkeypatch, names, setting):
     from final_review import material_conversion
 
@@ -51,8 +54,7 @@ def _image(format_name: str) -> bytes:
 def _run_queued_job(system):
     job = system.store.claim_material_job()
     assert job is not None
-    process_material_job(system.store, system.kb, job,
-                         system.settings.max_upload_mb * 1024 * 1024)
+    process_material_job(system.store, system.kb, job, system.settings.max_upload_mb * 1024 * 1024)
     return system.store.get_material_job(job["job_id"])
 
 
@@ -75,9 +77,15 @@ def test_external_upload_reuses_only_same_name_and_content(system, tmp_path):
     system.settings.uploads_dir = str(tmp_path / "uploads")
 
     def upload(client, name, content):
-        return client.post("/knowledge/upload", data={
-            "course_id": "net", "title": name, "source_type": "external_upload",
-        }, files={"file": (name, content)})
+        return client.post(
+            "/knowledge/upload",
+            data={
+                "course_id": "net",
+                "title": name,
+                "source_type": "external_upload",
+            },
+            files={"file": (name, content)},
+        )
 
     with TestClient(create_app(system.settings, system)) as client:
         first = upload(client, "chapter.md", b"first chapter content")
@@ -91,10 +99,16 @@ def test_external_upload_reuses_only_same_name_and_content(system, tmp_path):
         ready_repeat = upload(client, "chapter.md", b"first chapter content")
         assert ready_repeat.json()["status"] == "ready"
         assert ready_repeat.json()["document_id"] == first.json()["document_id"]
-        edited_form_repeat = client.post("/knowledge/upload", data={
-            "course_id": "net", "title": "另一个标题", "chapter": "第二章",
-            "source_type": "homework",
-        }, files={"file": ("chapter.md", b"first chapter content")})
+        edited_form_repeat = client.post(
+            "/knowledge/upload",
+            data={
+                "course_id": "net",
+                "title": "另一个标题",
+                "chapter": "第二章",
+                "source_type": "homework",
+            },
+            files={"file": ("chapter.md", b"first chapter content")},
+        )
         assert edited_form_repeat.json()["reused"] is True
         assert edited_form_repeat.json()["document_id"] == first.json()["document_id"]
         renamed = upload(client, "renamed.md", b"first chapter content")
@@ -168,18 +182,25 @@ def test_ppt_images_are_ocr_searchable_with_slide_locations_and_no_duplicate_tex
     from final_review import material_conversion
 
     system.settings.uploads_dir = str(tmp_path / "uploads")
-    monkeypatch.setattr(material_conversion, "_convert_presentation_to_pdf",
-                        lambda _path, directory: directory / "material.pdf")
-    monkeypatch.setattr(pdfplumber, "open", lambda _path: nullcontext(
-        SimpleNamespace(pages=[None, None])))
-    monkeypatch.setattr(material_conversion, "_find_executable", lambda *_args: "pdftoppm")
-    monkeypatch.setattr(material_conversion, "_run", lambda command, *_args: (
-        Path(command[-1]).with_suffix(".png").write_bytes(_image("PNG"))))
     monkeypatch.setattr(
-        material_conversion, "_ocr_image",
+        material_conversion,
+        "_convert_presentation_to_pdf",
+        lambda _path, directory: directory / "material.pdf",
+    )
+    monkeypatch.setattr(
+        pdfplumber, "open", lambda _path: nullcontext(SimpleNamespace(pages=[None, None]))
+    )
+    monkeypatch.setattr(material_conversion, "_find_executable", lambda *_args: "pdftoppm")
+    monkeypatch.setattr(
+        material_conversion,
+        "_run",
+        lambda command, *_args: Path(command[-1]).with_suffix(".png").write_bytes(_image("PNG")),
+    )
+    monkeypatch.setattr(
+        material_conversion,
+        "_ocr_image",
         lambda path, *_args, **_kwargs: (
-            "图片中的网络拓扑" if "slide-001" in path.name
-            else "网络三次握手\n图片中的握手时序"
+            "图片中的网络拓扑" if "slide-001" in path.name else "网络三次握手\n图片中的握手时序"
         ),
     )
     picture = BytesIO(_image("PNG"))
@@ -203,7 +224,8 @@ def test_ppt_images_are_ocr_searchable_with_slide_locations_and_no_duplicate_tex
         document_id = response.json()["document_id"]
         listing = client.get(f"/api/courses/net/documents/{document_id}/chunks").json()
         assert {(item["position_kind"], item["position"]) for item in listing["items"]} == {
-            ("slide", 1), ("slide", 2)
+            ("slide", 1),
+            ("slide", 2),
         }
         full_listing = client.get(
             f"/api/courses/net/documents/{document_id}/chunks?include_content=true"
@@ -216,8 +238,11 @@ def test_ppt_images_are_ocr_searchable_with_slide_locations_and_no_duplicate_tex
         document = system.store.get("document", document_id)
         assert "图片中的网络拓扑" in document["cleaned_markdown"]
         assert "图片中的握手时序" in document["cleaned_markdown"]
-        second_slide = "\n".join(item["content"] for item in system.store.chunks
-                                 if item["document_id"] == document_id and item["position"] == 2)
+        second_slide = "\n".join(
+            item["content"]
+            for item in system.store.chunks
+            if item["document_id"] == document_id and item["position"] == 2
+        )
         assert second_slide.count("网络三次握手") == 1
         assert "图片中的握手时序" in second_slide
 
@@ -325,10 +350,12 @@ def test_legacy_office_conversion_uses_bounded_local_tool(
         slide.shapes.title.text = "网络三次握手"
         converted = tmp_path / "sample.pptx"
         office.save(converted)
+
         def converted_presentation(path, _directory, **_kwargs):
             assert path.suffix == ".pptx"
             assert path.read_bytes() == converted.read_bytes()
             return material_conversion.ConvertedMaterial("网络三次握手")
+
         monkeypatch.setattr(material_conversion, "_convert_presentation", converted_presentation)
     monkeypatch.setattr(material_conversion.shutil, "which", lambda name: "soffice")
 

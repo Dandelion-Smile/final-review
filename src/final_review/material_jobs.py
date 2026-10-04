@@ -40,21 +40,28 @@ def process_material_job(store, kb: KnowledgeBase, job: dict, max_bytes: int) ->
         if path.suffix.lower() in {".ppt", ".pptx"} and kb.settings.material_vision_enabled:
             interpreter = SlideInterpreter(kb.settings)
         converted = convert_material(
-            content, document["file_name"], max_bytes,
+            content,
+            document["file_name"],
+            max_bytes,
             stage_callback=lambda stage: store.update_material_job(
                 job["job_id"], job["attempts"], stage=stage
             ),
-            interpreter=interpreter, cache_dir=path.with_suffix(".analysis"),
+            interpreter=interpreter,
+            cache_dir=path.with_suffix(".analysis"),
         )
         markdown = converted.markdown
         sections = converted.sections or located_sections(content, document["file_name"])
         material = MaterialInput(
-            document_id=document["document_id"], course_id=document["course_id"],
-            title=document["title"], source_type=document["source_type"],
-            chapter=document.get("chapter", ""), markdown=markdown,
+            document_id=document["document_id"],
+            course_id=document["course_id"],
+            title=document["title"],
+            source_type=document["source_type"],
+            chapter=document.get("chapter", ""),
+            markdown=markdown,
         )
         prepared, chunks = kb.prepare(
-            material, source_origin="user_upload",
+            material,
+            source_origin="user_upload",
             sections=sections,
             plain_text=converted.pipeline is not None or path.suffix.lower() == ".txt",
             stage_callback=lambda stage: store.update_material_job(
@@ -70,21 +77,26 @@ def process_material_job(store, kb: KnowledgeBase, job: dict, max_bytes: int) ->
             for chunk in chunks:
                 from .storage import stable_key
 
-                chunk["chunk_id"] = stable_key(chunk["chunk_id"], converted.pipeline,
-                                               chunk["content"])
+                chunk["chunk_id"] = stable_key(
+                    chunk["chunk_id"], converted.pipeline, chunk["content"]
+                )
         ready["material_version_id"] = material_version(ready)["material_version_id"]
         ready.pop("parse_error", None)
         store.publish_material_job(job["job_id"], job["attempts"], ready, chunks)
     except VisionServiceUnavailable as exc:
-        store.fail_material_job(job["job_id"], job["attempts"],
-                                code="vision_unavailable", message=str(exc), retry=False)
+        store.fail_material_job(
+            job["job_id"], job["attempts"], code="vision_unavailable", message=str(exc), retry=False
+        )
     except ValueError as exc:
-        store.fail_material_job(job["job_id"], job["attempts"], code="invalid_material",
-                                message=str(exc), retry=False)
+        store.fail_material_job(
+            job["job_id"], job["attempts"], code="invalid_material", message=str(exc), retry=False
+        )
     except Exception:
         logger.exception("资料 Job 处理失败: %s", job["job_id"])
         store.fail_material_job(
-            job["job_id"], job["attempts"], code="processing_unavailable",
+            job["job_id"],
+            job["attempts"],
+            code="processing_unavailable",
             message="资料处理服务暂时不可用，请稍后重试",
             retry=job["attempts"] < job["max_attempts"],
         )
@@ -104,9 +116,13 @@ def main() -> None:
     store = PostgresStore(database_url)
     store.setup()
     embeddings = OpenAIEmbeddings(
-        model=settings.embedding_model, api_key=key, base_url=settings.embedding_base_url,
-        dimensions=settings.embedding_dimensions, request_timeout=settings.model_timeout,
-        max_retries=2, check_embedding_ctx_length=False,
+        model=settings.embedding_model,
+        api_key=key,
+        base_url=settings.embedding_base_url,
+        dimensions=settings.embedding_dimensions,
+        request_timeout=settings.model_timeout,
+        max_retries=2,
+        check_embedding_ctx_length=False,
     )
     kb = KnowledgeBase(store, embeddings, settings)
     try:

@@ -44,7 +44,9 @@ class ReviewModel:
             ]
         )
         chain = prompt | self.model.with_structured_output(
-            schema, method="function_calling", include_raw=True,
+            schema,
+            method="function_calling",
+            include_raw=True,
         )
         payload = {"data": json.dumps(data, ensure_ascii=False)}
         last_error = None
@@ -54,9 +56,13 @@ class ReviewModel:
                 response = chain.invoke(payload)
             except (ValidationError, OutputParserException) as exc:
                 last_error = exc
-                logger.warning("Structured response parser failed: schema=%s attempt=%s/%s "
-                               "error=%s", schema.__name__, attempt, attempts,
-                               type(exc).__name__)
+                logger.warning(
+                    "Structured response parser failed: schema=%s attempt=%s/%s error=%s",
+                    schema.__name__,
+                    attempt,
+                    attempts,
+                    type(exc).__name__,
+                )
                 continue
             raw = response.get("raw") if isinstance(response, dict) else None
             parsed = response.get("parsed") if isinstance(response, dict) else response
@@ -82,7 +88,10 @@ class ReviewModel:
                     "Structured response invalid: schema=%s attempt=%s/%s "
                     "finish_reason=%s tool_calls=%s content_type=%s content_length=%s "
                     "parser_error=%s validation_error=%s",
-                    schema.__name__, attempt, attempts, metadata.get("finish_reason"),
+                    schema.__name__,
+                    attempt,
+                    attempts,
+                    metadata.get("finish_reason"),
                     len(getattr(raw, "tool_calls", []) or []),
                     type(getattr(raw, "content", None)).__name__,
                     len(raw.content) if isinstance(getattr(raw, "content", None), str) else 0,
@@ -224,8 +233,9 @@ class ReviewModel:
         )
 
 
-def build_review_model(config: ChatModelConfig, settings: Settings,
-                       *, note_generation=False) -> ReviewModel:
+def build_review_model(
+    config: ChatModelConfig, settings: Settings, *, note_generation=False
+) -> ReviewModel:
     return ReviewModel(
         ChatOpenAI(
             model=config.model,
@@ -234,9 +244,11 @@ def build_review_model(config: ChatModelConfig, settings: Settings,
             timeout=settings.note_model_timeout if note_generation else settings.model_timeout,
             max_retries=settings.note_model_max_retries if note_generation else 2,
             temperature=0,
-            **({"extra_body": {"thinking": {"type": "disabled"}}}
-               if config.base_url.rstrip("/").removesuffix("/v1") == "https://api.deepseek.com"
-               else {}),
+            **(
+                {"extra_body": {"thinking": {"type": "disabled"}}}
+                if config.base_url.rstrip("/").removesuffix("/v1") == "https://api.deepseek.com"
+                else {}
+            ),
         )
     )
 
@@ -255,7 +267,8 @@ def build_models(settings: Settings, *, note_generation=False):
             base_url=settings.llm_base_url,
             api_key=settings.llm_api_key,
         ),
-        settings, note_generation=note_generation,
+        settings,
+        note_generation=note_generation,
     )
     embeddings = OpenAIEmbeddings(
         model=settings.embedding_model,
@@ -279,8 +292,10 @@ def build_fast_quiz_model(config: ChatModelConfig, settings: Settings) -> Review
             timeout=settings.fast_quiz_timeout,
             max_retries=0,
             temperature=0,
-            **({"extra_body": {"thinking": {"type": "disabled"}}}
-               if config.base_url.rstrip("/").removesuffix("/v1") == "https://api.deepseek.com"
-               else {}),
+            **(
+                {"extra_body": {"thinking": {"type": "disabled"}}}
+                if config.base_url.rstrip("/").removesuffix("/v1") == "https://api.deepseek.com"
+                else {}
+            ),
         )
     )

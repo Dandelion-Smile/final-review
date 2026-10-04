@@ -17,8 +17,14 @@ class Store(Protocol):
     def deindex_document(self, key: str) -> None: ...
     def update_material_metadata(self, key: str, changes: dict) -> dict | None: ...
     def ingest(self, document: dict, chunks: list[dict]) -> None: ...
-    def search(self, vector: list[float], course: str, chapter: str, limit: int,
-               document_ids: list[str] | None = None) -> list[dict]: ...
+    def search(
+        self,
+        vector: list[float],
+        course: str,
+        chapter: str,
+        limit: int,
+        document_ids: list[str] | None = None,
+    ) -> list[dict]: ...
     def list_material_chunks(self, document_id: str) -> list[dict]: ...
     def ensure_material_source(self, document: dict) -> dict: ...
 
@@ -178,8 +184,9 @@ class SurrealStore:
 
     def list_material_chunks(self, document_id):
         chunks = self.scan("chunk", {"document_id": document_id})
-        return sorted(chunks, key=lambda chunk: (chunk.get("chunk_ordinal", 2**31),
-                                                 chunk["chunk_id"]))
+        return sorted(
+            chunks, key=lambda chunk: (chunk.get("chunk_ordinal", 2**31), chunk["chunk_id"])
+        )
 
     def ensure_material_source(self, document):
         from .source_locators import chunk_locator, material_version
@@ -194,9 +201,13 @@ class SurrealStore:
 
     def update_material_metadata(self, key, changes):
         from datetime import UTC, datetime
+
         document = self.get("document", key)
-        if (document is None or document.get("parse_status") not in {"ready", "failed"}
-                or document.get("updated_at") != changes["expected_updated_at"]):
+        if (
+            document is None
+            or document.get("parse_status") not in {"ready", "failed"}
+            or document.get("updated_at") != changes["expected_updated_at"]
+        ):
             return None
         for field in ("title", "chapter", "source_type"):
             document[field] = changes[field]
@@ -206,8 +217,13 @@ class SurrealStore:
             "UPSERT type::thing('document', $key) CONTENT $document; "
             "UPDATE chunk SET title=$title, chapter=$chapter, source_type=$source_type "
             "WHERE document_id=$key; COMMIT TRANSACTION;",
-            {"key": key, "document": document, "title": document["title"],
-             "chapter": document["chapter"], "source_type": document["source_type"]},
+            {
+                "key": key,
+                "document": document,
+                "title": document["title"],
+                "chapter": document["chapter"],
+                "source_type": document["source_type"],
+            },
         )
         return document
 
@@ -239,7 +255,13 @@ class SurrealStore:
             "FROM chunk WHERE course_id = $course AND ($chapter = '' OR chapter = $chapter) "
             "AND ($all_documents OR document_id IN $document_ids) "
             "ORDER BY similarity DESC LIMIT $limit;",
-            {"vector": vector, "course": course, "chapter": chapter, "limit": limit,
-             "all_documents": document_ids is None, "document_ids": document_ids or []},
+            {
+                "vector": vector,
+                "course": course,
+                "chapter": chapter,
+                "limit": limit,
+                "all_documents": document_ids is None,
+                "document_ids": document_ids or [],
+            },
         )[0]
         return rows

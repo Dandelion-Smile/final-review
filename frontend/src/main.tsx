@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ConfigProvider } from "antd";
 import zhCN from "antd/locale/zh_CN";
@@ -17,6 +17,7 @@ const navigation: [Page, NavigationIconName, string][] = [["home", "chat", "AI å
 function App() {
   const [page, setPage] = useState<Page>(/^#materials(?:\/|$)/.test(window.location.hash) ? "materials" : /^#note\//.test(window.location.hash) || window.location.hash === "#notes" ? "notes" : /^#chat\//.test(window.location.hash) ? "home" : "workbench");
   const [routeHash, setRouteHash] = useState(window.location.hash);
+  const acceptedHash = useRef(window.location.hash);
   const [course, setCourse] = useState<Course | null>(null);
   const [courseReady, setCourseReady] = useState(false);
   const [courses, setCourses] = useState<Course[]>([]);
@@ -43,11 +44,10 @@ function App() {
     return () => { active = false; };
   }, []);
   useEffect(() => {
-    let acceptedHash = window.location.hash;
     const onHashChange = (event: HashChangeEvent) => {
-      if (window.location.hash === acceptedHash) return;
-      if (!window.dispatchEvent(new Event("note-navigation", { cancelable: true }))) { event.stopImmediatePropagation(); window.history.replaceState(null, "", acceptedHash); return; }
-      acceptedHash = window.location.hash;
+      if (window.location.hash === acceptedHash.current) return;
+      if (!window.dispatchEvent(new Event("note-navigation", { cancelable: true }))) { event.stopImmediatePropagation(); window.history.replaceState(null, "", acceptedHash.current); return; }
+      acceptedHash.current = window.location.hash;
       setRouteHash(window.location.hash);
       const hash = window.location.hash;
       if (/^#materials(?:\/|$)/.test(hash)) setPage("materials");

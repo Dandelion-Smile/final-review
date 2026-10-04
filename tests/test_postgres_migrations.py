@@ -117,11 +117,20 @@ def test_note_worker_sees_job_created_after_empty_poll(database_url):
         assert worker.claim_note_job() is None
         assert worker.connection.info.transaction_status == TransactionStatus.IDLE
         available_at = datetime.now(UTC) + timedelta(milliseconds=50)
-        writer.put("note_job", "late-note-job", {
-            "job_id": "late-note-job", "user_id": str(USER), "course_id": "course-1",
-            "conversation_id": "conversation-1", "status": "queued", "attempts": 0,
-            "available_at": available_at.isoformat(), "created_at": datetime.now(UTC).isoformat(),
-        })
+        writer.put(
+            "note_job",
+            "late-note-job",
+            {
+                "job_id": "late-note-job",
+                "user_id": str(USER),
+                "course_id": "course-1",
+                "conversation_id": "conversation-1",
+                "status": "queued",
+                "attempts": 0,
+                "available_at": available_at.isoformat(),
+                "created_at": datetime.now(UTC).isoformat(),
+            },
+        )
         time.sleep(0.08)
         claimed = worker.claim_note_job()
         assert claimed is not None
@@ -144,14 +153,25 @@ def test_same_name_and_content_upload_is_unique_under_concurrency(database_url):
         store = PostgresStore(database_url)
         token = store.bind_user(str(USER))
         try:
-            job = store.create_material_job({
-                "document_id": f"new-document-{index}", "course_id": "course-1",
-                "user_id": str(USER), "title": "chapter.md", "file_name": "chapter.md",
-                "content_sha256": "same-content-hash", "source_type": "external_upload",
-                "parse_status": "queued",
-            }, {"job_id": f"new-job-{index}", "document_id": f"new-document-{index}",
-                "course_id": "course-1", "idempotency_key": None,
-                "fingerprint": f"fingerprint-{index}"})
+            job = store.create_material_job(
+                {
+                    "document_id": f"new-document-{index}",
+                    "course_id": "course-1",
+                    "user_id": str(USER),
+                    "title": "chapter.md",
+                    "file_name": "chapter.md",
+                    "content_sha256": "same-content-hash",
+                    "source_type": "external_upload",
+                    "parse_status": "queued",
+                },
+                {
+                    "job_id": f"new-job-{index}",
+                    "document_id": f"new-document-{index}",
+                    "course_id": "course-1",
+                    "idempotency_key": None,
+                    "fingerprint": f"fingerprint-{index}",
+                },
+            )
             return job["document_id"]
         finally:
             store.reset_user(token)
@@ -162,8 +182,10 @@ def test_same_name_and_content_upload_is_unique_under_concurrency(database_url):
     assert document_ids[0] == document_ids[1]
     with psycopg.connect(database_url) as connection:
         with connection.cursor() as cursor:
-            cursor.execute("SELECT count(*) FROM documents WHERE course_id='course-1' "
-                           "AND data->>'file_name'='chapter.md'")
+            cursor.execute(
+                "SELECT count(*) FROM documents WHERE course_id='course-1' "
+                "AND data->>'file_name'='chapter.md'"
+            )
             assert cursor.fetchone()[0] == 1
 
 
@@ -177,19 +199,24 @@ def test_legacy_uploaded_file_without_hash_can_be_reused(database_url, tmp_path)
     store = PostgresStore(database_url)
     token = store.bind_user(str(USER))
     try:
-        document = {"document_id": "legacy-document", "course_id": "course-1",
-                    "user_id": str(USER), "file_name": "legacy.md",
-                    "file_path": str(source), "parse_status": "ready",
-                    "title": "legacy.md", "source_type": "teacher_ppt"}
+        document = {
+            "document_id": "legacy-document",
+            "course_id": "course-1",
+            "user_id": str(USER),
+            "file_name": "legacy.md",
+            "file_path": str(source),
+            "parse_status": "ready",
+            "title": "legacy.md",
+            "source_type": "teacher_ppt",
+        }
         store.put("document", document["document_id"], document)
-        found = store.find_duplicate_material("course-1", "legacy.md",
-                                              sha256(raw).hexdigest())
+        found = store.find_duplicate_material("course-1", "legacy.md", sha256(raw).hexdigest())
         assert found["document"]["document_id"] == document["document_id"]
         assert found["job"] is None
-        store.put("document", document["document_id"], {**document,
-                  "parse_status": "deleted"})
-        assert store.find_duplicate_material("course-1", "legacy.md",
-                                             sha256(raw).hexdigest()) is None
+        store.put("document", document["document_id"], {**document, "parse_status": "deleted"})
+        assert (
+            store.find_duplicate_material("course-1", "legacy.md", sha256(raw).hexdigest()) is None
+        )
     finally:
         store.reset_user(token)
         store.close()
@@ -204,23 +231,39 @@ def test_note_cancel_and_publish_are_fenced_in_postgres(database_url):
     try:
         for status in ("queued", "running"):
             job_id = f"cancel-{status}"
-            store.put("note_job", job_id, {
-                "job_id": job_id, "user_id": str(USER), "course_id": "course-1",
-                "conversation_id": "conversation-1", "session_id": job_id,
-                "status": status, "attempts": 1 if status == "running" else 0,
-                "available_at": datetime.now(UTC).isoformat(),
-            })
+            store.put(
+                "note_job",
+                job_id,
+                {
+                    "job_id": job_id,
+                    "user_id": str(USER),
+                    "course_id": "course-1",
+                    "conversation_id": "conversation-1",
+                    "session_id": job_id,
+                    "status": status,
+                    "attempts": 1 if status == "running" else 0,
+                    "available_at": datetime.now(UTC).isoformat(),
+                },
+            )
             assert store.cancel_note_job(job_id) == "cancelled"
             assert not store.begin_note_publish(job_id, 1)
             assert store.get("note_job", job_id)["status"] == "cancelled"
         assert store.claim_note_job() is None
 
-        store.put("note_job", "publishing", {
-            "job_id": "publishing", "user_id": str(USER), "course_id": "course-1",
-            "conversation_id": "conversation-1", "session_id": "publishing",
-            "status": "running", "attempts": 1,
-            "available_at": datetime.now(UTC).isoformat(),
-        })
+        store.put(
+            "note_job",
+            "publishing",
+            {
+                "job_id": "publishing",
+                "user_id": str(USER),
+                "course_id": "course-1",
+                "conversation_id": "conversation-1",
+                "session_id": "publishing",
+                "status": "running",
+                "attempts": 1,
+                "available_at": datetime.now(UTC).isoformat(),
+            },
+        )
         assert store.begin_note_publish("publishing", 1)
         assert store.cancel_note_job("publishing") == "publishing"
         assert store.get("note_job", "publishing")["status"] == "running"
@@ -241,9 +284,15 @@ def test_checkpoint_thread_does_not_share_draft_transaction_connection(database_
         token = store.bind_user(str(USER))
         try:
             with store.transaction():
-                store.put("course", "course-key", {
-                    "course_id": "course-1", "user_id": str(USER), "status": "active",
-                })
+                store.put(
+                    "course",
+                    "course-key",
+                    {
+                        "course_id": "course-1",
+                        "user_id": str(USER),
+                        "status": "active",
+                    },
+                )
                 draft_open.set()
                 assert release_draft.wait(10)
             return store.connection.info.backend_pid
@@ -255,10 +304,17 @@ def test_checkpoint_thread_does_not_share_draft_transaction_connection(database_
         token = store.bind_user(str(USER))
         try:
             saver = SurrealSaver(store)
-            saver.put_writes({"configurable": {
-                "thread_id": "note-thread", "checkpoint_ns": "",
-                "checkpoint_id": "checkpoint-one",
-            }}, [("note_output", {"saved": True})], "task-one")
+            saver.put_writes(
+                {
+                    "configurable": {
+                        "thread_id": "note-thread",
+                        "checkpoint_ns": "",
+                        "checkpoint_id": "checkpoint-one",
+                    }
+                },
+                [("note_output", {"saved": True})],
+                "task-one",
+            )
             return store.connection.info.backend_pid
         finally:
             store.reset_user(token)
@@ -277,10 +333,16 @@ def test_checkpoint_thread_does_not_share_draft_transaction_connection(database_
             assert len(store.scan("pending_write", {"thread_id": "note-thread"})) == 1
             with pytest.raises(RuntimeError, match="rollback probe"):
                 with store.transaction():
-                    store.put("course", "course-key", {
-                        "course_id": "course-1", "user_id": str(USER),
-                        "status": "active", "name": "should roll back",
-                    })
+                    store.put(
+                        "course",
+                        "course-key",
+                        {
+                            "course_id": "course-1",
+                            "user_id": str(USER),
+                            "status": "active",
+                            "name": "should roll back",
+                        },
+                    )
                     raise RuntimeError("rollback probe")
             assert store.get("course", "course-key").get("name") is None
         finally:
@@ -291,32 +353,51 @@ def test_checkpoint_thread_does_not_share_draft_transaction_connection(database_
 
 @pytest.mark.parametrize("fallback_first", [False, True])
 def test_four_note_batches_save_one_draft_and_checkpoint_on_first_run(
-    database_url, fallback_first,
+    database_url,
+    fallback_first,
 ):
     apply_migrations(database_url)
     with psycopg.connect(database_url) as connection:
         with connection.cursor() as cursor:
-            cursor.execute("INSERT INTO app_users(id,email,password_hash) VALUES (%s,%s,%s)",
-                           (USER, "four-batches@example.test", "hash"))
-            cursor.execute("INSERT INTO courses(record_key,user_id,course_id,data) "
-                           "VALUES ('course-1',%s,'course-1',%s)",
-                           (USER, Jsonb({"course_id": "course-1", "user_id": str(USER),
-                                         "status": "active"})))
+            cursor.execute(
+                "INSERT INTO app_users(id,email,password_hash) VALUES (%s,%s,%s)",
+                (USER, "four-batches@example.test", "hash"),
+            )
+            cursor.execute(
+                "INSERT INTO courses(record_key,user_id,course_id,data) "
+                "VALUES ('course-1',%s,'course-1',%s)",
+                (USER, Jsonb({"course_id": "course-1", "user_id": str(USER), "status": "active"})),
+            )
     store = PostgresStore(database_url)
     token = store.bind_user(str(USER))
     try:
         document_id = "four-batch-source"
-        store.ingest({
-            "document_id": document_id, "course_id": "course-1", "title": "TCP 讲义",
-            "file_name": "tcp.pptx", "chapter": "TCP", "source_type": "teacher_ppt",
-            "cleaned_markdown": "TCP 连接建立", "parse_status": "ready",
-        }, [{
-            "chunk_id": stable_key(document_id, str(index)), "document_id": document_id,
-            "course_id": "course-1", "title": "TCP 讲义", "chapter": "TCP",
-            "source_type": "teacher_ppt", "chunk_ordinal": index,
-            "content": f"TCP 三次握手同步双方初始序列号，片段 {index}。",
-            "embedding": [1.0, 0.1, 0.0],
-        } for index in range(40)])
+        store.ingest(
+            {
+                "document_id": document_id,
+                "course_id": "course-1",
+                "title": "TCP 讲义",
+                "file_name": "tcp.pptx",
+                "chapter": "TCP",
+                "source_type": "teacher_ppt",
+                "cleaned_markdown": "TCP 连接建立",
+                "parse_status": "ready",
+            },
+            [
+                {
+                    "chunk_id": stable_key(document_id, str(index)),
+                    "document_id": document_id,
+                    "course_id": "course-1",
+                    "title": "TCP 讲义",
+                    "chapter": "TCP",
+                    "source_type": "teacher_ppt",
+                    "chunk_ordinal": index,
+                    "content": f"TCP 三次握手同步双方初始序列号，片段 {index}。",
+                    "embedding": [1.0, 0.1, 0.0],
+                }
+                for index in range(40)
+            ],
+        )
         model = ScriptedModel()
         note_calls = []
         original_note = model.note
@@ -329,15 +410,23 @@ def test_four_note_batches_save_one_draft_and_checkpoint_on_first_run(
 
         model.note = capture_note
         settings = Settings(_env_file=None, embedding_dimensions=3)
-        agent = FinalReviewAgent(store, KnowledgeBase(store, TestEmbeddings(), settings),
-                                 model, settings)
-        result = agent.invoke(AgentRequest(
-            course_id="course-1", session_id="four-batch-note", message="生成笔记",
-            intent="note", note_input=NoteInput(
-                note_type="key_points", duration_minutes=10,
-                source_document_ids=[document_id],
+        agent = FinalReviewAgent(
+            store, KnowledgeBase(store, TestEmbeddings(), settings), model, settings
+        )
+        result = agent.invoke(
+            AgentRequest(
+                course_id="course-1",
+                session_id="four-batch-note",
+                message="生成笔记",
+                intent="note",
+                note_input=NoteInput(
+                    note_type="key_points",
+                    duration_minutes=10,
+                    source_document_ids=[document_id],
+                ),
             ),
-        ), str(USER))
+            str(USER),
+        )
         assert result.status == "completed"
         if fallback_first:
             assert "资料原文摘录" in result.answer
@@ -355,8 +444,11 @@ def test_four_note_batches_save_one_draft_and_checkpoint_on_first_run(
 
         def fail_after_draft(table, key, data):
             nonlocal interrupted
-            if (table == "pending_write" and not interrupted
-                    and len(store.scan("learning_asset", {"course_id": "course-1"})) == 2):
+            if (
+                table == "pending_write"
+                and not interrupted
+                and len(store.scan("learning_asset", {"course_id": "course-1"})) == 2
+            ):
                 interrupted = True
                 raise RuntimeError("checkpoint interrupted after draft")
             return original_put(table, key, data)
@@ -364,13 +456,20 @@ def test_four_note_batches_save_one_draft_and_checkpoint_on_first_run(
         store.put = fail_after_draft
         try:
             with pytest.raises(RuntimeError, match="checkpoint interrupted after draft"):
-                agent.invoke(AgentRequest(
-                    course_id="course-1", session_id="recover-after-draft",
-                    message="生成笔记", intent="note", note_input=NoteInput(
-                        note_type="key_points", duration_minutes=10,
-                        source_document_ids=[document_id],
+                agent.invoke(
+                    AgentRequest(
+                        course_id="course-1",
+                        session_id="recover-after-draft",
+                        message="生成笔记",
+                        intent="note",
+                        note_input=NoteInput(
+                            note_type="key_points",
+                            duration_minutes=10,
+                            source_document_ids=[document_id],
+                        ),
                     ),
-                ), str(USER))
+                    str(USER),
+                )
         finally:
             store.put = original_put
         assert interrupted
@@ -403,7 +502,9 @@ def test_note_draft_persists_point_locator_in_postgres(database_url):
         kb = KnowledgeBase(store, TestEmbeddings(), settings)
         ingested = kb.ingest(
             MaterialInput(
-                course_id="course-1", title="TCP 讲义", chapter="TCP",
+                course_id="course-1",
+                title="TCP 讲义",
+                chapter="TCP",
                 source_type="teacher_ppt",
                 markdown="TCP 三次握手同步双方初始序列号并确认双方收发能力。",
             ),
@@ -412,9 +513,14 @@ def test_note_draft_persists_point_locator_in_postgres(database_url):
         agent = FinalReviewAgent(store, kb, ScriptedModel(), settings)
         result = agent.invoke(
             AgentRequest(
-                course_id="course-1", session_id="m2-note", message="生成笔记", intent="note",
+                course_id="course-1",
+                session_id="m2-note",
+                message="生成笔记",
+                intent="note",
                 note_input=NoteInput(
-                    note_type="key_points", scope="TCP", duration_minutes=10,
+                    note_type="key_points",
+                    scope="TCP",
+                    duration_minutes=10,
                     source_document_ids=[ingested["document_id"]],
                 ),
             ),
@@ -437,9 +543,7 @@ def test_note_draft_persists_point_locator_in_postgres(database_url):
         store.close()
 
 
-def test_conversation_history_and_rename_are_scoped_to_owner_and_course(
-    database_url, monkeypatch
-):
+def test_conversation_history_and_rename_are_scoped_to_owner_and_course(database_url, monkeypatch):
     apply_migrations(database_url)
     calls = []
 
@@ -455,37 +559,68 @@ def test_conversation_history_and_rename_are_scoped_to_owner_and_course(
 
     monkeypatch.setattr("final_review.api.OpenAI", FakeOpenAI)
     settings = Settings(
-        _env_file=None, database_url=database_url, auth_cookie_secure=False,
-        llm_api_key="", embedding_api_key="",
-        chat_models=[ChatModelConfig(
-            id="acceptance", label="验收模型", model="fixture-model",
-            base_url="https://example.invalid/v1", api_key="fixture-key",
-        )],
+        _env_file=None,
+        database_url=database_url,
+        auth_cookie_secure=False,
+        llm_api_key="",
+        embedding_api_key="",
+        chat_models=[
+            ChatModelConfig(
+                id="acceptance",
+                label="验收模型",
+                model="fixture-model",
+                base_url="https://example.invalid/v1",
+                api_key="fixture-key",
+            )
+        ],
     )
     app = create_app(settings)
     with TestClient(app) as owner:
         other = TestClient(app)
-        assert owner.post("/api/auth/sign-up", json={
-            "email": "owner@example.test", "password": "test-password-123"
-        }).status_code == 200
-        assert other.post("/api/auth/sign-up", json={
-            "email": "other@example.test", "password": "test-password-123"
-        }).status_code == 200
+        assert (
+            owner.post(
+                "/api/auth/sign-up",
+                json={"email": "owner@example.test", "password": "test-password-123"},
+            ).status_code
+            == 200
+        )
+        assert (
+            other.post(
+                "/api/auth/sign-up",
+                json={"email": "other@example.test", "password": "test-password-123"},
+            ).status_code
+            == 200
+        )
         math = owner.post("/api/courses", json={"name": "数学"}).json()["course_id"]
         physics = owner.post("/api/courses", json={"name": "物理"}).json()["course_id"]
         other_course = other.post("/api/courses", json={"name": "他人课程"}).json()
         assert other_course["course_id"] not in {math, physics}
 
         for index in range(7):
-            sent = owner.post("/api/chat", json={
-                "course_id": math, "conversation_id": f"chat-{index}",
-                "message": f"问题 {index}", "mode": "direct", "model_id": "acceptance",
-            })
+            sent = owner.post(
+                "/api/chat",
+                json={
+                    "course_id": math,
+                    "conversation_id": f"chat-{index}",
+                    "message": f"问题 {index}",
+                    "mode": "direct",
+                    "model_id": "acceptance",
+                },
+            )
             assert sent.status_code == 200, sent.text
-        assert owner.post("/api/chat", json={
-            "course_id": physics, "conversation_id": "physics-chat",
-            "message": "物理问题", "mode": "direct", "model_id": "acceptance",
-        }).status_code == 200
+        assert (
+            owner.post(
+                "/api/chat",
+                json={
+                    "course_id": physics,
+                    "conversation_id": "physics-chat",
+                    "message": "物理问题",
+                    "mode": "direct",
+                    "model_id": "acceptance",
+                },
+            ).status_code
+            == 200
+        )
         listing = owner.get(f"/api/courses/{math}/conversations").json()["items"]
         assert len(listing) == 7
         assert {item["conversation_id"] for item in listing[:5]} == {
@@ -493,23 +628,36 @@ def test_conversation_history_and_rename_are_scoped_to_owner_and_course(
         }
         assert all(item["course_id"] == math for item in listing)
 
-        continued = owner.post("/api/chat", json={
-            "course_id": math, "conversation_id": "chat-0", "message": "接着说",
-            "mode": "direct", "model_id": "acceptance",
-        })
+        continued = owner.post(
+            "/api/chat",
+            json={
+                "course_id": math,
+                "conversation_id": "chat-0",
+                "message": "接着说",
+                "mode": "direct",
+                "model_id": "acceptance",
+            },
+        )
         assert continued.status_code == 200
         assert [item["role"] for item in calls[-1]["messages"]] == [
-            "system", "user", "assistant", "user"
+            "system",
+            "user",
+            "assistant",
+            "user",
         ]
         assert calls[-1]["messages"][1]["content"] == "问题 0"
         assert calls[-1]["messages"][-1]["content"] == "接着说"
         history = owner.get(f"/api/courses/{math}/conversations/chat-0/messages")
         assert [item["content"] for item in history.json()["items"]] == [
-            "问题 0", "答复 1", "接着说", "答复 9"
+            "问题 0",
+            "答复 1",
+            "接着说",
+            "答复 9",
         ]
-        assert owner.get(f"/api/courses/{math}/conversations").json()["items"][0][
-            "conversation_id"
-        ] == "chat-0"
+        assert (
+            owner.get(f"/api/courses/{math}/conversations").json()["items"][0]["conversation_id"]
+            == "chat-0"
+        )
         renamed = owner.patch(
             f"/api/courses/{math}/conversations/chat-0", json={"title": "期末重点"}
         )
@@ -518,26 +666,35 @@ def test_conversation_history_and_rename_are_scoped_to_owner_and_course(
 
         assert other.get(f"/api/courses/{math}/conversations").status_code == 404
         assert other.get(f"/api/courses/{math}/conversations/chat-0/messages").status_code == 404
-        assert other.patch(
-            f"/api/courses/{math}/conversations/chat-0", json={"title": "越权"}
-        ).status_code == 404
-        assert owner.get(
-            f"/api/courses/{physics}/conversations/chat-0/messages"
-        ).status_code == 404
-        assert owner.patch(
-            f"/api/courses/{physics}/conversations/chat-0", json={"title": "错课程"}
-        ).status_code == 404
+        assert (
+            other.patch(
+                f"/api/courses/{math}/conversations/chat-0", json={"title": "越权"}
+            ).status_code
+            == 404
+        )
+        assert owner.get(f"/api/courses/{physics}/conversations/chat-0/messages").status_code == 404
+        assert (
+            owner.patch(
+                f"/api/courses/{physics}/conversations/chat-0", json={"title": "错课程"}
+            ).status_code
+            == 404
+        )
 
     with TestClient(create_app(settings)) as reopened:
-        assert reopened.post("/api/auth/sign-in", json={
-            "email": "owner@example.test", "password": "test-password-123"
-        }).status_code == 200
+        assert (
+            reopened.post(
+                "/api/auth/sign-in",
+                json={"email": "owner@example.test", "password": "test-password-123"},
+            ).status_code
+            == 200
+        )
         restored = reopened.get(f"/api/courses/{math}/conversations/chat-0/messages")
         assert restored.status_code == 200
         assert len(restored.json()["items"]) == 4
-        assert reopened.get(f"/api/courses/{math}/conversations").json()["items"][0][
-            "title"
-        ] == "期末重点"
+        assert (
+            reopened.get(f"/api/courses/{math}/conversations").json()["items"][0]["title"]
+            == "期末重点"
+        )
 
 
 def test_material_job_claim_publish_and_ready_only_search(database_url):
@@ -548,14 +705,25 @@ def test_material_job_claim_publish_and_ready_only_search(database_url):
     token = store.bind_user(str(USER))
     try:
         document = {
-            "document_id": "material-1", "course_id": "course-1", "user_id": str(USER),
-            "title": "Job 讲义", "source_type": "homework", "chapter": "", "parse_status": "queued",
+            "document_id": "material-1",
+            "course_id": "course-1",
+            "user_id": str(USER),
+            "title": "Job 讲义",
+            "source_type": "homework",
+            "chapter": "",
+            "parse_status": "queued",
             "chunk_count": 0,
         }
-        submitted = store.create_material_job(document, {
-            "job_id": "job-1", "document_id": "material-1", "course_id": "course-1",
-            "idempotency_key": "first", "fingerprint": "same-content",
-        })
+        submitted = store.create_material_job(
+            document,
+            {
+                "job_id": "job-1",
+                "document_id": "material-1",
+                "course_id": "course-1",
+                "idempotency_key": "first",
+                "fingerprint": "same-content",
+            },
+        )
         assert submitted["status"] == "queued"
         assert store.search([1.0, 0.0, 0.0], "course-1", "", 5) == []
         claimed = store.claim_material_job()
@@ -563,8 +731,12 @@ def test_material_job_claim_publish_and_ready_only_search(database_url):
         assert store.claim_material_job() is None
         ready = {**document, "parse_status": "ready", "chunk_count": 1}
         chunk = {
-            "chunk_id": "chunk-1", "document_id": "material-1", "course_id": "course-1",
-            "source_type": "homework", "chapter": "", "content": "TCP 三次握手",
+            "chunk_id": "chunk-1",
+            "document_id": "material-1",
+            "course_id": "course-1",
+            "source_type": "homework",
+            "chapter": "",
+            "content": "TCP 三次握手",
             "embedding": [1.0, 0.0, 0.0],
         }
         assert store.publish_material_job("job-1", 1, ready, [chunk])
@@ -601,25 +773,50 @@ def test_material_metadata_edit_updates_pgvector_chunk_metadata(database_url):
     try:
         store.ingest(
             {
-                "document_id": "edit-1", "course_id": "course-1", "user_id": str(USER),
-                "title": "旧标题", "chapter": "旧章节", "source_type": "homework",
-                "parse_status": "ready", "updated_at": "2026-01-01T00:00:00+00:00",
+                "document_id": "edit-1",
+                "course_id": "course-1",
+                "user_id": str(USER),
+                "title": "旧标题",
+                "chapter": "旧章节",
+                "source_type": "homework",
+                "parse_status": "ready",
+                "updated_at": "2026-01-01T00:00:00+00:00",
             },
-            [{
-                "chunk_id": "edit-chunk", "document_id": "edit-1", "course_id": "course-1",
-                "title": "旧标题", "chapter": "旧章节", "source_type": "homework",
-                "content": "网络知识", "embedding": [1.0, 0.0, 0.0],
-            }],
+            [
+                {
+                    "chunk_id": "edit-chunk",
+                    "document_id": "edit-1",
+                    "course_id": "course-1",
+                    "title": "旧标题",
+                    "chapter": "旧章节",
+                    "source_type": "homework",
+                    "content": "网络知识",
+                    "embedding": [1.0, 0.0, 0.0],
+                }
+            ],
         )
-        updated = store.update_material_metadata("edit-1", {
-            "title": "新标题", "chapter": "新章节", "source_type": "teacher_ppt",
-            "expected_updated_at": "2026-01-01T00:00:00+00:00",
-        })
+        updated = store.update_material_metadata(
+            "edit-1",
+            {
+                "title": "新标题",
+                "chapter": "新章节",
+                "source_type": "teacher_ppt",
+                "expected_updated_at": "2026-01-01T00:00:00+00:00",
+            },
+        )
         assert updated["title"] == "新标题"
-        assert store.update_material_metadata("edit-1", {
-            "title": "过期修改", "chapter": "", "source_type": "homework",
-            "expected_updated_at": "2026-01-01T00:00:00+00:00",
-        }) is None
+        assert (
+            store.update_material_metadata(
+                "edit-1",
+                {
+                    "title": "过期修改",
+                    "chapter": "",
+                    "source_type": "homework",
+                    "expected_updated_at": "2026-01-01T00:00:00+00:00",
+                },
+            )
+            is None
+        )
         hits = store.search([1.0, 0.0, 0.0], "course-1", "新章节", 5)
         assert len(hits) == 1
         assert hits[0]["title"] == "新标题"
@@ -638,30 +835,43 @@ def test_material_job_failure_and_retry_are_persistent(database_url):
     token = store.bind_user(str(USER))
     try:
         document = {
-            "document_id": "material-2", "course_id": "course-1", "user_id": str(USER),
-            "title": "损坏资料", "source_type": "homework", "parse_status": "queued",
+            "document_id": "material-2",
+            "course_id": "course-1",
+            "user_id": str(USER),
+            "title": "损坏资料",
+            "source_type": "homework",
+            "parse_status": "queued",
             "chunk_count": 0,
         }
         job_data = {
-            "job_id": "job-2", "document_id": "material-2", "course_id": "course-1",
-            "idempotency_key": "same-request", "fingerprint": "same-content",
+            "job_id": "job-2",
+            "document_id": "material-2",
+            "course_id": "course-1",
+            "idempotency_key": "same-request",
+            "fingerprint": "same-content",
         }
         store.create_material_job(document, job_data)
-        assert store.create_material_job({**document, "document_id": "duplicate"},
-                                         {**job_data, "job_id": "duplicate",
-                                          "document_id": "duplicate"})["job_id"] == "job-2"
+        assert (
+            store.create_material_job(
+                {**document, "document_id": "duplicate"},
+                {**job_data, "job_id": "duplicate", "document_id": "duplicate"},
+            )["job_id"]
+            == "job-2"
+        )
         claimed = store.claim_material_job()
         assert claimed["job_id"] == "job-2"
         with store.connection.cursor() as cursor:
-            cursor.execute("UPDATE material_jobs SET lease_until=now()-interval '1 second' "
-                           "WHERE job_id='job-2'")
+            cursor.execute(
+                "UPDATE material_jobs SET lease_until=now()-interval '1 second' "
+                "WHERE job_id='job-2'"
+            )
         store.connection.commit()
         reclaimed = store.claim_material_job()
         assert reclaimed["job_id"] == "job-2" and reclaimed["attempts"] == 2
-        assert not store.publish_material_job("job-2", 1,
-                                             {**document, "parse_status": "ready"}, [])
-        assert store.fail_material_job("job-2", 2, code="invalid_material",
-                                       message="图片损坏", retry=False)
+        assert not store.publish_material_job("job-2", 1, {**document, "parse_status": "ready"}, [])
+        assert store.fail_material_job(
+            "job-2", 2, code="invalid_material", message="图片损坏", retry=False
+        )
         assert store.get_material_job("job-2")["status"] == "failed"
         assert store.get("document", "material-2")["parse_status"] == "failed"
         assert store.search([1.0, 0.0, 0.0], "course-1", "", 5) == []
@@ -669,8 +879,7 @@ def test_material_job_failure_and_retry_are_persistent(database_url):
         assert store.claim_material_job()["job_id"] == "job-2"
         assert store.get("document", "material-2")["parse_status"] == "running"
         store.put("document", "material-2", {**document, "parse_status": "deleted"})
-        assert not store.publish_material_job("job-2", 1,
-                                             {**document, "parse_status": "ready"}, [])
+        assert not store.publish_material_job("job-2", 1, {**document, "parse_status": "ready"}, [])
         assert store.get_material_job("job-2")["status"] == "failed"
         assert store.get("document", "material-2")["parse_status"] == "deleted"
     finally:
@@ -687,15 +896,28 @@ def test_material_worker_processes_real_postgres_job(database_url, tmp_path):
     store = PostgresStore(database_url)
     token = store.bind_user(str(USER))
     try:
-        store.create_material_job({
-            "document_id": "material-3", "course_id": "course-1", "user_id": str(USER),
-            "title": "讲义", "source_type": "homework", "source_origin": "user_upload",
-            "chapter": "", "file_name": "lecture.md", "file_path": str(source),
-            "parse_status": "queued", "chunk_count": 0,
-        }, {
-            "job_id": "job-3", "document_id": "material-3", "course_id": "course-1",
-            "idempotency_key": None, "fingerprint": "content",
-        })
+        store.create_material_job(
+            {
+                "document_id": "material-3",
+                "course_id": "course-1",
+                "user_id": str(USER),
+                "title": "讲义",
+                "source_type": "homework",
+                "source_origin": "user_upload",
+                "chapter": "",
+                "file_name": "lecture.md",
+                "file_path": str(source),
+                "parse_status": "queued",
+                "chunk_count": 0,
+            },
+            {
+                "job_id": "job-3",
+                "document_id": "material-3",
+                "course_id": "course-1",
+                "idempotency_key": None,
+                "fingerprint": "content",
+            },
+        )
         settings = Settings(_env_file=None, embedding_dimensions=3)
         kb = KnowledgeBase(store, TestEmbeddings(), settings)
         job = store.claim_material_job()
@@ -714,9 +936,12 @@ def test_existing_001_002_with_legacy_attempt_upgrades(database_url):
         _sql(connection, "002_m0_domain_contracts.sql")
         _seed_course(connection, legacy=True)
     assert apply_migrations(database_url) == [
-        "003_m0_database_hardening.sql", "004_m1_material_jobs.sql",
-        "005_note_jobs.sql", "006_external_upload_dedup.sql", "007_note_review.sql",
-        "008_note_exports.sql"
+        "003_m0_database_hardening.sql",
+        "004_m1_material_jobs.sql",
+        "005_note_jobs.sql",
+        "006_external_upload_dedup.sql",
+        "007_note_review.sql",
+        "008_note_exports.sql",
     ]
     with psycopg.connect(database_url) as connection, connection.cursor() as cursor:
         cursor.execute("SELECT legacy_session_id FROM attempts WHERE record_key='attempt-key'")
@@ -918,18 +1143,28 @@ def test_database_api_returns_404_for_another_users_course(database_url, tmp_pat
         try:
             material_store.ingest(
                 {
-                    "document_id": "private-material", "course_id": course["course_id"],
-                    "user_id": owner_id, "title": "private lecture",
-                    "file_name": "lecture.md", "file_path": str(source),
-                    "source_type": "homework", "cleaned_markdown": "private excerpt",
+                    "document_id": "private-material",
+                    "course_id": course["course_id"],
+                    "user_id": owner_id,
+                    "title": "private lecture",
+                    "file_name": "lecture.md",
+                    "file_path": str(source),
+                    "source_type": "homework",
+                    "cleaned_markdown": "private excerpt",
                     "parse_status": "ready",
                 },
-                [{
-                    "chunk_id": "private-chunk", "document_id": "private-material",
-                    "course_id": course["course_id"], "title": "private lecture",
-                    "chapter": "", "source_type": "homework",
-                    "content": "private excerpt", "embedding": [1.0, 0.0, 0.0],
-                }],
+                [
+                    {
+                        "chunk_id": "private-chunk",
+                        "document_id": "private-material",
+                        "course_id": course["course_id"],
+                        "title": "private lecture",
+                        "chapter": "",
+                        "source_type": "homework",
+                        "content": "private excerpt",
+                        "embedding": [1.0, 0.0, 0.0],
+                    }
+                ],
             )
         finally:
             material_store.reset_user(owner_token)

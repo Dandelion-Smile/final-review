@@ -10,8 +10,7 @@ from final_review.schemas import MaterialInput
 def _run_queued_job(system):
     job = system.store.claim_material_job()
     assert job is not None
-    process_material_job(system.store, system.kb, job,
-                         system.settings.max_upload_mb * 1024 * 1024)
+    process_material_job(system.store, system.kb, job, system.settings.max_upload_mb * 1024 * 1024)
     return system.store.get_material_job(job["job_id"])
 
 
@@ -113,8 +112,10 @@ def test_chat_uses_knowledge_service_and_persists_messages(system):
     ]
     with TestClient(create_app(system.settings, system)) as client:
         models = client.get("/api/chat/models")
-        assert models.json() == {"items": [{"id": "review", "label": "复习模型"}],
-                                 "note_model": system.settings.llm_model}
+        assert models.json() == {
+            "items": [{"id": "review", "label": "复习模型"}],
+            "note_model": system.settings.llm_model,
+        }
         response = client.post("/api/chat", json={"message": "帮我复习需求分析"})
         assert response.status_code == 200
         assert response.json()["reply"]
@@ -152,8 +153,13 @@ def test_chat_greeting_does_not_require_course_evidence(system):
 
 def test_first_valid_message_persists_when_model_fails(system, monkeypatch):
     system.settings.chat_models = [
-        ChatModelConfig(id="review", label="Review", model="test-model",
-                        base_url="https://example.invalid/v1", api_key="test-key")
+        ChatModelConfig(
+            id="review",
+            label="Review",
+            model="test-model",
+            base_url="https://example.invalid/v1",
+            api_key="test-key",
+        )
     ]
 
     class FailedCompletions:
@@ -166,32 +172,46 @@ def test_first_valid_message_persists_when_model_fails(system, monkeypatch):
 
     monkeypatch.setattr("final_review.api.OpenAI", FailedOpenAI)
     with TestClient(create_app(system.settings, system)) as client:
-        response = client.post("/api/chat", json={
-            "course_id": "software-engineering-basics", "conversation_id": "failed-chat",
-            "message": "第一个问题", "model_id": "review", "mode": "direct",
-        })
+        response = client.post(
+            "/api/chat",
+            json={
+                "course_id": "software-engineering-basics",
+                "conversation_id": "failed-chat",
+                "message": "第一个问题",
+                "model_id": "review",
+                "mode": "direct",
+            },
+        )
         assert response.status_code == 502
         history = client.get(
             "/api/courses/software-engineering-basics/conversations/failed-chat/messages"
         ).json()["items"]
-        assert [(item["role"], item["content"]) for item in history] == [
-            ("user", "第一个问题")
-        ]
-        assert client.patch(
-            "/api/courses/software-engineering-basics/conversations/failed-chat",
-            json={"title": "已保存的提问"},
-        ).status_code == 200
+        assert [(item["role"], item["content"]) for item in history] == [("user", "第一个问题")]
+        assert (
+            client.patch(
+                "/api/courses/software-engineering-basics/conversations/failed-chat",
+                json={"title": "已保存的提问"},
+            ).status_code
+            == 200
+        )
 
 
 def test_direct_chat_uses_selected_model_and_history(system, monkeypatch):
     system.settings.chat_models = [
         ChatModelConfig(
-            id="deepseek", label="DeepSeek", model="deepseek-test",
-            base_url="https://api.deepseek.com", api_key="test-key",
+            id="deepseek",
+            label="DeepSeek",
+            model="deepseek-test",
+            base_url="https://api.deepseek.com",
+            api_key="test-key",
         ),
         ChatModelConfig(
-            id="gemini", label="Gemini", model="gemini-test",
-            base_url="https://example.invalid/v1", api_key="test-key", grounded=False,
+            id="gemini",
+            label="Gemini",
+            model="gemini-test",
+            base_url="https://example.invalid/v1",
+            api_key="test-key",
+            grounded=False,
         ),
     ]
     calls = []
@@ -200,6 +220,7 @@ def test_direct_chat_uses_selected_model_and_history(system, monkeypatch):
         def create(self, **kwargs):
             calls.append(kwargs)
             from types import SimpleNamespace
+
             return SimpleNamespace(
                 choices=[SimpleNamespace(message=SimpleNamespace(content="真实回复"))]
             )
@@ -210,34 +231,54 @@ def test_direct_chat_uses_selected_model_and_history(system, monkeypatch):
 
     monkeypatch.setattr("final_review.api.OpenAI", FakeOpenAI)
     with TestClient(create_app(system.settings, system)) as client:
-        result = client.post("/api/chat", json={
-            "message": "你好", "model_id": "gemini", "mode": "direct",
-            "history": [{"role": "user", "content": "先前的问题"},
-                        {"role": "assistant", "content": "先前的回答"}],
-        })
+        result = client.post(
+            "/api/chat",
+            json={
+                "message": "你好",
+                "model_id": "gemini",
+                "mode": "direct",
+                "history": [
+                    {"role": "user", "content": "先前的问题"},
+                    {"role": "assistant", "content": "先前的回答"},
+                ],
+            },
+        )
         assert result.status_code == 200
         assert result.json()["reply"] == "真实回复"
         assert result.json()["model"] == "Gemini"
         assert calls[0]["model"] == "gemini-test"
         assert [item["role"] for item in calls[0]["messages"]] == ["system", "user"]
-        continued = client.post("/api/chat", json={
-            "message": "继续", "model_id": "gemini", "mode": "direct",
-            "history": [{"role": "user", "content": "不可信的页面历史"}],
-        })
+        continued = client.post(
+            "/api/chat",
+            json={
+                "message": "继续",
+                "model_id": "gemini",
+                "mode": "direct",
+                "history": [{"role": "user", "content": "不可信的页面历史"}],
+            },
+        )
         assert continued.status_code == 200
         assert [item["role"] for item in calls[1]["messages"]] == [
-            "system", "user", "assistant", "user"
+            "system",
+            "user",
+            "assistant",
+            "user",
         ]
         assert calls[1]["messages"][1]["content"] == "你好"
-        deepseek_reply = client.post("/api/chat", json={
-            "message": "继续", "model_id": "deepseek", "mode": "direct",
-        })
+        deepseek_reply = client.post(
+            "/api/chat",
+            json={
+                "message": "继续",
+                "model_id": "deepseek",
+                "mode": "direct",
+            },
+        )
         assert deepseek_reply.status_code == 200
         assert calls[2]["extra_body"] == {"thinking": {"type": "disabled"}}
         assert "extra_body" not in calls[1]
-        conversations = client.get(
-            "/api/courses/software-engineering-basics/conversations"
-        ).json()["items"]
+        conversations = client.get("/api/courses/software-engineering-basics/conversations").json()[
+            "items"
+        ]
         assert conversations[0]["title"] == "你好"
         renamed = client.patch(
             "/api/courses/software-engineering-basics/conversations/default",
@@ -245,21 +286,30 @@ def test_direct_chat_uses_selected_model_and_history(system, monkeypatch):
         )
         assert renamed.status_code == 200
         assert renamed.json()["title"] == "期末复习重点"
-        assert client.get(
-            "/api/courses/software-engineering-basics/conversations"
-        ).json()["items"][0]["title"] == "期末复习重点"
-        assert client.patch(
-            "/api/courses/software-engineering-basics/conversations/default",
-            json={"title": "   "},
-        ).status_code == 422
+        assert (
+            client.get("/api/courses/software-engineering-basics/conversations").json()["items"][0][
+                "title"
+            ]
+            == "期末复习重点"
+        )
+        assert (
+            client.patch(
+                "/api/courses/software-engineering-basics/conversations/default",
+                json={"title": "   "},
+            ).status_code
+            == 422
+        )
         other_course = client.post("/api/courses", json={"name": "Other"}).json()["course_id"]
         assert (
             client.get(f"/api/courses/{other_course}/conversations/default/messages").status_code
             == 404
         )
-        assert client.patch(
-            f"/api/courses/{other_course}/conversations/default", json={"title": "不可改"}
-        ).status_code == 404
+        assert (
+            client.patch(
+                f"/api/courses/{other_course}/conversations/default", json={"title": "不可改"}
+            ).status_code
+            == 404
+        )
 
 
 def test_real_pptx_conversion(system, tmp_path):
@@ -418,10 +468,15 @@ def test_fast_quiz_uses_direct_retrieval_and_persists_attempt(system, monkeypatc
 def test_selected_chat_model_routes_note_ask_quiz_and_ambiguity(system, monkeypatch):
     from types import SimpleNamespace
 
-    system.settings.chat_models = [ChatModelConfig(
-        id="selected", label="所选模型", model="selected-model",
-        base_url="https://example.invalid/v1", api_key="test-key",
-    )]
+    system.settings.chat_models = [
+        ChatModelConfig(
+            id="selected",
+            label="所选模型",
+            model="selected-model",
+            base_url="https://example.invalid/v1",
+            api_key="test-key",
+        )
+    ]
     calls = []
     intents = {
         "生成一份可以背诵的资料": "note",
@@ -435,35 +490,53 @@ def test_selected_chat_model_routes_note_ask_quiz_and_ambiguity(system, monkeypa
             calls.append(kwargs)
             if kwargs["messages"][0]["content"].startswith("判断用户当前消息的意图"):
                 import json
+
                 text = json.loads(kwargs["messages"][-1]["content"])["message"]
                 content = '{"intent":"' + intents[text] + '"}'
             else:
                 content = "普通聊天回复"
-            return SimpleNamespace(choices=[SimpleNamespace(
-                message=SimpleNamespace(content=content))])
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
+            )
 
     class FakeOpenAI:
         def __init__(self, **kwargs):
             self.chat = SimpleNamespace(completions=FakeCompletions())
 
     monkeypatch.setattr("final_review.api.OpenAI", FakeOpenAI)
+
     class FastModel:
         def fast_quiz(self, data):
-            return {"questions": [{
-                "id": f"q{index}", "knowledge_point": f"知识点{index}",
-                "question_type": "short_answer", "stem": f"练习题{index}？", "options": [],
-                "reference_answer": "答案", "explanation": "解析", "must_include": [],
-                "source_chunk_ids": [data["evidence"][0]["chunk_id"]],
-            } for index in range(data["question_count"])]}
+            return {
+                "questions": [
+                    {
+                        "id": f"q{index}",
+                        "knowledge_point": f"知识点{index}",
+                        "question_type": "short_answer",
+                        "stem": f"练习题{index}？",
+                        "options": [],
+                        "reference_answer": "答案",
+                        "explanation": "解析",
+                        "must_include": [],
+                        "source_chunk_ids": [data["evidence"][0]["chunk_id"]],
+                    }
+                    for index in range(data["question_count"])
+                ]
+            }
 
     monkeypatch.setattr("final_review.api.build_fast_quiz_model", lambda *_: FastModel())
     with TestClient(create_app(system.settings, system)) as client:
         for index, (message, intent) in enumerate(intents.items()):
             conversation_id = f"route-{index}"
-            response = client.post("/api/chat/dispatch", json={
-                "course_id": "net", "conversation_id": conversation_id,
-                "message": message, "model_id": "selected",
-            })
+            response = client.post(
+                "/api/chat/dispatch",
+                json={
+                    "course_id": "net",
+                    "conversation_id": conversation_id,
+                    "message": message,
+                    "model_id": "selected",
+                },
+            )
             assert response.status_code == 200, response.text
             assert response.json()["intent"] == intent
             if intent == "note":
@@ -484,17 +557,23 @@ def test_selected_chat_model_routes_note_ask_quiz_and_ambiguity(system, monkeypa
 def test_intent_provider_failure_does_not_save_half_routed_message(system, monkeypatch):
     from types import SimpleNamespace
 
-    system.settings.chat_models = [ChatModelConfig(
-        id="selected", label="所选模型", model="selected-model",
-        base_url="https://example.invalid/v1", api_key="test-key",
-    )]
+    system.settings.chat_models = [
+        ChatModelConfig(
+            id="selected",
+            label="所选模型",
+            model="selected-model",
+            base_url="https://example.invalid/v1",
+            api_key="test-key",
+        )
+    ]
     calls = []
 
     class FakeCompletions:
         def create(self, **kwargs):
             calls.append(kwargs)
-            return SimpleNamespace(choices=[SimpleNamespace(
-                message=SimpleNamespace(content="not-json"))])
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="not-json"))]
+            )
 
     class FakeOpenAI:
         def __init__(self, **kwargs):
@@ -502,10 +581,15 @@ def test_intent_provider_failure_does_not_save_half_routed_message(system, monke
 
     monkeypatch.setattr("final_review.api.OpenAI", FakeOpenAI)
     with TestClient(create_app(system.settings, system)) as client:
-        response = client.post("/api/chat/dispatch", json={
-            "course_id": "net", "conversation_id": "bad-route",
-            "message": "生成可背诵资料", "model_id": "selected",
-        })
+        response = client.post(
+            "/api/chat/dispatch",
+            json={
+                "course_id": "net",
+                "conversation_id": "bad-route",
+                "message": "生成可背诵资料",
+                "model_id": "selected",
+            },
+        )
         assert response.status_code == 502
         assert client.get("/api/courses/net/conversations/bad-route/messages").status_code == 404
     assert len(calls) == 2
@@ -514,10 +598,15 @@ def test_intent_provider_failure_does_not_save_half_routed_message(system, monke
 def test_chat_uses_only_ready_attachments_from_current_course(system, monkeypatch):
     from types import SimpleNamespace
 
-    system.settings.chat_models = [ChatModelConfig(
-        id="selected", label="所选模型", model="selected-model",
-        base_url="https://example.invalid/v1", api_key="test-key",
-    )]
+    system.settings.chat_models = [
+        ChatModelConfig(
+            id="selected",
+            label="所选模型",
+            model="selected-model",
+            base_url="https://example.invalid/v1",
+            api_key="test-key",
+        )
+    ]
     calls = []
 
     class FakeOpenAI:
@@ -526,36 +615,69 @@ def test_chat_uses_only_ready_attachments_from_current_course(system, monkeypatc
 
         def create(self, **kwargs):
             calls.append(kwargs)
-            content = ('{"intent":"ask"}' if kwargs["messages"][0]["content"].startswith(
-                "判断用户当前消息的意图") else "根据 chapter.md，HTTP 是无状态协议。")
-            return SimpleNamespace(choices=[SimpleNamespace(
-                message=SimpleNamespace(content=content))])
+            content = (
+                '{"intent":"ask"}'
+                if kwargs["messages"][0]["content"].startswith("判断用户当前消息的意图")
+                else "根据 chapter.md，HTTP 是无状态协议。"
+            )
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
+            )
 
     monkeypatch.setattr("final_review.api.OpenAI", FakeOpenAI)
-    system.kb.ingest(MaterialInput(document_id="attached", course_id="net", title="chapter.md",
-                                   source_type="teacher_ppt", markdown="HTTP 是无状态协议。"),
-                     user_id="local-user")
-    system.store.put("document", "pending", {
-        "document_id": "pending", "course_id": "net", "parse_status": "queued",
-    })
-    system.store.put("document", "foreign", {
-        "document_id": "foreign", "course_id": "other", "parse_status": "ready",
-    })
+    system.kb.ingest(
+        MaterialInput(
+            document_id="attached",
+            course_id="net",
+            title="chapter.md",
+            source_type="teacher_ppt",
+            markdown="HTTP 是无状态协议。",
+        ),
+        user_id="local-user",
+    )
+    system.store.put(
+        "document",
+        "pending",
+        {
+            "document_id": "pending",
+            "course_id": "net",
+            "parse_status": "queued",
+        },
+    )
+    system.store.put(
+        "document",
+        "foreign",
+        {
+            "document_id": "foreign",
+            "course_id": "other",
+            "parse_status": "ready",
+        },
+    )
     with TestClient(create_app(system.settings, system)) as client:
-        body = {"course_id": "net", "conversation_id": "attached-chat",
-                "message": "解释这份资料", "model_id": "selected",
-                "attachment_document_ids": ["attached"]}
+        body = {
+            "course_id": "net",
+            "conversation_id": "attached-chat",
+            "message": "解释这份资料",
+            "model_id": "selected",
+            "attachment_document_ids": ["attached"],
+        }
         response = client.post("/api/chat/dispatch", json=body)
         assert response.status_code == 200, response.text
         assert "chapter.md" in response.json()["reply"]
         context = calls[-1]["messages"]
-        assert any("chapter.md" in message["content"] and "HTTP 是无状态协议" in message["content"]
-                   for message in context)
+        assert any(
+            "chapter.md" in message["content"] and "HTTP 是无状态协议" in message["content"]
+            for message in context
+        )
         assert context[-1]["content"] == body["message"]
         for document_id, expected in [("pending", 409), ("foreign", 404), ("missing", 404)]:
-            response = client.post("/api/chat/dispatch", json={
-                **body, "conversation_id": f"invalid-{document_id}",
-                "attachment_document_ids": [document_id],
-            })
+            response = client.post(
+                "/api/chat/dispatch",
+                json={
+                    **body,
+                    "conversation_id": f"invalid-{document_id}",
+                    "attachment_document_ids": [document_id],
+                },
+            )
             assert response.status_code == expected, response.text
             assert not system.store.scan("message", {"conversation_id": f"invalid-{document_id}"})

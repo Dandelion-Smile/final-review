@@ -20,26 +20,48 @@ def app():
 
     settings = Settings(_env_file=None, embedding_dimensions=3, material_vision_enabled=False)
     settings.exports_dir = mkdtemp(prefix="final_review_e2e_exports_")
-    settings.chat_models = [ChatModelConfig(
-        id=model_id, label=label, model=model_id,
-        base_url="https://example.invalid/v1", api_key="test-key",
-    ) for model_id, label in [("review", "Review"), ("deepseek", "DeepSeek"),
-                             ("gemini", "Gemini 3 Flash")]]
+    settings.chat_models = [
+        ChatModelConfig(
+            id=model_id,
+            label=label,
+            model=model_id,
+            base_url="https://example.invalid/v1",
+            api_key="test-key",
+        )
+        for model_id, label in [
+            ("review", "Review"),
+            ("deepseek", "DeepSeek"),
+            ("gemini", "Gemini 3 Flash"),
+        ]
+    ]
 
     class TestCompletions:
         def create(self, **kwargs):
             messages = kwargs["messages"]
             if messages[0]["content"].startswith("判断用户当前消息的意图"):
                 import json
+
                 message = json.loads(messages[-1]["content"])["message"]
-                intent = "note" if any(term in message for term in (
-                    "生成笔记", "生成一份笔记", "可背诵的资料", "考前总结手记",
-                )) or ("生成" in message and "笔记" in message) else "ask"
+                intent = (
+                    "note"
+                    if any(
+                        term in message
+                        for term in (
+                            "生成笔记",
+                            "生成一份笔记",
+                            "可背诵的资料",
+                            "考前总结手记",
+                        )
+                    )
+                    or ("生成" in message and "笔记" in message)
+                    else "ask"
+                )
                 content = '{"intent":"' + intent + '"}'
             else:
                 content = "可以继续聊天"
-            return SimpleNamespace(choices=[SimpleNamespace(
-                message=SimpleNamespace(content=content))])
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
+            )
 
     class TestOpenAI:
         def __init__(self, **kwargs):
@@ -61,8 +83,7 @@ def app():
             job = store.claim_material_job()
             if job:
                 try:
-                    process_material_job(store, agent.kb, job,
-                                         settings.max_upload_mb * 1024 * 1024)
+                    process_material_job(store, agent.kb, job, settings.max_upload_mb * 1024 * 1024)
                 except KeyError:
                     pass  # /test/reset can discard a claimed test job.
             else:

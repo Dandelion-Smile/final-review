@@ -206,8 +206,9 @@ class ChatDecision(Model):
     clarification: Annotated[str, Field(max_length=500)] = ""
     task_message: Annotated[str, Field(max_length=4000)] = ""
     question_count: int = Field(default=5, ge=1, le=10)
-    question_types: list[QuestionType] = Field(default_factory=lambda: ["short_answer"],
-                                              min_length=1, max_length=6)
+    question_types: list[QuestionType] = Field(
+        default_factory=lambda: ["short_answer"], min_length=1, max_length=6
+    )
     random: bool = True
 
 

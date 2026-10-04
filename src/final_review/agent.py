@@ -35,20 +35,31 @@ class SessionConflict(ValueError):
 
 
 class NoteProgress:
-    def __init__(self, completed: dict[str, dict], update: Callable[..., bool],
-                 begin_publish: Callable[[], bool] | None = None,
-                 selection_plan: dict | None = None, policy_version: int = 2):
+    def __init__(
+        self,
+        completed: dict[str, dict],
+        update: Callable[..., bool],
+        begin_publish: Callable[[], bool] | None = None,
+        selection_plan: dict | None = None,
+        policy_version: int = 2,
+    ):
         self.completed = completed
         self.update = update
         self._begin_publish = begin_publish
         self.selection_plan = selection_plan
         self.policy_version = policy_version
 
-    def report(self, stage: str, *, batch_index: int | None = None,
-               batch_result: dict | None = None,
-               selection_plan: dict | None = None) -> None:
-        if not self.update(stage, batch_index=batch_index, batch_result=batch_result,
-                           selection_plan=selection_plan):
+    def report(
+        self,
+        stage: str,
+        *,
+        batch_index: int | None = None,
+        batch_result: dict | None = None,
+        selection_plan: dict | None = None,
+    ) -> None:
+        if not self.update(
+            stage, batch_index=batch_index, batch_result=batch_result, selection_plan=selection_plan
+        ):
             raise SessionConflict("笔记任务租约已失效")
         if batch_index is not None and batch_result is not None:
             self.completed[str(batch_index)] = batch_result
@@ -84,8 +95,7 @@ def _chapter_requirements(scope: str) -> list[tuple[str, str]]:
     return chapters
 
 
-def _file_matches_chapter(file_name: str, chapter_field: str,
-                          chapter: str, number: str) -> bool:
+def _file_matches_chapter(file_name: str, chapter_field: str, chapter: str, number: str) -> bool:
     metadata = f"{file_name} {chapter_field}".lower()
     return chapter in metadata.replace(" ", "") or bool(
         re.match(rf"^{re.escape(number)}[.、_-]", metadata)
@@ -95,7 +105,8 @@ def _file_matches_chapter(file_name: str, chapter_field: str,
 def _focus_terms(scope: str) -> list[str]:
     simplified = re.sub(
         r"侧重|重点|请|按照|按|关于|以及|和|与|整理|生成|笔记|内容|相关|的|得分点",
-        " ", scope.lower(),
+        " ",
+        scope.lower(),
     )
     return re.findall(r"[\u4e00-\u9fff]{2,}|[a-z0-9]{2,}", simplified)
 
@@ -248,7 +259,8 @@ class FinalReviewAgent:
                 if not str(exc).startswith("所选资料中未找到"):
                     raise
                 return AgentResponse(
-                    session_id=request.session_id, status="needs_input",
+                    session_id=request.session_id,
+                    status="needs_input",
                     prompt={"message": str(exc), "required": ["source_document_ids"]},
                 )
             if missing:
@@ -264,10 +276,16 @@ class FinalReviewAgent:
             if snapshot.values["request"].get("owner_id") != user_id:
                 raise SessionConflict("会话所有者不匹配")
             existing = self.store.get("review_session", key) or {}
-            self.store.put("review_session", key, {
-                **existing, "course_id": course_id, "session_id": session_id,
-                "cancelled": True,
-            })
+            self.store.put(
+                "review_session",
+                key,
+                {
+                    **existing,
+                    "course_id": course_id,
+                    "session_id": session_id,
+                    "cancelled": True,
+                },
+            )
 
     def evaluate(self, request: Submission):
         key = self._key(request.course_id, request.session_id)
@@ -403,12 +421,18 @@ class FinalReviewAgent:
             matching = False
             for document_id in note.source_document_ids:
                 document = self.store.get("document", document_id)
-                if _file_matches_chapter(document.get("file_name") or document["title"],
-                                         document.get("chapter", ""), chapter, number):
+                if _file_matches_chapter(
+                    document.get("file_name") or document["title"],
+                    document.get("chapter", ""),
+                    chapter,
+                    number,
+                ):
                     matching = True
                     break
-                if any(chapter in chunk["content"].replace(" ", "")
-                       for chunk in self.store.list_material_chunks(document_id)):
+                if any(
+                    chapter in chunk["content"].replace(" ", "")
+                    for chunk in self.store.list_material_chunks(document_id)
+                ):
                     matching = True
                     break
             if not matching:
@@ -454,21 +478,39 @@ class FinalReviewAgent:
         )
         return {"note_input": config, "response": response.model_dump(mode="json")}
 
-    def _generate_note_batch(self, request, config, evidence, batch_index, batch_total,
-                             progress: NoteProgress | None, point_limit: int):
+    def _generate_note_batch(
+        self,
+        request,
+        config,
+        evidence,
+        batch_index,
+        batch_total,
+        progress: NoteProgress | None,
+        point_limit: int,
+    ):
         lookup = {item["chunk_id"]: item for item in evidence}
         issues = []
         for _ in range(self.settings.max_repairs + 1):
             try:
-                generated = GeneratedNote.model_validate(self.model.note({
-                    "note_config": config, "evidence": evidence, "issues_to_fix": issues,
-                    "batch_index": batch_index + 1, "batch_total": batch_total,
-                    "batch_instruction": (f"本批最多生成 {point_limit} 个考点，逐字引用本批原文；"
-                                          "不要输出批次字样"),
-                }))
+                generated = GeneratedNote.model_validate(
+                    self.model.note(
+                        {
+                            "note_config": config,
+                            "evidence": evidence,
+                            "issues_to_fix": issues,
+                            "batch_index": batch_index + 1,
+                            "batch_total": batch_total,
+                            "batch_instruction": (
+                                f"本批最多生成 {point_limit} 个考点，逐字引用本批原文；"
+                                "不要输出批次字样"
+                            ),
+                        }
+                    )
+                )
             except (ModelError, ValueError):
-                return self._extractive_note_batch(evidence, config["note_type"],
-                                                   "模型响应格式错误", point_limit)
+                return self._extractive_note_batch(
+                    evidence, config["note_type"], "模型响应格式错误", point_limit
+                )
             points, issues = [], []
             if len(generated.points) > point_limit:
                 issues.append(f"本批超过 {point_limit} 个考点，请保留最重要的内容")
@@ -479,11 +521,15 @@ class FinalReviewAgent:
                     if source is None or citation.quote not in source["content"]:
                         issues.append(f"第 {index} 条来源片段或摘录不匹配")
                         continue
-                    refs.append({
-                        "chunk_id": citation.chunk_id, "document_id": source["document_id"],
-                        "quote": citation.quote, "file_name": source["file_name"],
-                        "source_type": source["source_type"],
-                    })
+                    refs.append(
+                        {
+                            "chunk_id": citation.chunk_id,
+                            "document_id": source["document_id"],
+                            "quote": citation.quote,
+                            "file_name": source["file_name"],
+                            "source_type": source["source_type"],
+                        }
+                    )
                 distinct = {ref["document_id"] for ref in refs}
                 if point.provenance == "ai_supplement" and refs:
                     issues.append(f"第 {index} 条 AI 补充不得带资料引用")
@@ -491,35 +537,49 @@ class FinalReviewAgent:
                     issues.append(f"第 {index} 条单来源考点须引用一份资料")
                 if point.provenance == "synthesis" and len(distinct) < 2:
                     issues.append(f"第 {index} 条综合改编须引用至少两份资料")
-                points.append({
-                    "heading": point.heading, "content": point.content,
-                    "provenance": point.provenance, "references": refs,
-                })
+                points.append(
+                    {
+                        "heading": point.heading,
+                        "content": point.content,
+                        "provenance": point.provenance,
+                        "references": refs,
+                    }
+                )
             if not any(point["references"] for point in points):
                 issues.append("这一部分没有可验证的资料来源")
             if not issues:
                 if progress:
                     progress.report(f"正在核对第 {batch_index + 1}/{batch_total} 部分")
                 try:
-                    verdict = self.model.verify({
-                        "request": request,
-                        "output": {"points": [point for point in points if point["references"]]},
-                        "evidence": evidence,
-                    })
+                    verdict = self.model.verify(
+                        {
+                            "request": request,
+                            "output": {
+                                "points": [point for point in points if point["references"]]
+                            },
+                            "evidence": evidence,
+                        }
+                    )
                 except ModelError:
-                    return self._extractive_note_batch(evidence, config["note_type"],
-                                                       "模型核对响应格式错误", point_limit)
+                    return self._extractive_note_batch(
+                        evidence, config["note_type"], "模型核对响应格式错误", point_limit
+                    )
                 if not verdict["supported"]:
                     issues = verdict["issues"] or ["考点未通过语义证据校验"]
             if not issues:
-                return {"title": generated.title, "points": points,
-                        "source_ids": [item["chunk_id"] for item in evidence]}
-        return self._extractive_note_batch(evidence, config["note_type"],
-                                           "生成内容未通过来源核对", point_limit)
+                return {
+                    "title": generated.title,
+                    "points": points,
+                    "source_ids": [item["chunk_id"] for item in evidence],
+                }
+        return self._extractive_note_batch(
+            evidence, config["note_type"], "生成内容未通过来源核对", point_limit
+        )
 
     @staticmethod
-    def _extractive_note_batch(evidence: list[dict], note_type: str, reason: str,
-                               point_limit: int = 5) -> dict:
+    def _extractive_note_batch(
+        evidence: list[dict], note_type: str, reason: str, point_limit: int = 5
+    ) -> dict:
         """Grounded fallback: only copy text already present in selected source chunks."""
         points = []
         for source in evidence:
@@ -532,23 +592,37 @@ class FinalReviewAgent:
                 location = f"第 {source['position']} 张幻灯片"
             else:
                 location = f"片段 {source['ordinal'] + 1}"
-            heading = (f"{source['file_name']}的{location}讲了什么？" if note_type == "qa_cards"
-                       else f"{source['file_name']} · {location}")
-            points.append({
-                "heading": heading[:200], "content": content[:400], "provenance": "source",
-                "references": [{
-                    "chunk_id": source["chunk_id"], "document_id": source["document_id"],
-                    "quote": content[:120], "file_name": source["file_name"],
-                    "source_type": source["source_type"],
-                }],
-            })
+            heading = (
+                f"{source['file_name']}的{location}讲了什么？"
+                if note_type == "qa_cards"
+                else f"{source['file_name']} · {location}"
+            )
+            points.append(
+                {
+                    "heading": heading[:200],
+                    "content": content[:400],
+                    "provenance": "source",
+                    "references": [
+                        {
+                            "chunk_id": source["chunk_id"],
+                            "document_id": source["document_id"],
+                            "quote": content[:120],
+                            "file_name": source["file_name"],
+                            "source_type": source["source_type"],
+                        }
+                    ],
+                }
+            )
             if len(points) == point_limit:
                 break
         if not points:
             raise ValueError("所选资料片段均为空，无法生成笔记")
-        return {"title": "复习资料摘录", "points": points,
-                "source_ids": [item["chunk_id"] for item in evidence],
-                "fallback_reason": reason}
+        return {
+            "title": "复习资料摘录",
+            "points": points,
+            "source_ids": [item["chunk_id"] for item in evidence],
+            "fallback_reason": reason,
+        }
 
     @staticmethod
     def _merge_note_batches(results: list[dict], point_limit: int = 20) -> list[dict]:
@@ -560,8 +634,7 @@ class FinalReviewAgent:
                 if offset >= len(result["points"]):
                     continue
                 point = result["points"][offset]
-                key = (point["heading"].strip().casefold(),
-                       point["provenance"] == "ai_supplement")
+                key = (point["heading"].strip().casefold(), point["provenance"] == "ai_supplement")
                 existing = by_heading.get(key)
                 if existing is None:
                     existing = {**point, "references": list(point["references"])}
@@ -570,10 +643,12 @@ class FinalReviewAgent:
                 else:
                     if point["content"] not in existing["content"]:
                         existing["content"] += "\n" + point["content"]
-                    known = {(ref["chunk_id"], ref["quote"])
-                             for ref in existing["references"]}
-                    existing["references"].extend(ref for ref in point["references"]
-                                                  if (ref["chunk_id"], ref["quote"]) not in known)
+                    known = {(ref["chunk_id"], ref["quote"]) for ref in existing["references"]}
+                    existing["references"].extend(
+                        ref
+                        for ref in point["references"]
+                        if (ref["chunk_id"], ref["quote"]) not in known
+                    )
                     if existing["provenance"] != "ai_supplement":
                         sources = {ref["document_id"] for ref in existing["references"]}
                         existing["provenance"] = "synthesis" if len(sources) > 1 else "source"
@@ -591,23 +666,32 @@ class FinalReviewAgent:
     def _batch_point_limits(batch_count: int, total_limit: int) -> list[int]:
         # A batch of roughly ten excerpts can contribute at most five points.
         allocated = min(total_limit, batch_count * 5)
-        return [allocated // batch_count + (index < allocated % batch_count)
-                for index in range(batch_count)]
+        return [
+            allocated // batch_count + (index < allocated % batch_count)
+            for index in range(batch_count)
+        ]
 
-    def _prepare_note_selection(self, request: dict, config: dict,
-                                legacy: bool) -> dict | None:
+    def _prepare_note_selection(self, request: dict, config: dict, legacy: bool) -> dict | None:
         grouped = {}
         file_names = {}
         chapter_scoped = {}
         if config.get("chapter"):
             from .course_chat import CourseMaterials
 
-            chapter_scoped = {document["document_id"]: document for document in CourseMaterials(
-                self.store, request["course_id"], request["owner_id"],
-            ).select(config["source_document_ids"], config["chapter"])}
+            chapter_scoped = {
+                document["document_id"]: document
+                for document in CourseMaterials(
+                    self.store,
+                    request["course_id"],
+                    request["owner_id"],
+                ).select(config["source_document_ids"], config["chapter"])
+            }
         for document_id in config["source_document_ids"]:
-            document = (chapter_scoped.get(document_id) if config.get("chapter")
-                        else self.store.get("document", document_id))
+            document = (
+                chapter_scoped.get(document_id)
+                if config.get("chapter")
+                else self.store.get("document", document_id)
+            )
             if (
                 document is None
                 or document.get("user_id") != request.get("owner_id")
@@ -620,14 +704,20 @@ class FinalReviewAgent:
             for chunk in document.get("_chat_chunks", self.store.list_material_chunks(document_id)):
                 if not chunk["content"].strip():
                     continue
-                grouped[document_id].append({
-                    "chunk_id": chunk["chunk_id"], "document_id": document_id,
-                    "title": document["title"], "file_name": file_names[document_id],
-                    "source_type": document["source_type"], "content": chunk["content"],
-                    "position_kind": chunk.get("position_kind", "document"),
-                    "position": chunk.get("position"), "chapter": document.get("chapter", ""),
-                    "ordinal": chunk.get("chunk_ordinal", 0),
-                })
+                grouped[document_id].append(
+                    {
+                        "chunk_id": chunk["chunk_id"],
+                        "document_id": document_id,
+                        "title": document["title"],
+                        "file_name": file_names[document_id],
+                        "source_type": document["source_type"],
+                        "content": chunk["content"],
+                        "position_kind": chunk.get("position_kind", "document"),
+                        "position": chunk.get("position"),
+                        "chapter": document.get("chapter", ""),
+                        "ordinal": chunk.get("chunk_ordinal", 0),
+                    }
+                )
         scope = config["scope"].strip().lower()
         chapter_requests = _chapter_requirements(scope)
         restrict_chapters = bool(chapter_requests) and not any(
@@ -638,13 +728,27 @@ class FinalReviewAgent:
             for document_id, items in grouped.items():
                 if not items:
                     continue
-                file_matches = any(_file_matches_chapter(
-                    items[0]["file_name"], items[0]["chapter"], chapter, number,
-                ) for chapter, number in chapter_requests)
-                relevant = items if file_matches else [item for item in items if any(
-                    chapter in item["content"].replace(" ", "")
-                    for chapter, _ in chapter_requests
-                )]
+                file_matches = any(
+                    _file_matches_chapter(
+                        items[0]["file_name"],
+                        items[0]["chapter"],
+                        chapter,
+                        number,
+                    )
+                    for chapter, number in chapter_requests
+                )
+                relevant = (
+                    items
+                    if file_matches
+                    else [
+                        item
+                        for item in items
+                        if any(
+                            chapter in item["content"].replace(" ", "")
+                            for chapter, _ in chapter_requests
+                        )
+                    ]
+                )
                 if relevant:
                     matched[document_id] = relevant
             if not matched:
@@ -652,20 +756,22 @@ class FinalReviewAgent:
             grouped = matched
         terms = _focus_terms(scope)
         for items in grouped.values():
-            items.sort(key=lambda item: (
-                -sum(_file_matches_chapter(item["file_name"], item["chapter"],
-                                           chapter, number) or
-                     chapter in item["content"].replace(" ", "")
-                     for chapter, number in chapter_requests),
-                -sum(term in item["content"].lower() for term in terms),
-                item["ordinal"],
-            ))
+            items.sort(
+                key=lambda item: (
+                    -sum(
+                        _file_matches_chapter(item["file_name"], item["chapter"], chapter, number)
+                        or chapter in item["content"].replace(" ", "")
+                        for chapter, number in chapter_requests
+                    ),
+                    -sum(term in item["content"].lower() for term in terms),
+                    item["ordinal"],
+                )
+            )
         counts = {document_id: len(items) for document_id, items in grouped.items()}
         effective_count = sum(count > 0 for count in counts.values())
         if not effective_count:
             return None
-        chunk_limit, point_limit = ((40, 20) if legacy else
-                                    self._note_limits(effective_count))
+        chunk_limit, point_limit = (40, 20) if legacy else self._note_limits(effective_count)
         document_order = list(grouped)
         evidence = []
         read_counts = {document_id: 0 for document_id in config["source_document_ids"]}
@@ -675,22 +781,37 @@ class FinalReviewAgent:
                 if items and len(evidence) < chunk_limit:
                     evidence.append(items.pop(0))
                     read_counts[document_id] += 1
-        batches = ([evidence[index:index + 10] for index in range(0, len(evidence), 10)]
-                   if len(evidence) > 12 else [evidence])
+        batches = (
+            [evidence[index : index + 10] for index in range(0, len(evidence), 10)]
+            if len(evidence) > 12
+            else [evidence]
+        )
         coverage = {
             "selected_files": len(config["source_document_ids"]),
             "effective_files": effective_count,
             "readable_chunks": sum(counts.values()),
             "read_chunks": len(evidence),
             "partial": len(evidence) < sum(counts.values()),
-            "files": [{"document_id": document_id, "file_name": file_names[document_id],
-                       "readable_chunks": counts.get(document_id, 0),
-                       "read_chunks": read_counts[document_id]}
-                      for document_id in config["source_document_ids"]],
+            "files": [
+                {
+                    "document_id": document_id,
+                    "file_name": file_names[document_id],
+                    "readable_chunks": counts.get(document_id, 0),
+                    "read_chunks": read_counts[document_id],
+                }
+                for document_id in config["source_document_ids"]
+            ],
         }
-        return {"evidence": evidence, "coverage": coverage, "point_limit": point_limit,
-                "batch_limits": ([5] * len(batches) if legacy else
-                                 self._batch_point_limits(len(batches), point_limit))}
+        return {
+            "evidence": evidence,
+            "coverage": coverage,
+            "point_limit": point_limit,
+            "batch_limits": (
+                [5] * len(batches)
+                if legacy
+                else self._batch_point_limits(len(batches), point_limit)
+            ),
+        }
 
     def _note_generate(self, state):
         request, config = state["request"], state["note_input"]
@@ -707,8 +828,11 @@ class FinalReviewAgent:
         if not plan:
             return {"response": self._note_refusal(request["session_id"])}
         evidence = plan["evidence"]
-        batches = [evidence[index:index + 10] for index in range(0, len(evidence), 10)] \
-            if len(evidence) > 12 else [evidence]
+        batches = (
+            [evidence[index : index + 10] for index in range(0, len(evidence), 10)]
+            if len(evidence) > 12
+            else [evidence]
+        )
         results = []
         for index, batch in enumerate(batches):
             source_ids = [item["chunk_id"] for item in batch]
@@ -719,14 +843,22 @@ class FinalReviewAgent:
                 if progress:
                     progress.report(f"正在生成第 {index + 1}/{len(batches)} 部分")
                 result = self._generate_note_batch(
-                    request, config, batch, index, len(batches), progress,
+                    request,
+                    config,
+                    batch,
+                    index,
+                    len(batches),
+                    progress,
                     plan["batch_limits"][index],
                 )
                 if result is None:
                     return {"response": self._note_refusal(request["session_id"])}
                 if progress:
-                    progress.report(f"已完成第 {index + 1}/{len(batches)} 部分",
-                                    batch_index=index, batch_result=result)
+                    progress.report(
+                        f"已完成第 {index + 1}/{len(batches)} 部分",
+                        batch_index=index,
+                        batch_result=result,
+                    )
             results.append(result)
         if progress:
             progress.report("正在合并与去重")
@@ -741,18 +873,22 @@ class FinalReviewAgent:
                 if source is None or ref["quote"] not in source["content"]:
                     raise ValueError("合并后的笔记来源片段或摘录不匹配")
                 sources.add(source["document_id"])
-            if ((point["provenance"] == "source" and len(sources) != 1)
-                    or (point["provenance"] == "synthesis" and len(sources) < 2)
-                    or (point["provenance"] == "ai_supplement" and sources)):
+            if (
+                (point["provenance"] == "source" and len(sources) != 1)
+                or (point["provenance"] == "synthesis" and len(sources) < 2)
+                or (point["provenance"] == "ai_supplement" and sources)
+            ):
                 raise ValueError("合并后的笔记来源类型不匹配")
         if progress:
             progress.report("正在保存草稿")
             progress.begin_publish()
         fallback_count = sum(bool(result.get("fallback_reason")) for result in results)
-        fallback_reasons = "、".join(sorted({result["fallback_reason"] for result in results
-                                             if result.get("fallback_reason")}))
-        title = re.sub(r"\s*[（(]?批次\s*\d+\s*/\s*\d+[）)]?", "",
-                       results[0]["title"]).strip()
+        fallback_reasons = "、".join(
+            sorted(
+                {result["fallback_reason"] for result in results if result.get("fallback_reason")}
+            )
+        )
+        title = re.sub(r"\s*[（(]?批次\s*\d+\s*/\s*\d+[）)]?", "", results[0]["title"]).strip()
         if fallback_count:
             title = f"{title}（含 {fallback_count} 部分资料摘录）"
         coverage = plan["coverage"]
@@ -774,9 +910,12 @@ class FinalReviewAgent:
         response = AgentResponse(
             session_id=request["session_id"],
             status="completed",
-            answer=(f"笔记草稿已生成；因{fallback_reasons}，其中 {fallback_count} 部分使用"
-                    "资料原文摘录，请打开预览核对。"
-                    if fallback_count else "笔记草稿已生成，请打开预览。"),
+            answer=(
+                f"笔记草稿已生成；因{fallback_reasons}，其中 {fallback_count} 部分使用"
+                "资料原文摘录，请打开预览核对。"
+                if fallback_count
+                else "笔记草稿已生成，请打开预览。"
+            ),
             draft={
                 "asset_id": asset["asset_id"],
                 "revision_id": revision["revision_id"],

@@ -6,7 +6,8 @@ from final_review.material_jobs import process_material_job
 
 def _upload(client, content=b"TCP three way handshake", headers=None):
     return client.post(
-        "/knowledge/upload", headers=headers or {},
+        "/knowledge/upload",
+        headers=headers or {},
         data={"course_id": "net", "title": "讲义", "source_type": "homework"},
         files={"file": ("lecture.md", content)},
     )
@@ -15,8 +16,9 @@ def _upload(client, content=b"TCP three way handshake", headers=None):
 def _work(system):
     claimed = system.store.claim_material_job()
     assert claimed
-    process_material_job(system.store, system.kb, claimed,
-                         system.settings.max_upload_mb * 1024 * 1024)
+    process_material_job(
+        system.store, system.kb, claimed, system.settings.max_upload_mb * 1024 * 1024
+    )
     return claimed
 
 
@@ -30,15 +32,24 @@ def test_upload_returns_durable_queued_job_and_publishes_after_worker(system, tm
         assert payload["status"] == "queued"
         assert client.get(payload["status_url"]).json()["status"] == "queued"
         assert system.store.get("document", payload["document_id"])["parse_status"] == "queued"
-        assert not any(chunk["document_id"] == payload["document_id"]
-                       for chunk in system.store.chunks)
+        assert not any(
+            chunk["document_id"] == payload["document_id"] for chunk in system.store.chunks
+        )
     with TestClient(application) as client:
         assert client.get(payload["status_url"]).json()["status"] == "queued"
         _work(system)
         assert client.get(payload["status_url"]).json()["status"] == "succeeded"
         assert system.store.get("document", payload["document_id"])["parse_status"] == "ready"
-        assert len([chunk for chunk in system.store.chunks
-                    if chunk["document_id"] == payload["document_id"]]) == 1
+        assert (
+            len(
+                [
+                    chunk
+                    for chunk in system.store.chunks
+                    if chunk["document_id"] == payload["document_id"]
+                ]
+            )
+            == 1
+        )
 
 
 def test_idempotency_and_failed_job_manual_retry(system, tmp_path):
@@ -70,8 +81,9 @@ def test_permanent_failure_stays_unsearchable_and_retry_reuses_document(system, 
         job = client.get(payload["status_url"]).json()
         assert job["status"] == "failed"
         assert job["error_code"] == "invalid_material"
-        assert not any(chunk["document_id"] == payload["document_id"]
-                       for chunk in system.store.chunks)
+        assert not any(
+            chunk["document_id"] == payload["document_id"] for chunk in system.store.chunks
+        )
         retried = client.post(payload["status_url"] + "/retry")
         assert retried.status_code == 202
         assert retried.json()["document_id"] == payload["document_id"]

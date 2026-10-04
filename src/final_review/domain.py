@@ -398,7 +398,8 @@ class DomainService:
                 version = self._owned("material_version", ref["material_version_id"])
                 document = self.store.get("document", ref["document_id"])
                 ref.update(
-                    file_name=version["file_name"], source_type=version["source_type"],
+                    file_name=version["file_name"],
+                    source_type=version["source_type"],
                     chunk_id=ref["locator_id"],
                     available=bool(document and document.get("parse_status") == "ready"),
                 )
@@ -436,13 +437,17 @@ class DomainService:
                                 chunk_ordinal=chunk.get("chunk_ordinal", ordinal),
                             )
                             break
-                matching = [row for row in snapshots
-                            if row.get("revision_id") == revision_id
-                            and row.get("document_id") == ref["document_id"]
-                            and row.get("locator_id") == ref["chunk_id"]]
-                ref["snapshot"] = next((row for row in matching
-                                        if row.get("excerpt") == ref["quote"]),
-                                       matching[0] if matching else None)
+                matching = [
+                    row
+                    for row in snapshots
+                    if row.get("revision_id") == revision_id
+                    and row.get("document_id") == ref["document_id"]
+                    and row.get("locator_id") == ref["chunk_id"]
+                ]
+                ref["snapshot"] = next(
+                    (row for row in matching if row.get("excerpt") == ref["quote"]),
+                    matching[0] if matching else None,
+                )
         history = sorted(
             (
                 row
@@ -681,8 +686,10 @@ class DomainService:
                 "title_changed": bool(previous and previous["title"] != revision["title"]),
                 "added_points": len(after_points.keys() - before_points.keys()),
                 "removed_points": len(before_points.keys() - after_points.keys()),
-                "changed_points": sum(before_points[key] != after_points[key]
-                                      for key in before_points.keys() & after_points.keys()),
+                "changed_points": sum(
+                    before_points[key] != after_points[key]
+                    for key in before_points.keys() & after_points.keys()
+                ),
             }
             token = self._confirmation(
                 asset["course_id"],

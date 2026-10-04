@@ -85,8 +85,7 @@ def _tessdata_dir() -> Path | None:
         candidates.append(Path(local_app_data) / "FinalReview" / "tessdata")
     for directory in candidates:
         if all(
-            (directory / f"{language}.traineddata").is_file()
-            for language in ("chi_sim", "eng")
+            (directory / f"{language}.traineddata").is_file() for language in ("chi_sim", "eng")
         ):
             return directory
     return None
@@ -103,9 +102,7 @@ def _check_office_archive(content: bytes, max_bytes: int) -> None:
 
 def _run(command: list[str], label: str, timeout_seconds: int = CONVERSION_TIMEOUT_SECONDS) -> None:
     try:
-        result = subprocess.run(
-            command, capture_output=True, timeout=timeout_seconds, check=False
-        )
+        result = subprocess.run(command, capture_output=True, timeout=timeout_seconds, check=False)
     except subprocess.TimeoutExpired as exc:
         raise ValueError(f"{label}超时，请上传较小或更清晰的文件") from exc
     except OSError as exc:
@@ -115,9 +112,7 @@ def _run(command: list[str], label: str, timeout_seconds: int = CONVERSION_TIMEO
 
 
 def _convert_legacy(path: Path, directory: Path) -> Path:
-    executable = _find_executable(
-        ("libreoffice", "soffice"), "LibreOffice/program/soffice.com"
-    )
+    executable = _find_executable(("libreoffice", "soffice"), "LibreOffice/program/soffice.com")
     if not executable:
         raise ValueError("旧版 Office 转换服务不可用")
     target_suffix = ".docx" if path.suffix == ".doc" else ".pptx"
@@ -142,8 +137,9 @@ def _convert_legacy(path: Path, directory: Path) -> Path:
     return converted
 
 
-def _ocr_image(path: Path, content: bytes, suffix: str, *, allow_empty: bool = False,
-               sparse_text: bool = False) -> str:
+def _ocr_image(
+    path: Path, content: bytes, suffix: str, *, allow_empty: bool = False, sparse_text: bool = False
+) -> str:
     try:
         with Image.open(BytesIO(content)) as image:
             if (
@@ -187,16 +183,23 @@ def _ocr_image(path: Path, content: bytes, suffix: str, *, allow_empty: bool = F
 
 
 def _convert_presentation_to_pdf(path: Path, directory: Path) -> Path:
-    executable = _find_executable(
-        ("libreoffice", "soffice"), "LibreOffice/program/soffice.com"
-    )
+    executable = _find_executable(("libreoffice", "soffice"), "LibreOffice/program/soffice.com")
     if not executable:
         raise ValueError("PPT 转 PDF 服务不可用，请安装 LibreOffice")
     pdf = path.with_suffix(".pdf")
     _run(
-        [executable, f"-env:UserInstallation={(directory / 'pdf-profile').as_uri()}",
-         "--headless", "--convert-to", "pdf", "--outdir", str(directory), str(path)],
-        "PPT 转 PDF", LEGACY_OFFICE_TIMEOUT_SECONDS,
+        [
+            executable,
+            f"-env:UserInstallation={(directory / 'pdf-profile').as_uri()}",
+            "--headless",
+            "--convert-to",
+            "pdf",
+            "--outdir",
+            str(directory),
+            str(path),
+        ],
+        "PPT 转 PDF",
+        LEGACY_OFFICE_TIMEOUT_SECONDS,
     )
     if not pdf.is_file() or not pdf.stat().st_size:
         raise ValueError("PPT 转 PDF 未生成可读文件")
@@ -205,8 +208,7 @@ def _convert_presentation_to_pdf(path: Path, directory: Path) -> Path:
 
 def _normalise_line(line: str) -> str:
     return "".join(
-        char.casefold() for char in unicodedata.normalize("NFKC", line)
-        if char.isalnum()
+        char.casefold() for char in unicodedata.normalize("NFKC", line) if char.isalnum()
     )
 
 
@@ -221,9 +223,9 @@ def _new_lines(existing: str, candidate: str) -> str:
         if not key:
             continue
         duplicate = any(
-            key == old or (len(key) >= 4 and key in old)
-            or (len(key) >= 6 and len(old) >= 6
-                and SequenceMatcher(None, key, old).ratio() >= 0.9)
+            key == old
+            or (len(key) >= 4 and key in old)
+            or (len(key) >= 6 and len(old) >= 6 and SequenceMatcher(None, key, old).ratio() >= 0.9)
             for old in known
         )
         if not duplicate:
@@ -234,20 +236,26 @@ def _new_lines(existing: str, candidate: str) -> str:
 
 def _markitdown_slides(markdown: str, count: int) -> list[str]:
     markers = list(re.finditer(r"<!--\s*Slide number:\s*(\d+)\s*-->", markdown))
-    if (len(markers) != count
-            or [int(match.group(1)) for match in markers] != list(range(1, count + 1))):
+    if len(markers) != count or [int(match.group(1)) for match in markers] != list(
+        range(1, count + 1)
+    ):
         return [""] * count
     slides = []
     for i, match in enumerate(markers):
-        slide = markdown[match.end():markers[i + 1].start() if i + 1 < count else len(markdown)]
+        slide = markdown[match.end() : markers[i + 1].start() if i + 1 < count else len(markdown)]
         slide = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", slide)
         slides.append(slide.strip())
     return slides
 
 
 def _convert_presentation(
-    path: Path, directory: Path, *, stage_callback: Callable[[str], None] | None = None,
-    interpreter=None, cache_dir: Path | None = None, page_filter: set[int] | None = None,
+    path: Path,
+    directory: Path,
+    *,
+    stage_callback: Callable[[str], None] | None = None,
+    interpreter=None,
+    cache_dir: Path | None = None,
+    page_filter: set[int] | None = None,
 ) -> ConvertedMaterial:
     import pdfplumber
     from pptx import Presentation
@@ -279,10 +287,17 @@ def _convert_presentation(
         stage_callback("ocr")
     markitdown_slides = _markitdown_slides(markdown, len(native))
     if interpreter is not None:
-        return _understand_rendered_slides(pdf, renderer, native, markitdown_slides,
-                                          interpreter, cache_dir or directory,
-                                          stage_callback, page_filter,
-                                          source_signature=sha256(path.read_bytes()).hexdigest())
+        return _understand_rendered_slides(
+            pdf,
+            renderer,
+            native,
+            markitdown_slides,
+            interpreter,
+            cache_dir or directory,
+            stage_callback,
+            page_filter,
+            source_signature=sha256(path.read_bytes()).hexdigest(),
+        )
     sections = []
     additions = []
     for index, section in enumerate(native, 1):
@@ -292,15 +307,28 @@ def _convert_presentation(
             raise ValueError("PPT 处理超时，请拆分后上传")
         prefix = directory / f"slide-{index:03d}"
         image = prefix.with_suffix(".png")
-        _run([renderer, "-f", str(index), "-l", str(index), "-singlefile",
-              "-scale-to", "2000", "-png", str(pdf), str(prefix)], "PDF 页面渲染")
+        _run(
+            [
+                renderer,
+                "-f",
+                str(index),
+                "-l",
+                str(index),
+                "-singlefile",
+                "-scale-to",
+                "2000",
+                "-png",
+                str(pdf),
+                str(prefix),
+            ],
+            "PDF 页面渲染",
+        )
         if not image.is_file():
             raise ValueError(f"第 {index} 页 PDF 渲染失败")
         try:
             md_extra = _new_lines(section["text"], markitdown_slides[index - 1])
             base = "\n".join(part for part in (section["text"], md_extra) if part.strip())
-            ocr = _ocr_image(image, image.read_bytes(), ".png", allow_empty=True,
-                             sparse_text=True)
+            ocr = _ocr_image(image, image.read_bytes(), ".png", allow_empty=True, sparse_text=True)
             ocr_extra = _new_lines(base, ocr)
             text = "\n".join(part for part in (base, ocr_extra) if part.strip())
             sections.append({**section, "text": text})
@@ -313,24 +341,53 @@ def _convert_presentation(
     return ConvertedMaterial(markdown=(markdown + "".join(additions)).strip(), sections=sections)
 
 
-def _understand_rendered_slides(pdf, renderer, native, extracted, interpreter, cache_dir,
-                               stage_callback, page_filter, *, source_signature):
+def _understand_rendered_slides(
+    pdf,
+    renderer,
+    native,
+    extracted,
+    interpreter,
+    cache_dir,
+    stage_callback,
+    page_filter,
+    *,
+    source_signature,
+):
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     def read_page(index):
         prefix = cache_dir / f"slide-{index:03d}"
         image = prefix.with_suffix(".png")
         stamp = prefix.with_suffix(".source")
-        if (not image.is_file() or not stamp.is_file()
-                or stamp.read_text(encoding="ascii") != source_signature):
-            _run([renderer, "-f", str(index), "-l", str(index), "-singlefile",
-                  "-scale-to", "2000", "-png", str(pdf), str(prefix)], "PDF 页面渲染")
+        if (
+            not image.is_file()
+            or not stamp.is_file()
+            or stamp.read_text(encoding="ascii") != source_signature
+        ):
+            _run(
+                [
+                    renderer,
+                    "-f",
+                    str(index),
+                    "-l",
+                    str(index),
+                    "-singlefile",
+                    "-scale-to",
+                    "2000",
+                    "-png",
+                    str(pdf),
+                    str(prefix),
+                ],
+                "PDF 页面渲染",
+            )
             stamp.write_text(source_signature, encoding="ascii")
-        return interpreter.read(image, native[index - 1]["text"], extracted[index - 1],
-                                cache_dir / "readings")
+        return interpreter.read(
+            image, native[index - 1]["text"], extracted[index - 1], cache_dir / "readings"
+        )
 
-    positions = [index for index in range(1, len(native) + 1)
-                 if page_filter is None or index in page_filter]
+    positions = [
+        index for index in range(1, len(native) + 1) if page_filter is None or index in page_filter
+    ]
     records = {}
     with ThreadPoolExecutor(max_workers=getattr(interpreter, "concurrency", 1)) as pool:
         futures = {pool.submit(read_page, index): index for index in positions}
@@ -342,11 +399,29 @@ def _understand_rendered_slides(pdf, renderer, native, extracted, interpreter, c
     sections, pages = [], []
     for index in positions:
         record = records[index]
-        pages.append({"position": index, "title": record["title"], "kind": record["kind"],
-                      "quality": record["quality"], "issues": record["issues"],
-                      "blocks": [{key: block.get(key) for key in (
-                          "block_id", "title", "quality", "issues", "evidence", "warnings"
-                      )} for block in record["blocks"]]})
+        pages.append(
+            {
+                "position": index,
+                "title": record["title"],
+                "kind": record["kind"],
+                "quality": record["quality"],
+                "issues": record["issues"],
+                "blocks": [
+                    {
+                        key: block.get(key)
+                        for key in (
+                            "block_id",
+                            "title",
+                            "quality",
+                            "issues",
+                            "evidence",
+                            "warnings",
+                        )
+                    }
+                    for block in record["blocks"]
+                ],
+            }
+        )
         if record["quality"] in {"verified", "partial"} and record["kind"] == "knowledge":
             for block in record["blocks"]:
                 if block.get("quality", record["quality"]) != "verified":
@@ -355,14 +430,23 @@ def _understand_rendered_slides(pdf, renderer, native, extracted, interpreter, c
                 sections.append({"position_kind": "slide", "position": index, "text": text})
     if not sections:
         raise ValueError("PPT 没有通过质量核验的知识页，请核对原页；未将原始文字入库")
-    return ConvertedMaterial(markdown="\n\n".join(item["text"] for item in sections),
-                             sections=sections, pages=pages, pipeline="visual-slides-v1")
+    return ConvertedMaterial(
+        markdown="\n\n".join(item["text"] for item in sections),
+        sections=sections,
+        pages=pages,
+        pipeline="visual-slides-v1",
+    )
 
 
 def convert_material(
-    content: bytes, filename: str, max_bytes: int,
-    *, stage_callback: Callable[[str], None] | None = None,
-    interpreter=None, cache_dir: Path | None = None, page_filter: set[int] | None = None,
+    content: bytes,
+    filename: str,
+    max_bytes: int,
+    *,
+    stage_callback: Callable[[str], None] | None = None,
+    interpreter=None,
+    cache_dir: Path | None = None,
+    page_filter: set[int] | None = None,
 ) -> ConvertedMaterial:
     suffix = Path(filename).suffix.lower()
     if suffix not in SUPPORTED_SUFFIXES:
@@ -386,9 +470,14 @@ def convert_material(
             path = _convert_legacy(path, directory)
             _check_office_archive(path.read_bytes(), max_bytes)
         if suffix in {".ppt", ".pptx"}:
-            return _convert_presentation(path, directory, stage_callback=stage_callback,
-                                         interpreter=interpreter, cache_dir=cache_dir,
-                                         page_filter=page_filter)
+            return _convert_presentation(
+                path,
+                directory,
+                stage_callback=stage_callback,
+                interpreter=interpreter,
+                cache_dir=cache_dir,
+                page_filter=page_filter,
+            )
         try:
             markdown = MarkItDown(enable_plugins=False).convert(str(path)).text_content
         except Exception as exc:

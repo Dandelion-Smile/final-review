@@ -23,11 +23,19 @@ def _pdf_with_pages(texts: list[str]) -> bytes:
         page_id = 4 + index * 2
         content_id = page_id + 1
         stream = f"BT /F1 12 Tf 50 700 Td ({text}) Tj ET".encode()
-        objects.extend([
-            (f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
-             f"/Resources << /Font << /F1 3 0 R >> >> /Contents {content_id} 0 R >>").encode(),
-            b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream",
-        ])
+        objects.extend(
+            [
+                (
+                    f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+                    f"/Resources << /Font << /F1 3 0 R >> >> /Contents {content_id} 0 R >>"
+                ).encode(),
+                b"<< /Length "
+                + str(len(stream)).encode()
+                + b" >>\nstream\n"
+                + stream
+                + b"\nendstream",
+            ]
+        )
     data = bytearray(b"%PDF-1.4\n")
     offsets = [0]
     for number, body in enumerate(objects, 1):
@@ -46,7 +54,9 @@ def _pdf_with_pages(texts: list[str]) -> bytes:
 def test_pdf_pages_and_ppt_slides_keep_real_ordinals():
     pages = located_sections(_pdf_with_pages(["First page", "Second page"]), "lesson.pdf")
     assert [(item["position"], item["text"].strip()) for item in pages] == [
-        (1, "First page"), (2, "Second page")]
+        (1, "First page"),
+        (2, "Second page"),
+    ]
 
     presentation = Presentation()
     for text in ("First slide", "Second slide"):
@@ -57,7 +67,9 @@ def test_pdf_pages_and_ppt_slides_keep_real_ordinals():
     presentation.save(data)
     slides = located_sections(data.getvalue(), "lecture.pptx")
     assert [(item["position"], item["text"].strip()) for item in slides] == [
-        (1, "First slide"), (2, "Second slide")]
+        (1, "First slide"),
+        (2, "Second slide"),
+    ]
 
 
 def test_pdf_and_pptx_jobs_publish_positioned_chunks(system, tmp_path, monkeypatch):
@@ -66,17 +78,31 @@ def test_pdf_and_pptx_jobs_publish_positioned_chunks(system, tmp_path, monkeypat
     from final_review import material_conversion
 
     system.settings.uploads_dir = str(tmp_path / "uploads")
-    monkeypatch.setattr(material_conversion, "_convert_presentation_to_pdf",
-                        lambda _path, directory: directory / "material.pdf")
+    monkeypatch.setattr(
+        material_conversion,
+        "_convert_presentation_to_pdf",
+        lambda _path, directory: directory / "material.pdf",
+    )
     real_pdf_open = pdfplumber.open
-    monkeypatch.setattr(pdfplumber, "open", lambda source: (
-        nullcontext(SimpleNamespace(pages=[None, None])) if isinstance(source, Path)
-        else real_pdf_open(source)))
+    monkeypatch.setattr(
+        pdfplumber,
+        "open",
+        lambda source: (
+            nullcontext(SimpleNamespace(pages=[None, None]))
+            if isinstance(source, Path)
+            else real_pdf_open(source)
+        ),
+    )
     monkeypatch.setattr(material_conversion, "_find_executable", lambda *_args: "pdftoppm")
     picture = BytesIO()
     Image.new("RGB", (80, 40), "white").save(picture, format="PNG")
-    monkeypatch.setattr(material_conversion, "_run", lambda command, *_args: (
-        Path(command[-1]).with_suffix(".png").write_bytes(picture.getvalue())))
+    monkeypatch.setattr(
+        material_conversion,
+        "_run",
+        lambda command, *_args: (
+            Path(command[-1]).with_suffix(".png").write_bytes(picture.getvalue())
+        ),
+    )
     monkeypatch.setattr(material_conversion, "_ocr_image", lambda *_args, **_kwargs: "")
     presentation = Presentation()
     for text in ("First slide", "Second slide"):
@@ -101,7 +127,8 @@ def test_pdf_and_pptx_jobs_publish_positioned_chunks(system, tmp_path, monkeypat
             base = f"/api/courses/net/documents/{uploaded['document_id']}"
             listing = client.get(base + "/chunks").json()
             assert {(chunk["position_kind"], chunk["position"]) for chunk in listing["items"]} == {
-                (kind, 1), (kind, 2)
+                (kind, 1),
+                (kind, 2),
             }
 
 
@@ -116,6 +143,7 @@ def test_chunk_preview_download_and_foreign_owner_are_guarded(system, tmp_path, 
         job = system.store.claim_material_job()
         process_material_job(system.store, system.kb, job, 10 * 1024 * 1024)
         base = f"/api/courses/net/documents/{uploaded['document_id']}"
+
         def reject_backfill(document):
             raise AssertionError("preview must not write locators")
 
@@ -141,8 +169,9 @@ def test_chunk_preview_download_and_foreign_owner_are_guarded(system, tmp_path, 
 
 def test_material_metadata_change_gets_new_version_without_moving_old_locator(system, tmp_path):
     system.settings.uploads_dir = str(tmp_path / "uploads")
-    system.store.put("course", "net", {"course_id": "net", "user_id": "local-user",
-                                       "status": "active"})
+    system.store.put(
+        "course", "net", {"course_id": "net", "user_id": "local-user", "status": "active"}
+    )
     with TestClient(create_app(system.settings, system)) as client:
         uploaded = client.post(
             "/knowledge/upload",
@@ -154,10 +183,15 @@ def test_material_metadata_change_gets_new_version_without_moving_old_locator(sy
         base = f"/api/courses/net/documents/{uploaded['document_id']}"
         before = client.get(base + "/chunks").json()
         document = system.store.get("document", uploaded["document_id"])
-        changed = client.patch(base, json={
-            "title": "Renamed", "chapter": "Chapter 2", "source_type": "teacher_ppt",
-            "expected_updated_at": document["updated_at"],
-        })
+        changed = client.patch(
+            base,
+            json={
+                "title": "Renamed",
+                "chapter": "Chapter 2",
+                "source_type": "teacher_ppt",
+                "expected_updated_at": document["updated_at"],
+            },
+        )
         assert changed.status_code == 200
         after = client.get(base + "/chunks").json()
         assert after["material_version_id"] != before["material_version_id"]
@@ -168,10 +202,15 @@ def test_material_metadata_change_gets_new_version_without_moving_old_locator(sy
 
 def test_existing_text_ingest_has_a_previewable_document_locator(system):
     with TestClient(create_app(system.settings, system)) as client:
-        response = client.post("/knowledge/ingest", json={
-            "course_id": "net", "title": "Typed notes", "source_type": "homework",
-            "markdown": "One useful paragraph",
-        })
+        response = client.post(
+            "/knowledge/ingest",
+            json={
+                "course_id": "net",
+                "title": "Typed notes",
+                "source_type": "homework",
+                "markdown": "One useful paragraph",
+            },
+        )
         assert response.status_code == 200
         document_id = response.json()["document_id"]
         preview = client.get(f"/api/courses/net/documents/{document_id}/chunks")

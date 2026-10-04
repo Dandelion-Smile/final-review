@@ -10,19 +10,24 @@ from final_review.course_chat import CourseMaterials, cited_evidence, parse_chat
 from final_review.schemas import MaterialInput
 
 
-@pytest.mark.parametrize("content", ['{"intent":"ask"}',
-                                     '```json\n{"intent":"ask"}\n```',
-                                     '```\n{"intent":"ask"}\n```'])
+@pytest.mark.parametrize(
+    "content", ['{"intent":"ask"}', '```json\n{"intent":"ask"}\n```', '```\n{"intent":"ask"}\n```']
+)
 def test_router_accepts_json_and_provider_code_fences(content):
     assert parse_chat_decision(content).intent == "ask"
 
 
 @pytest.fixture
 def chat_setup(system, monkeypatch):
-    system.settings.chat_models = [ChatModelConfig(
-        id="selected", label="所选模型", model="test-model",
-        base_url="https://example.invalid/v1", api_key="test-key",
-    )]
+    system.settings.chat_models = [
+        ChatModelConfig(
+            id="selected",
+            label="所选模型",
+            model="test-model",
+            base_url="https://example.invalid/v1",
+            api_key="test-key",
+        )
+    ]
     decisions, calls, answers = {}, [], []
 
     class Provider:
@@ -34,35 +39,66 @@ def chat_setup(system, monkeypatch):
             messages = kwargs["messages"]
             if messages[0]["content"].startswith("判断用户当前消息的意图"):
                 message = json.loads(messages[-1]["content"])["message"]
-                content = json.dumps(decisions.get(message, {
-                    "intent": "ask", "action": "search", "query": "三次握手",
-                }), ensure_ascii=False)
+                content = json.dumps(
+                    decisions.get(
+                        message,
+                        {
+                            "intent": "ask",
+                            "action": "search",
+                            "query": "三次握手",
+                        },
+                    ),
+                    ensure_ascii=False,
+                )
             else:
                 content = answers.pop(0) if answers else "【课程资料依据】同步序列号。[资料1]"
-            return SimpleNamespace(choices=[SimpleNamespace(
-                message=SimpleNamespace(content=content))])
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
+            )
 
     monkeypatch.setattr("final_review.api.OpenAI", Provider)
     with TestClient(create_app(system.settings, system)) as client:
         course = client.post("/api/courses", json={"name": "Web服务端技术原理及应用"}).json()
         course_id = course["course_id"]
-        client.patch(f"/api/courses/{course_id}", json={
-            "subject": "计算机", "expected_updated_at": course["updated_at"],
-        })
-        document = system.kb.ingest(MaterialInput(
-            document_id="web-notes", course_id=course_id, title="老师课件.pptx",
-            chapter="TCP", source_type="teacher_ppt", markdown="TCP 三次握手同步双方初始序列号。",
-        ), user_id="local-user")
-        yield SimpleNamespace(system=system, client=client, course_id=course_id,
-                              document_id=document["document_id"], decisions=decisions,
-                              calls=calls, answers=answers)
+        client.patch(
+            f"/api/courses/{course_id}",
+            json={
+                "subject": "计算机",
+                "expected_updated_at": course["updated_at"],
+            },
+        )
+        document = system.kb.ingest(
+            MaterialInput(
+                document_id="web-notes",
+                course_id=course_id,
+                title="老师课件.pptx",
+                chapter="TCP",
+                source_type="teacher_ppt",
+                markdown="TCP 三次握手同步双方初始序列号。",
+            ),
+            user_id="local-user",
+        )
+        yield SimpleNamespace(
+            system=system,
+            client=client,
+            course_id=course_id,
+            document_id=document["document_id"],
+            decisions=decisions,
+            calls=calls,
+            answers=answers,
+        )
 
 
 def send(setup, message, conversation="one"):
-    return setup.client.post("/api/chat/dispatch", json={
-        "course_id": setup.course_id, "conversation_id": conversation,
-        "model_id": "selected", "message": message,
-    })
+    return setup.client.post(
+        "/api/chat/dispatch",
+        json={
+            "course_id": setup.course_id,
+            "conversation_id": conversation,
+            "model_id": "selected",
+            "message": message,
+        },
+    )
 
 
 def test_course_identity_statistics_and_latest_materials(chat_setup):
@@ -75,10 +111,17 @@ def test_course_identity_statistics_and_latest_materials(chat_setup):
     assert "1 份资料" in reply and "1 份可检索" in reply
     ready = setup.system.store.get("document", setup.document_id)
     assert str(len("".join(ready["cleaned_markdown"].split()))) in reply
-    setup.system.store.put("document", "pending-web", {
-        "document_id": "pending-web", "course_id": setup.course_id,
-        "user_id": "local-user", "parse_status": "queued", "title": "待处理.txt",
-    })
+    setup.system.store.put(
+        "document",
+        "pending-web",
+        {
+            "document_id": "pending-web",
+            "course_id": setup.course_id,
+            "user_id": "local-user",
+            "parse_status": "queued",
+            "title": "待处理.txt",
+        },
+    )
     assert "排队中 1 份" in send(setup, "知识库多少文本？").json()["reply"]
     ready["parse_status"] = "deleted"
     setup.system.store.put("document", setup.document_id, ready)
@@ -89,12 +132,19 @@ def test_course_identity_statistics_and_latest_materials(chat_setup):
 
 def test_scoped_retrieval_citations_and_independent_history(chat_setup):
     setup = chat_setup
-    setup.system.kb.ingest(MaterialInput(
-        document_id="unselected", course_id=setup.course_id, title="另一份.txt",
-        source_type="homework", markdown="TCP 三次握手确认收发能力。",
-    ), user_id="local-user")
+    setup.system.kb.ingest(
+        MaterialInput(
+            document_id="unselected",
+            course_id=setup.course_id,
+            title="另一份.txt",
+            source_type="homework",
+            markdown="TCP 三次握手确认收发能力。",
+        ),
+        user_id="local-user",
+    )
     setup.decisions["只看老师课件解释握手"] = {
-        "source_document_ids": [setup.document_id], "query": "三次握手",
+        "source_document_ids": [setup.document_id],
+        "query": "三次握手",
         "materials_only": True,
     }
     result = send(setup, "只看老师课件解释握手")
@@ -104,17 +154,18 @@ def test_scoped_retrieval_citations_and_independent_history(chat_setup):
     context = setup.calls[-1]["messages"]
     # Only read chunks are evidence; the catalog may still list other files.
     assert all("另一份.txt" not in item["content"] for item in context[1:])
-    history = setup.client.get(
-        f"/api/courses/{setup.course_id}/conversations/one/messages"
-    ).json()["items"]
+    history = setup.client.get(f"/api/courses/{setup.course_id}/conversations/one/messages").json()[
+        "items"
+    ]
     assert history[-1]["citations"] == result.json()["citations"]
     assert history[-1]["model"] == "所选模型"
     send(setup, "继续解释")
     assert '"materials_only": true' in setup.calls[-1]["messages"][0]["content"]
     send(setup, "另一个问题", "new")
     assert '"materials_only": false' in setup.calls[-1]["messages"][0]["content"]
-    assert not any(item["content"] == "只看老师课件解释握手"
-                   for item in setup.calls[-1]["messages"])
+    assert not any(
+        item["content"] == "只看老师课件解释握手" for item in setup.calls[-1]["messages"]
+    )
 
 
 def test_general_knowledge_strict_scope_and_deleted_sources(chat_setup):
@@ -140,7 +191,8 @@ def test_general_knowledge_strict_scope_and_deleted_sources(chat_setup):
 def test_targeted_clarification_is_remembered_and_resolved(chat_setup):
     setup = chat_setup
     setup.decisions["整理一下这章"] = {
-        "intent": "clarify", "clarification": "你想解释这章重点，还是生成复习笔记？",
+        "intent": "clarify",
+        "clarification": "你想解释这章重点，还是生成复习笔记？",
     }
     setup.decisions["先解释"] = {"action": "search", "query": "三次握手"}
     first = send(setup, "整理一下这章")
@@ -161,9 +213,9 @@ def test_invalid_citation_is_repaired_and_never_persisted(chat_setup):
     assert "资料99" not in result.json()["reply"]
     setup.answers.extend(["伪引用[资料99]", "还是伪引用[资料99]"])
     assert send(setup, "解释握手", "bad").status_code == 502
-    history = setup.client.get(
-        f"/api/courses/{setup.course_id}/conversations/bad/messages"
-    ).json()["items"]
+    history = setup.client.get(f"/api/courses/{setup.course_id}/conversations/bad/messages").json()[
+        "items"
+    ]
     assert [row["role"] for row in history] == ["user"]
 
 
@@ -173,12 +225,22 @@ def test_random_quiz_is_real_restorable_and_hides_answers(chat_setup, monkeypatc
 
     class QuizModel:
         def fast_quiz(self, data):
-            return {"questions": [{
-                "id": f"q{index}", "stem": f"握手第{index}步的作用？",
-                "knowledge_point": f"握手{index}", "question_type": "short_answer", "options": [],
-                "reference_answer": "同步序列号", "explanation": "确认收发能力", "must_include": [],
-                "source_chunk_ids": [data["evidence"][0]["chunk_id"]],
-            } for index in range(5)]}
+            return {
+                "questions": [
+                    {
+                        "id": f"q{index}",
+                        "stem": f"握手第{index}步的作用？",
+                        "knowledge_point": f"握手{index}",
+                        "question_type": "short_answer",
+                        "options": [],
+                        "reference_answer": "同步序列号",
+                        "explanation": "确认收发能力",
+                        "must_include": [],
+                        "source_chunk_ids": [data["evidence"][0]["chunk_id"]],
+                    }
+                    for index in range(5)
+                ]
+            }
 
     monkeypatch.setattr("final_review.api.build_fast_quiz_model", lambda *_: QuizModel())
     result = send(setup, "随机出五道题")
@@ -192,23 +254,30 @@ def test_random_quiz_is_real_restorable_and_hides_answers(chat_setup, monkeypatc
     assert questions[0]["citations"][0]["file_name"] == "老师课件.pptx"
     answered = setup.client.get(path + "?include_answers=true").json()["questions"]
     assert answered[0]["reference_answer"]
-    history = setup.client.get(
-        f"/api/courses/{setup.course_id}/conversations/one/messages"
-    ).json()["items"]
+    history = setup.client.get(f"/api/courses/{setup.course_id}/conversations/one/messages").json()[
+        "items"
+    ]
     assert history[-1]["quiz"] == result.json()["quiz"]
     assert setup.client.get(f"/api/courses/net/chat-quizzes/{session_id}").status_code == 404
 
 
 def test_sampling_covers_files_and_bounded_read_reports_partial(chat_setup):
     setup = chat_setup
-    setup.system.kb.ingest(MaterialInput(
-        document_id="other-web", course_id=setup.course_id, title="作业.txt",
-        source_type="homework", markdown="三次握手还确认双方收发能力。",
-    ), user_id="local-user")
+    setup.system.kb.ingest(
+        MaterialInput(
+            document_id="other-web",
+            course_id=setup.course_id,
+            title="作业.txt",
+            source_type="homework",
+            markdown="三次握手还确认双方收发能力。",
+        ),
+        user_id="local-user",
+    )
     materials = CourseMaterials(setup.system.store, setup.course_id, "local-user")
     documents = materials.select()
     assert {row.document_id for row in materials.sample(documents, 5)} == {
-        setup.document_id, "other-web",
+        setup.document_id,
+        "other-web",
     }
     evidence, coverage = materials.read(documents, budget=30)
     assert coverage["partial"]
@@ -219,13 +288,19 @@ def test_sampling_covers_files_and_bounded_read_reports_partial(chat_setup):
 
 def test_chapter_headings_limit_read_search_and_quiz_even_without_metadata(chat_setup):
     setup = chat_setup
-    setup.system.kb.ingest(MaterialInput(
-        document_id="whole-book", course_id=setup.course_id, title="整本教材.md",
-        source_type="teacher_ppt", markdown=(
-            "# 第一章\nHTTP是无状态协议。\n# 第三章\nTCP三次握手同步序列号。\n"
-            "# 第四章\nDNS把域名转换成IP地址。"
+    setup.system.kb.ingest(
+        MaterialInput(
+            document_id="whole-book",
+            course_id=setup.course_id,
+            title="整本教材.md",
+            source_type="teacher_ppt",
+            markdown=(
+                "# 第一章\nHTTP是无状态协议。\n# 第三章\nTCP三次握手同步序列号。\n"
+                "# 第四章\nDNS把域名转换成IP地址。"
+            ),
         ),
-    ), user_id="local-user")
+        user_id="local-user",
+    )
     materials = CourseMaterials(setup.system.store, setup.course_id, "local-user")
     selected = materials.select(["whole-book"], "第 3 章")
     rows, coverage = materials.read(selected)
@@ -238,16 +313,30 @@ def test_chapter_headings_limit_read_search_and_quiz_even_without_metadata(chat_
 
 def test_other_owner_materials_are_excluded_and_conflicts_are_given_both_sources(chat_setup):
     setup = chat_setup
-    setup.system.store.put("document", "other-owner", {
-        "document_id": "other-owner", "course_id": setup.course_id, "user_id": "other-user",
-        "title": "不能读取", "parse_status": "ready", "cleaned_markdown": "秘密文本",
-    })
+    setup.system.store.put(
+        "document",
+        "other-owner",
+        {
+            "document_id": "other-owner",
+            "course_id": setup.course_id,
+            "user_id": "other-user",
+            "title": "不能读取",
+            "parse_status": "ready",
+            "cleaned_markdown": "秘密文本",
+        },
+    )
     materials = CourseMaterials(setup.system.store, setup.course_id, "local-user")
     assert "other-owner" not in materials.by_id
-    setup.system.kb.ingest(MaterialInput(
-        document_id="conflicting", course_id=setup.course_id, title="另一份观点.md",
-        source_type="homework", markdown="TCP握手不需要同步序列号。（与课件冲突）",
-    ), user_id="local-user")
+    setup.system.kb.ingest(
+        MaterialInput(
+            document_id="conflicting",
+            course_id=setup.course_id,
+            title="另一份观点.md",
+            source_type="homework",
+            markdown="TCP握手不需要同步序列号。（与课件冲突）",
+        ),
+        user_id="local-user",
+    )
     setup.decisions["比较两份说法"] = {"action": "read"}
     setup.answers.append("两份说法有冲突：课件需要同步序列号[资料1]，另一份说法否认[资料2]。")
     result = send(setup, "比较两份说法")

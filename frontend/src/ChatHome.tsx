@@ -496,7 +496,7 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
     onNewConversation();
   }
 
-  return <div className="dialog-page" inert={Boolean(notePrompt)}><section className="box chat">
+  return <div className="dialog-page" inert={Boolean(notePrompt)}><section className="chat">
     <header><div className="chat-title-area">{editingTitle ? <form className="chat-title-editor" onSubmit={event => { event.preventDefault(); void saveTitle(); }}><input autoFocus aria-label="对话名称" maxLength={100} value={titleDraft} onChange={event => setTitleDraft(event.target.value)} onKeyDown={event => { if (event.key === "Escape") setEditingTitle(false); }} /><button type="submit" disabled={savingTitle}>保存</button><button type="button" onClick={() => setEditingTitle(false)}>取消</button></form> : <button className="chat-title-button" type="button" disabled={!selectedConversationId} title={selectedConversationId ? "点击重命名对话" : "发送消息后可重命名"} onClick={() => { setTitleDraft(conversationTitle); setEditingTitle(true); }}><h2>{conversationTitle}</h2>{selectedConversationId && <span aria-hidden="true">✎</span>}</button>}</div><button className="new-chat" type="button" onClick={newConversation} disabled={isSending}>＋ 新对话</button></header>
     <div className="messages" ref={messagesRef} aria-live="polite">
       {historyLoading ? <div className="empty-chat" role="status">正在加载对话…</div> : messages.length === 0 && <div className="empty-chat chat-welcome">

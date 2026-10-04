@@ -20,8 +20,7 @@ def _document(client: TestClient, course_id: str, system) -> dict:
     )
     assert result.status_code == 202
     job = system.store.claim_material_job()
-    process_material_job(system.store, system.kb, job,
-                         system.settings.max_upload_mb * 1024 * 1024)
+    process_material_job(system.store, system.kb, job, system.settings.max_upload_mb * 1024 * 1024)
     assert system.store.get_material_job(job["job_id"])["status"] == "succeeded"
     return result.json()
 

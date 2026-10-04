@@ -19,6 +19,8 @@ export default function CourseSwitcher({ courses, course, conversationId, onCour
   const [renameError, setRenameError] = useState("");
   const [renaming, setRenaming] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const switchRef = useRef<HTMLButtonElement>(null);
+  const openerRef = useRef<HTMLButtonElement | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const pickerRef = useRef<HTMLDivElement>(null);
   const optionsRef = useRef<HTMLDivElement>(null);
@@ -43,7 +45,7 @@ export default function CourseSwitcher({ courses, course, conversationId, onCour
     place();
     const dismiss = (event: PointerEvent) => {
       const target = event.target as Node;
-      if (!panelRef.current?.contains(target) && !triggerRef.current?.contains(target) && !contextRef.current?.contains(target)) setOpen(false);
+      if (!panelRef.current?.contains(target) && !triggerRef.current?.contains(target) && !switchRef.current?.contains(target) && !contextRef.current?.contains(target)) setOpen(false);
       else if (!pickerRef.current?.contains(target)) setCourseListOpen(false);
       if (!contextRef.current?.contains(target)) setContext(null);
     };
@@ -51,7 +53,7 @@ export default function CourseSwitcher({ courses, course, conversationId, onCour
       if (event.key !== "Escape") return;
       if (context) setContext(null);
       else if (courseListOpen) setCourseListOpen(false);
-      else { setOpen(false); triggerRef.current?.focus(); }
+      else { setOpen(false); (openerRef.current ?? triggerRef.current)?.focus(); }
     };
     const onResize = () => {
       if (window.matchMedia("(max-width: 900px)").matches !== wasMobile) setOpen(false);
@@ -102,8 +104,9 @@ export default function CourseSwitcher({ courses, course, conversationId, onCour
     return () => { active = false; };
   }, [open, course?.course_id, refreshKey]);
   return <div className="course-switcher">
-    <span className="course-label">当前课程</span>
-    <button ref={triggerRef} className="course course-button" type="button" aria-expanded={open} aria-haspopup="dialog" aria-label={`当前课程 ${course?.name ?? "选择课程"}`} onClick={() => setOpen(value => !value)}>
+    <div className="course-switcher-heading"><span className="course-label">当前课程</span><button ref={switchRef} className="course-switch-action" type="button" aria-label="打开课程切换面板" aria-expanded={open} aria-haspopup="dialog" onClick={event => { openerRef.current = event.currentTarget; setOpen(value => !value); }}>切换<span className="course-chevron" aria-hidden="true" /></button></div>
+    <button ref={triggerRef} className="course course-button" type="button" aria-expanded={open} aria-haspopup="dialog" aria-label={`当前课程 ${course?.name ?? "选择课程"}`} onClick={event => { openerRef.current = event.currentTarget; setOpen(value => !value); }}>
+      <span className="course-card-icon" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M8 4h16a2 2 0 0 1 2 2v22H10a4 4 0 0 1-4-4V6a2 2 0 0 1 2-2Z" /><path d="M10 4v20M6 24h20M14 10h8M14 14h8M14 18h5" /></svg></span>
       <strong className="course-name">{course?.name ?? "选择课程"}</strong>
       <span className="course-chevron" aria-hidden="true" />
     </button>

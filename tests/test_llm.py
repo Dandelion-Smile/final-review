@@ -13,8 +13,13 @@ from final_review.schemas import GeneratedNote, Route
 
 @pytest.mark.parametrize("base_url", ["https://api.deepseek.com", "https://api.deepseek.com/v1"])
 def test_deepseek_structured_flows_disable_incompatible_thinking_mode(base_url):
-    config = ChatModelConfig(id="deepseek", label="DeepSeek", model="deepseek-flash",
-                             base_url=base_url, api_key="test-key")
+    config = ChatModelConfig(
+        id="deepseek",
+        label="DeepSeek",
+        model="deepseek-flash",
+        base_url=base_url,
+        api_key="test-key",
+    )
     settings = Settings(_env_file=None)
     for builder in (build_fast_quiz_model, build_review_model):
         assert builder(config, settings).model.extra_body == {"thinking": {"type": "disabled"}}
@@ -102,16 +107,30 @@ def test_note_generation_retries_missing_tool_call_and_accepts_valid_response():
         attempts.append(json.loads(request.content))
         if len(attempts) == 1:
             return completion()  # Provider returned text instead of the requested tool call.
-        return completion("GeneratedNote", {"title": "TCP 笔记", "points": [{
-            "heading": "三次握手", "content": "同步序列号", "provenance": "source",
-            "citations": [{"chunk_id": "chunk-1", "quote": "同步序列号"}],
-        }]})
+        return completion(
+            "GeneratedNote",
+            {
+                "title": "TCP 笔记",
+                "points": [
+                    {
+                        "heading": "三次握手",
+                        "content": "同步序列号",
+                        "provenance": "source",
+                        "citations": [{"chunk_id": "chunk-1", "quote": "同步序列号"}],
+                    }
+                ],
+            },
+        )
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        model = ReviewModel(ChatOpenAI(
-            model="test-model", api_key="test-key", base_url="http://test/v1",
-            http_client=client,
-        ))
+        model = ReviewModel(
+            ChatOpenAI(
+                model="test-model",
+                api_key="test-key",
+                base_url="http://test/v1",
+                http_client=client,
+            )
+        )
         result = model.structured(GeneratedNote, "generate", {"evidence": []})
     assert result["title"] == "TCP 笔记"
     assert len(attempts) == 2
@@ -122,20 +141,31 @@ def test_note_generation_accepts_valid_json_text_without_tool_call():
 
     def handler(request):
         responses.append(json.loads(request.content))
-        data = {"title": "TCP 摘要", "points": [{
-            "heading": "三次握手", "content": "同步序列号", "provenance": "source",
-            "citations": [{"chunk_id": "chunk-1", "quote": "同步序列号"}],
-        }]}
+        data = {
+            "title": "TCP 摘要",
+            "points": [
+                {
+                    "heading": "三次握手",
+                    "content": "同步序列号",
+                    "provenance": "source",
+                    "citations": [{"chunk_id": "chunk-1", "quote": "同步序列号"}],
+                }
+            ],
+        }
         response = completion()
         body = response.json()
         body["choices"][0]["message"]["content"] = json.dumps(data, ensure_ascii=False)
         return httpx.Response(200, json=body)
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        model = ReviewModel(ChatOpenAI(
-            model="test-model", api_key="test-key", base_url="http://test/v1",
-            http_client=client,
-        ))
+        model = ReviewModel(
+            ChatOpenAI(
+                model="test-model",
+                api_key="test-key",
+                base_url="http://test/v1",
+                http_client=client,
+            )
+        )
         result = model.structured(GeneratedNote, "generate", {"evidence": []})
     assert result["title"] == "TCP 摘要"
     assert len(responses) == 1
@@ -149,10 +179,14 @@ def test_note_generation_reports_empty_response_after_three_attempts(caplog):
         return completion()
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        model = ReviewModel(ChatOpenAI(
-            model="test-model", api_key="test-key", base_url="http://test/v1",
-            http_client=client,
-        ))
+        model = ReviewModel(
+            ChatOpenAI(
+                model="test-model",
+                api_key="test-key",
+                base_url="http://test/v1",
+                http_client=client,
+            )
+        )
         with pytest.raises(ModelError, match="连续返回无法解析"):
             model.structured(GeneratedNote, "generate", {"evidence": []})
     assert len(attempts) == 3
