@@ -22,7 +22,6 @@ const sourceNames: Record<string, string> = {
 const statusNames: Record<string, string> = {
   ready: "可检索", queued: "排队中", running: "处理中", failed: "处理失败",
 };
-const MAX_SELECTION = 5;
 
 export function materialLabel(item: NoteMaterial): string {
   return item.file_name || item.title;
@@ -30,7 +29,10 @@ export function materialLabel(item: NoteMaterial): string {
 
 type MaterialJob = { job_id: string; document_id: string; status: string; stage?: string; error_message?: string };
 
-export default function NoteMaterialPicker({ courseId, selected, onUploaded, onConfirm, onClose }: {
+export default function NoteMaterialPicker({ courseId, selected, onUploaded, onConfirm, onClose, maxSelection = 5, purpose = "笔记", allowedIds }: {
+  maxSelection?: number;
+  purpose?: string;
+  allowedIds?: string[] | null;
   courseId: string;
   selected: NoteMaterial[];
   onUploaded: (item: NoteMaterial) => void;
@@ -74,7 +76,7 @@ export default function NoteMaterialPicker({ courseId, selected, onUploaded, onC
       api<{ items: NoteMaterial[] }>(`/api/courses/${encodeURIComponent(courseId)}/documents`),
       api<{ items: MaterialJob[] }>(`/api/courses/${encodeURIComponent(courseId)}/material-jobs`),
     ]);
-    setItems(documents.items.filter(item => item.parse_status !== "deleted"));
+    setItems(documents.items.filter(item => item.parse_status !== "deleted" && (!allowedIds || allowedIds.includes(item.document_id))));
     setJobs(currentJobs.items);
     return documents.items;
   }
@@ -121,12 +123,14 @@ export default function NoteMaterialPicker({ courseId, selected, onUploaded, onC
         ?? { document_id: result.document_id, title: uploadTitle.trim() || file.name,
              file_name: file.name, chapter: uploadChapter.trim(), source_type: "external_upload",
              parse_status: result.status };
-      if (checked.length < MAX_SELECTION || checked.includes(item.document_id)) {
+      if (allowedIds && !allowedIds.includes(item.document_id)) {
+        setUploadMessage("已上传到课程，但不在当前对话限定的资料范围内，请另开对话使用。");
+      } else if (checked.length < maxSelection || checked.includes(item.document_id)) {
         setChecked(current => [...new Set([...current, item.document_id])]);
         onUploaded(item);
         setUploadMessage(result.reused ? "已复用当前课程中的同名同内容资料。" : "已上传，处理完成后自动选中。");
       } else {
-        setUploadMessage("已上传到课程。本次已选满 5 份；如需使用，请先移除一份再勾选。");
+        setUploadMessage(`已上传到课程。本次已选满 ${maxSelection} 份；如需使用，请先移除一份再勾选。`);
       }
       chooseFile(null); setUploadChapter("");
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -173,10 +177,10 @@ export default function NoteMaterialPicker({ courseId, selected, onUploaded, onC
   return createPortal(<div className="note-source-backdrop" onMouseDown={event => {
     if (event.target === event.currentTarget) onClose();
   }}><section className={`note-source-dialog${resizing ? " resizing" : ""}`} style={layout ? { height: layout.dialogHeight } : undefined} role="dialog" aria-modal="true" aria-labelledby="note-source-title" ref={dialogRef}>
-    <header className="note-source-head"><div><small>当前课程 · 笔记资料</small><h2 id="note-source-title">选择生成依据</h2><p>笔记只会引用你在这里勾选的资料。</p></div><button type="button" className="note-source-close" aria-label="关闭资料选择" onClick={onClose}>×</button></header>
+    <header className="note-source-head"><div><small>当前课程 · {purpose}资料</small><h2 id="note-source-title">选择生成依据</h2><p>{purpose}只会引用你在这里勾选的资料。</p></div><button type="button" className="note-source-close" aria-label="关闭资料选择" onClick={onClose}>×</button></header>
     <div className="note-source-controls" ref={controlsRef} style={layout ? { flexBasis: layout.controlsHeight } : undefined}>
-    <div className="note-upload-panel"><div className={`note-upload-drop${dragging ? " dragging" : ""}`} onDragOver={event => { event.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={event => { event.preventDefault(); setDragging(false); if (event.dataTransfer.files.length > 1) { setError("一次只能上传一份文件，请分别拖入。"); return; } chooseFile(event.dataTransfer.files[0] ?? null); }}><strong>把课程文件拖到这里</strong><span>或</span><button type="button" onClick={() => fileInputRef.current?.click()}>选择文件</button><input ref={fileInputRef} type="file" accept=".md,.txt,.pdf,.ppt,.pptx,.doc,.docx,.png,.jpg,.jpeg,.webp" aria-label="上传笔记资料文件" onChange={event => chooseFile(event.target.files?.[0] ?? null)} /></div><div className="note-upload-details"><label>标题<input value={uploadTitle} onChange={event => setUploadTitle(event.target.value)} placeholder="默认文件名" maxLength={200} /></label><label>章节 · 可选<input value={uploadChapter} onChange={event => setUploadChapter(event.target.value)} placeholder="例如：第二章" maxLength={200} /></label><button type="button" disabled={!file || uploading} onClick={() => void uploadFile()}>{uploading ? "正在上传…" : "上传并处理"}</button></div><small>新文件默认标为“外部上传”；可到“我的资料”修改来源类型。单个文件不超过 10 MB。</small>{uploadMessage && <p role="status">{uploadMessage}</p>}</div>
-    <div className="note-source-tools"><label className="note-source-search"><span>查找资料</span><input ref={searchRef} type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索文件名、章节或来源" /></label><div className="note-source-select-all"><span>已选 {selectedItems.length} / {available.length} 份可用资料 · 单次最多 5 份</span><button type="button" disabled={!available.length} onClick={() => { if (available.length > MAX_SELECTION) { setError("单次最多选择 5 份资料，请逐份选择。"); return; } setError(""); setChecked(available.map(item => item.document_id)); }}>选择全部可用资料</button><button type="button" disabled={!checked.length} onClick={() => { setChecked([]); setError(""); }}>清空</button></div></div>
+    <div className="note-upload-panel"><div className={`note-upload-drop${dragging ? " dragging" : ""}`} onDragOver={event => { event.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={event => { event.preventDefault(); setDragging(false); if (event.dataTransfer.files.length > 1) { setError("一次只能上传一份文件，请分别拖入。"); return; } chooseFile(event.dataTransfer.files[0] ?? null); }}><strong>把课程文件拖到这里</strong><span>或</span><button type="button" onClick={() => fileInputRef.current?.click()}>选择文件</button><input ref={fileInputRef} type="file" accept=".md,.txt,.pdf,.ppt,.pptx,.doc,.docx,.png,.jpg,.jpeg,.webp" aria-label={`上传${purpose}资料文件`} onChange={event => chooseFile(event.target.files?.[0] ?? null)} /></div><div className="note-upload-details"><label>标题<input value={uploadTitle} onChange={event => setUploadTitle(event.target.value)} placeholder="默认文件名" maxLength={200} /></label><label>章节 · 可选<input value={uploadChapter} onChange={event => setUploadChapter(event.target.value)} placeholder="例如：第二章" maxLength={200} /></label><button type="button" disabled={!file || uploading} onClick={() => void uploadFile()}>{uploading ? "正在上传…" : "上传并处理"}</button></div><small>新文件默认标为“外部上传”；可到“我的资料”修改来源类型。单个文件不超过 10 MB。</small>{uploadMessage && <p role="status">{uploadMessage}</p>}</div>
+    <div className="note-source-tools"><label className="note-source-search"><span>查找资料</span><input ref={searchRef} type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索文件名、章节或来源" /></label><div className="note-source-select-all"><span>已选 {selectedItems.length} / {available.length} 份可用资料 · 单次最多 {maxSelection} 份</span><button type="button" disabled={!available.length} onClick={() => { if (available.length > maxSelection) { setError(`单次最多选择 ${maxSelection} 份资料，请逐份选择。`); return; } setError(""); setChecked(available.map(item => item.document_id)); }}>选择全部可用资料</button><button type="button" disabled={!checked.length} onClick={() => { setChecked([]); setError(""); }}>清空</button></div></div>
     </div>
     <div className="note-source-resize" role="separator" tabIndex={0} aria-label="上下拖动调整资料列表高度" aria-orientation="horizontal" aria-controls="note-source-list" aria-valuemin={0} aria-valuemax={100} aria-valuenow={layout ? Math.round(100 * Math.max(0, Math.min(1, 1 - (layout.controlsHeight - 80) / Math.max(1, layout.maximum - 80)))) : 0}
       onPointerDown={event => {
@@ -203,7 +207,7 @@ export default function NoteMaterialPicker({ courseId, selected, onUploaded, onC
         const ready = item.parse_status === "ready";
         const isChecked = checked.includes(item.document_id);
         return <label key={item.document_id} className={`note-source-row${isChecked ? " selected" : ""}${ready ? "" : " unavailable"}`}>
-          <input type="checkbox" checked={isChecked} disabled={!ready && !isChecked} onChange={() => { if (!isChecked && checked.length >= MAX_SELECTION) { setError("单次最多选择 5 份资料，请先移除一份。"); return; } setError(""); setChecked(current => isChecked ? current.filter(id => id !== item.document_id) : [...current, item.document_id]); }} aria-label={`选择 ${materialLabel(item)}，编号 ${item.document_id.slice(0, 8)}`} />
+          <input type="checkbox" checked={isChecked} disabled={!ready && !isChecked} onChange={() => { if (!isChecked && checked.length >= maxSelection) { setError(`单次最多选择 ${maxSelection} 份资料，请先移除一份。`); return; } setError(""); setChecked(current => isChecked ? current.filter(id => id !== item.document_id) : [...current, item.document_id]); }} aria-label={`选择 ${materialLabel(item)}，编号 ${item.document_id.slice(0, 8)}`} />
           <span className="note-source-row-body"><strong>{materialLabel(item)}</strong><span>{sourceNames[item.source_type] ?? item.source_type} · {item.chapter || "未归类"} · {item.uploaded_at ? new Date(item.uploaded_at).toLocaleString("zh-CN") : "上传时间未知"} · 编号 {item.document_id.slice(0, 8)}</span>{!ready && item.parse_error && <em>{item.parse_error}</em>}{item.parse_status === "failed" && isChecked && <button type="button" onClick={event => { event.preventDefault(); void retry(item); }}>重试处理</button>}</span>
           <span className={`note-source-status ${item.parse_status}`}>{statusNames[item.parse_status] ?? item.parse_status}</span>
         </label>;

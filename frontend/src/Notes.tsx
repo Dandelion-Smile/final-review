@@ -5,6 +5,7 @@ import { api, type Course } from "./workbench-api";
 import "./notes.css";
 import NoteExport from "./NoteExport";
 import Topbar from "./Topbar";
+import NoteGeneration from "./NoteGeneration";
 
 type Reference = {
   document_id: string;
@@ -121,6 +122,8 @@ export default function Notes({
   const [filter, setFilter] = useState("all");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [generationTarget, setGenerationTarget] = useState<HTMLDivElement | null>(null);
+  const refreshNotes = useRef<() => Promise<boolean>>(async () => false);
   const match = /^#note\/([\w.-]+)\/([\w.-]+)$/.exec(hash);
   useEffect(() => {
     let active = true;
@@ -128,28 +131,29 @@ export default function Notes({
     setItems([]);
     setLoading(true);
     if (!course || match) {
+      refreshNotes.current = async () => false;
       setLoading(false);
       return;
     }
     let fetching = false;
-    const refresh = () => {
-      if (fetching || document.hidden) return;
+    const refresh = async () => {
+      if (fetching || document.hidden) return false;
       fetching = true;
-      api<{ items: Asset[] }>(`/api/courses/${course.course_id}/notes`)
-        .then((data) => {
-          if (active) {
-            setItems(data.items);
-            setError("");
-          }
-        })
-        .catch((reason) => {
-          if (active) setError(errorText(reason));
-        })
-        .finally(() => {
-          fetching = false;
-          if (active) setLoading(false);
-        });
+      try {
+        const data = await api<{ items: Asset[] }>(`/api/courses/${course.course_id}/notes`);
+        if (!active) return false;
+        setItems(data.items);
+        setError("");
+        return true;
+      } catch (reason) {
+        if (active) setError(errorText(reason));
+        return false;
+      } finally {
+        fetching = false;
+        if (active) setLoading(false);
+      }
     };
+    refreshNotes.current = refresh;
     refresh();
     const timer = window.setInterval(refresh, 5000);
     window.addEventListener("focus", refresh);
@@ -171,11 +175,14 @@ export default function Notes({
   return (
     <section className="notes-page" aria-label="我的笔记">
       <header className="notes-heading">
-        <small>{course?.name || "课程笔记"}</small>
-        <h1>
-          把会考的，<em>留下来。</em>
-        </h1>
-        <p>草稿先保存，核对后确认。每条考点都带着它的出处。</p>
+        <div>
+          <small>{course?.name || "课程笔记"}</small>
+          <h1>
+            把会考的，<em>留下来。</em>
+          </h1>
+        </div>
+        <NoteGeneration key={course?.course_id ?? "no-course"} courseId={course?.course_id ?? null}
+          progressTarget={generationTarget} onStarted={() => setFilter("all")} onCompleted={() => refreshNotes.current()} />
       </header>
       <div className="notes-filters" role="group" aria-label="笔记状态筛选">
         {[
@@ -197,12 +204,14 @@ export default function Notes({
           {error}
         </p>
       )}
+      <div className="notes-list">
+      <div ref={setGenerationTarget} className="notes-generation-tasks" />
       {!course ? (
         <p className="notes-empty">请先选择课程，再查看笔记。</p>
       ) : loading ? (
         <p role="status">正在读取笔记…</p>
       ) : (
-        <div className="notes-list">
+        <div className="notes-items">
           {items
             .filter(
               (item) =>
@@ -250,13 +259,13 @@ export default function Notes({
               <div className="notes-empty">
                 <h2>这里会保存你的复习笔记。</h2>
                 <p>生成后的草稿无需确认就会出现在这里，刷新后也能继续修改。</p>
-                <a href={course ? `#chat/${course.course_id}` : "#home"}>
-                  去 AI 对话生成笔记 →
-                </a>
+                <p>点击右上方「生成笔记」开始整理资料。</p>
               </div>
             )}
         </div>
       )}
+      </div>
+      <p className="notes-footer-hint">草稿先保存，核对后确认。每条考点都带着它的出处。</p>
     </section>
   );
 }

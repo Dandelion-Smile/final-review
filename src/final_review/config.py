@@ -67,6 +67,11 @@ class Settings(BaseSettings):
     note_model_timeout: float = Field(default=120, gt=0)
     note_model_max_retries: int = Field(default=1, ge=0, le=3)
     fast_quiz_timeout: float = Field(default=30, gt=0, le=90)
+    quiz_model_timeout: float = Field(default=120, gt=0, le=300)
+    quiz_max_output_tokens: int = Field(default=16384, ge=2048, le=65536)
+    quiz_choice_batch_size: int = Field(default=5, ge=1, le=6)
+    quiz_written_batch_size: int = Field(default=2, ge=1, le=3)
+    quiz_max_repairs: int = Field(default=2, ge=0, le=2)
 
     @model_validator(mode="after")
     def check_candidates(self):

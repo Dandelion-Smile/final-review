@@ -468,6 +468,10 @@ def test_fast_quiz_uses_direct_retrieval_and_persists_attempt(system, monkeypatc
 def test_selected_chat_model_routes_note_ask_quiz_and_ambiguity(system, monkeypatch):
     from types import SimpleNamespace
 
+    system.store.put(
+        "course", "net", {"course_id": "net", "user_id": "local-user", "status": "active"}
+    )
+
     system.settings.chat_models = [
         ChatModelConfig(
             id="selected",
@@ -545,8 +549,9 @@ def test_selected_chat_model_routes_note_ask_quiz_and_ambiguity(system, monkeypa
             elif intent == "clarify":
                 assert message in response.json()["reply"]
             elif intent == "quiz":
-                assert response.json()["kind"] == "quiz"
-                assert response.json()["quiz"]["question_count"] == 5
+                assert response.json()["kind"] == "chat"
+                assert response.json()["status"] == "needs_input"
+                assert "quiz_configuration" in response.json()
             else:
                 assert "普通聊天回复" in response.json()["reply"]
             history = client.get(f"/api/courses/net/conversations/{conversation_id}/messages")

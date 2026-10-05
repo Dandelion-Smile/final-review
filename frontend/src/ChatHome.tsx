@@ -1,6 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ApiError, api } from "./workbench-api";
 import NoteConfigDialog from "./NoteConfigDialog";
+import QuizConfigDialog, { type PendingQuiz, type QuizInput, type QuizConfiguration } from "./QuizConfigDialog";
+import QuizDraftPreview, { quizStages, type QuizDraftCard, type QuizJob } from "./QuizDraftPreview";
 import { ChatQuiz, ChatSources, type ChatCitation, type ChatQuizCard } from "./ChatSources";
 import NoteMaterialPicker, { materialLabel, type NoteMaterial } from "./NoteMaterialPicker";
 
@@ -8,13 +10,13 @@ type ChatModel = { id: string; label: string };
 type DraftCard = { asset_id: string; revision_id: string; title: string; note_type: string; url: string };
 type AgentResult = { session_id: string; status: string; answer: string; prompt?: { message: string; required: string[] }; note_config?: { note_type?: string; scope?: string; duration_minutes?: number }; draft?: DraftCard };
 type DispatchResult = { kind: "note"; intent: "note"; session_id: string; result: AgentResult; source_document_ids?: string[] | null }
-  | { kind: "chat" | "quiz"; intent: "ask" | "quiz" | "clarify"; reply: string; model: string; citations?: ChatCitation[]; quiz?: ChatQuizCard };
+  | { kind: "chat" | "quiz"; intent: "ask" | "quiz" | "clarify"; reply: string; model: string; citations?: ChatCitation[]; quiz?: ChatQuizCard; status?: string; quiz_configuration?: QuizConfiguration; quiz_scope?: PendingQuiz["scope"]; quiz_job?: QuizJob };
 type NoteCoverage = { selected_files: number; readable_chunks: number; read_chunks: number; partial: boolean; files: { document_id: string; file_name: string; readable_chunks: number; read_chunks: number }[] };
-type Message = { from: "agent" | "user"; text: string; model?: string; draft?: DraftCard; citations?: ChatCitation[]; quiz?: ChatQuizCard };
-type StoredMessage = { role: "user" | "assistant"; content: string; model?: string; draft?: DraftCard; citations?: ChatCitation[]; quiz?: ChatQuizCard };
+type Message = { from: "agent" | "user"; text: string; model?: string; draft?: DraftCard; citations?: ChatCitation[]; quiz?: ChatQuizCard; quiz_draft?: QuizDraftCard };
+type StoredMessage = { role: "user" | "assistant"; content: string; model?: string; draft?: DraftCard; citations?: ChatCitation[]; quiz?: ChatQuizCard; quiz_draft?: QuizDraftCard };
 function restoreMessage(item: StoredMessage): Message {
   return { from: item.role === "user" ? "user" : "agent", text: item.content, model: item.model,
-    draft: item.draft, citations: item.citations, quiz: item.quiz };
+    draft: item.draft, citations: item.citations, quiz: item.quiz, quiz_draft: item.quiz_draft };
 }
 type ActiveNote = { session_id: string; status: "needs_input" | "queued" | "running" | "failed"; job_id?: string; stage?: string; error?: string; coverage?: NoteCoverage; prompt?: AgentResult["prompt"]; note_input?: { note_type?: string; scope?: string; duration_minutes?: number; source_document_ids?: string[] } };
 
@@ -71,6 +73,11 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
   const [noteMaterials, setNoteMaterials] = useState<NoteMaterial[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [noteCancelling, setNoteCancelling] = useState(false);
+  const [pendingQuiz, setPendingQuiz] = useState<PendingQuiz | null>(null);
+  const [quizError, setQuizError] = useState("");
+  const [quizJob, setQuizJob] = useState<QuizJob | null>(null);
+  const [previewQuiz, setPreviewQuiz] = useState<QuizDraftCard | null>(null);
+  const quizSubmitKey = useRef(crypto.randomUUID());
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
   const modelPickerRef = useRef<HTMLDivElement>(null);
@@ -79,7 +86,12 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
   const composerUploadLock = useRef(false);
   const conversationId = useRef(`chat-${crypto.randomUUID()}`);
   const mounted = useRef(true);
+  const quizWasOpen = useRef(false);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  useEffect(() => {
+    if (quizWasOpen.current && !pendingQuiz) composerTextareaRef.current?.focus();
+    quizWasOpen.current = Boolean(pendingQuiz);
+  }, [pendingQuiz]);
 
   useLayoutEffect(() => {
     const textarea = composerTextareaRef.current;
@@ -145,12 +157,16 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
     setNoteScope("");
     setPickerOpen(false);
     setNoteCancelling(false);
+    setPendingQuiz(null); setQuizError("");
+    setQuizJob(null); setPreviewQuiz(null); quizSubmitKey.current = crypto.randomUUID();
     conversationId.current = selectedConversationId ?? `chat-${crypto.randomUUID()}`;
     if (courseId && selectedConversationId) {
       setHistoryLoading(true);
-      api<{ items: StoredMessage[]; active_note?: ActiveNote | null }>(`/api/courses/${encodeURIComponent(courseId)}/conversations/${encodeURIComponent(selectedConversationId)}/messages`)
+      api<{ items: StoredMessage[]; active_note?: ActiveNote | null; pending_quiz?: PendingQuiz | null; active_quiz?: QuizJob | null }>(`/api/courses/${encodeURIComponent(courseId)}/conversations/${encodeURIComponent(selectedConversationId)}/messages`)
         .then(data => { if (active) {
           setMessages(data.items.map(restoreMessage));
+          setPendingQuiz(data.pending_quiz ?? null);
+          setQuizJob(data.active_quiz ?? null);
           setNoteSession(data.active_note?.session_id ?? null);
           setNoteJobId(data.active_note?.job_id ?? null);
           setNoteJobError(data.active_note?.error ?? "");
@@ -165,6 +181,17 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
     } else setHistoryLoading(false);
     return () => { active = false; };
   }, [courseId, selectedConversationId]);
+
+  useEffect(() => {
+    if (!courseId || !selectedConversationId || !quizJob || !["queued", "running"].includes(quizJob.status)) return;
+    let active = true;
+    const timer = window.setInterval(() => {
+      void api<{ items: StoredMessage[]; active_quiz?: QuizJob | null }>(`/api/courses/${encodeURIComponent(courseId)}/conversations/${encodeURIComponent(selectedConversationId)}/messages`)
+        .then(data => { if (active) { setMessages(data.items.map(restoreMessage)); setQuizJob(data.active_quiz ?? null); } })
+        .catch(error => { if (active) setModelError(error instanceof Error ? error.message : "任务进度读取失败"); });
+    }, 2000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [courseId, selectedConversationId, quizJob?.job_id, quizJob?.status]);
 
   useEffect(() => {
     if (!courseId || !selectedConversationId || !noteJobId || !["queued", "running"].includes(noteRecovery ?? "")) return;
@@ -462,6 +489,10 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
         setMessages(current => [...current, { from: "agent", text: result.reply,
           model: result.model || selectedLabel, citations: result.citations, quiz: result.quiz }]);
         setComposerMaterials([]);
+        if (result.quiz_configuration && result.status === "needs_input") {
+          setPendingQuiz({ quiz_input: result.quiz_configuration.quiz_input, scope: result.quiz_scope });
+          setQuizError(result.quiz_configuration.conflicts.join("；"));
+        }
       }
       if (!selectedConversationId) onConversationCreated(requestConversationId);
     } catch (error) {
@@ -496,7 +527,63 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
     onNewConversation();
   }
 
-  return <div className="dialog-page" inert={Boolean(notePrompt)}><section className="chat">
+  async function confirmQuiz(input: QuizInput) {
+    if (!courseId || isSending) return;
+    const id = conversationId.current;
+    setIsSending(true); setQuizError("");
+    try {
+      const response = await fetch("/api/chat/dispatch", { method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/json", "Idempotency-Key": quizSubmitKey.current },
+        body: JSON.stringify({ course_id: courseId, conversation_id: id, model_id: modelId,
+          message: "确认试题配置", quiz_input: input }),
+      });
+      const result = await response.json() as DispatchResult & { detail?: string };
+      if (!response.ok) throw new Error(typeof result.detail === "string" ? result.detail : "试卷生成请求失败");
+      if (!mounted.current || conversationId.current !== id) return;
+      if (result.kind !== "note" && result.quiz_configuration) {
+        if (result.quiz_job || result.status === "configured") {
+          setPendingQuiz(null);
+          setQuizJob(result.quiz_job?.status === "succeeded" ? null : result.quiz_job ?? null); quizSubmitKey.current = crypto.randomUUID();
+          setMessages(current => [...current, { from: "user", text: "确认试题配置" }, { from: "agent", text: result.reply, model: result.model }]);
+          if (result.quiz_job?.status === "succeeded") {
+            const history = await api<{ items: StoredMessage[] }>(`/api/courses/${encodeURIComponent(courseId)}/conversations/${encodeURIComponent(id)}/messages`);
+            if (mounted.current && conversationId.current === id) setMessages(history.items.map(restoreMessage));
+          }
+          composerTextareaRef.current?.focus();
+        } else setQuizError(result.quiz_configuration.prompt?.message || "请检查试题配置");
+      }
+    } catch (error) {
+      if (mounted.current && conversationId.current === id) setQuizError(error instanceof Error ? error.message : "配置保存失败");
+    } finally { if (mounted.current && conversationId.current === id) setIsSending(false); }
+  }
+
+  async function retryQuiz() {
+    if (!courseId || !quizJob) return;
+    const id = conversationId.current;
+    setIsSending(true); setModelError("");
+    try {
+      const value = await api<QuizJob>(`/api/courses/${encodeURIComponent(courseId)}/quiz-jobs/${encodeURIComponent(quizJob.job_id)}/retry`, "POST");
+      if (mounted.current && conversationId.current === id) setQuizJob(value);
+    } catch (error) {
+      if (mounted.current && conversationId.current === id) setModelError(error instanceof Error ? error.message : "重试失败");
+    } finally { if (mounted.current && conversationId.current === id) setIsSending(false); }
+  }
+
+  async function cancelQuiz() {
+    if (!courseId || isSending) return;
+    const id = conversationId.current;
+    setIsSending(true); setQuizError("");
+    try {
+      await api(`/api/courses/${encodeURIComponent(courseId)}/conversations/${encodeURIComponent(id)}/cancel-quiz`, "POST");
+      if (!mounted.current || conversationId.current !== id) return;
+      setPendingQuiz(null);
+      composerTextareaRef.current?.focus();
+    } catch (error) {
+      if (mounted.current && conversationId.current === id) setQuizError(error instanceof Error ? error.message : "取消失败");
+    } finally { if (mounted.current && conversationId.current === id) setIsSending(false); }
+  }
+
+  return <div className="dialog-page" inert={Boolean(notePrompt || pendingQuiz)}><section className="chat">
     <header><div className="chat-title-area">{editingTitle ? <form className="chat-title-editor" onSubmit={event => { event.preventDefault(); void saveTitle(); }}><input autoFocus aria-label="对话名称" maxLength={100} value={titleDraft} onChange={event => setTitleDraft(event.target.value)} onKeyDown={event => { if (event.key === "Escape") setEditingTitle(false); }} /><button type="submit" disabled={savingTitle}>保存</button><button type="button" onClick={() => setEditingTitle(false)}>取消</button></form> : <button className="chat-title-button" type="button" disabled={!selectedConversationId} title={selectedConversationId ? "点击重命名对话" : "发送消息后可重命名"} onClick={() => { setTitleDraft(conversationTitle); setEditingTitle(true); }}><h2>{conversationTitle}</h2>{selectedConversationId && <span aria-hidden="true">✎</span>}</button>}</div><button className="new-chat" type="button" onClick={newConversation} disabled={isSending}>＋ 新对话</button></header>
     <div className="messages" ref={messagesRef} aria-live="polite">
       {historyLoading ? <div className="empty-chat" role="status">正在加载对话…</div> : messages.length === 0 && <div className="empty-chat chat-welcome">
@@ -519,12 +606,15 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
       </div>}
       {messages.map((item, index) => <article className={`message ${item.from}${item.quiz ? " quiz-message" : ""}`} key={index}>
         <i aria-hidden="true">{item.from === "agent" ? "✦" : "你"}</i>
-        <div><label>{item.from === "agent" ? item.model || "助手" : "你"}</label><p>{item.text}</p>{Boolean(item.citations?.length) && <ChatSources citations={item.citations!} />}{item.quiz && courseId && <ChatQuiz courseId={courseId} quiz={item.quiz} />}{item.draft && <a className="note-draft-card" href={item.draft.url}><strong>{item.draft.title}</strong><span>打开笔记草稿 →</span></a>}</div>
+        <div><label>{item.from === "agent" ? item.model || "助手" : "你"}</label><p>{item.text}</p>{Boolean(item.citations?.length) && <ChatSources citations={item.citations!} />}{item.quiz && courseId && <ChatQuiz courseId={courseId} quiz={item.quiz} />}{item.quiz_draft && <button type="button" className="quiz-draft-card" onClick={() => setPreviewQuiz(item.quiz_draft!)}><strong>{item.quiz_draft.title}</strong><span>{item.quiz_draft.question_count} 题 · {item.quiz_draft.total_score} 分 · 查看试卷草稿 →</span></button>}{item.draft && <a className="note-draft-card" href={item.draft.url}><strong>{item.draft.title}</strong><span>打开笔记草稿 →</span></a>}</div>
       </article>)}
       {noteRecovery && noteSession && <article className="message agent note-job-message" role="status"><i aria-hidden="true">✦</i><div><label>助手</label><div className="note-job-status"><div className="note-job-copy"><span>{noteRecovery === "queued" ? "笔记任务已排队，正在等待生成。" : noteRecovery === "running" ? `正在生成笔记${noteJobStage ? ` · ${noteJobStage}` : "…"}` : `笔记生成失败${noteJobError ? `：${noteJobError}` : ""}`}</span>{noteCoverage && <small>{coverageSummary(noteCoverage)}</small>}</div><div className="note-job-actions">{noteRecovery === "failed" && <button type="button" className="note-job-retry" disabled={isSending} onClick={() => void recoverNote()}>{noteJobId ? "重试生成" : "恢复笔记任务"}</button>}<button type="button" className="note-job-cancel" disabled={noteCancelling} onClick={() => void cancelNote()}>{noteCancelling ? "正在取消…" : noteRecovery === "failed" ? "结束任务" : "取消生成"}</button></div></div></div></article>}
+      {quizJob && <article className="message agent note-job-message" role="status"><i aria-hidden="true">✦</i><div><label>助手</label><p>{quizJob.status === "failed" ? `试卷生成失败：${quizJob.error || "请稍后重试"}` : `正在生成试卷 · ${quizStages[quizJob.stage] || "处理中"}${quizJob.progress ? ` · 已完成 ${quizJob.progress.completed_questions}/${quizJob.progress.total_questions} 题` : ""}`}</p>{quizJob.status === "failed" && <button type="button" disabled={isSending} onClick={() => void retryQuiz()}>重试生成试卷</button>}</div></article>}
+      {previewQuiz && courseId && <QuizDraftPreview courseId={courseId} card={previewQuiz} onClose={() => setPreviewQuiz(null)} />}
       {isSending && <div className="chat-thinking" role="status">✦　正在生成回复…</div>}
     </div>
     {modelError && <p className="chat-error" role="alert">{modelError}</p>}
+    {pendingQuiz && courseId && <QuizConfigDialog courseId={courseId} pending={pendingQuiz} busy={isSending} error={quizError} onConfirm={input => void confirmQuiz(input)} onCancel={() => void cancelQuiz()} />}
     {notePrompt && !pickerOpen && <NoteConfigDialog noteType={noteType} onNoteType={setNoteType} duration={noteDuration} onDuration={setNoteDuration} materials={noteMaterials} onChooseMaterials={() => setPickerOpen(true)} requirements={noteScope} onRequirements={value => { setNoteScope(value); if (courseId && noteSession) localStorage.setItem(`note-scope-${courseId}-${noteSession}`, value); }} onGenerate={() => void resumeNote()} onCancel={() => void cancelNote()} busy={isSending || noteCancelling} error={modelError} promptMessage={notePrompt.message} generationModel={noteModel} />}
     {pickerOpen && courseId && <NoteMaterialPicker courseId={courseId} selected={noteMaterials} onUploaded={item => { setNoteMaterials(current => current.some(existing => existing.document_id === item.document_id) ? current.map(existing => existing.document_id === item.document_id ? item : existing) : [...current, item]); if (noteSession) { const key = `note-uploads-${courseId}-${noteSession}`; const ids = JSON.parse(localStorage.getItem(key) || "[]") as string[]; localStorage.setItem(key, JSON.stringify([...new Set([...ids, item.document_id])])); } }} onConfirm={items => { setNoteMaterials(items); if (noteSession) { const key = `note-uploads-${courseId}-${noteSession}`; const ids = JSON.parse(localStorage.getItem(key) || "[]") as string[]; localStorage.setItem(key, JSON.stringify(ids.filter(id => items.some(item => item.document_id === id)))); } setPickerOpen(false); }} onClose={() => setPickerOpen(false)} />}
     <div className={`composer composer-attachment${composerDragOver ? " drag-over" : ""}`} onDragOver={event => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; setComposerDragOver(true); } }} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setComposerDragOver(false); }} onDrop={event => { event.preventDefault(); setComposerDragOver(false); void attachComposerFiles(Array.from(event.dataTransfer.files)); }}>

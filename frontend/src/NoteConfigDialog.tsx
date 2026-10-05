@@ -11,7 +11,7 @@ const noteTypes = [
 
 export default function NoteConfigDialog({ noteType, onNoteType, duration, onDuration,
   materials, onChooseMaterials, requirements, onRequirements, onGenerate, onCancel,
-  busy, error, promptMessage, generationModel }: {
+  busy, error, promptMessage, generationModel, contextLabel = "AI 对话" }: {
   noteType: string;
   onNoteType: (value: string) => void;
   duration: string;
@@ -26,6 +26,7 @@ export default function NoteConfigDialog({ noteType, onNoteType, duration, onDur
   error: string;
   promptMessage?: string;
   generationModel: string;
+  contextLabel?: string;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const dialogRef = useRef<HTMLElement>(null);
@@ -76,7 +77,7 @@ export default function NoteConfigDialog({ noteType, onNoteType, duration, onDur
 
   return createPortal(<div className="note-dialog-backdrop"><section ref={dialogRef}
     className="note-dialog" role="dialog" aria-modal="true" aria-labelledby="note-dialog-title">
-    <header className="note-dialog-head"><div><small>AI 对话 · 生成笔记</small><h2 id="note-dialog-title">补充笔记要求</h2><p>先确定生成依据，再补充你希望重点写的内容。</p></div><button type="button" aria-label="取消笔记生成" className="note-dialog-close" disabled={busy} onClick={onCancel}>×</button></header>
+    <header className="note-dialog-head"><div><small>{contextLabel} · 生成笔记</small><h2 id="note-dialog-title">补充笔记要求</h2><p>先确定生成依据，再补充你希望重点写的内容。</p></div><button type="button" aria-label="取消笔记生成" className="note-dialog-close" disabled={busy} onClick={onCancel}>×</button></header>
     <div className="note-dialog-body">
       <div className="note-dialog-grid"><div className="note-type-field"><span className="note-field-label">笔记类型</span><button ref={triggerRef} type="button" className="note-type-trigger" aria-haspopup="listbox" aria-expanded={menuOpen} disabled={busy} onClick={() => setMenuOpen(open => !open)} onKeyDown={event => { if (["ArrowDown", "ArrowUp", "Enter", " "].includes(event.key)) { event.preventDefault(); setMenuOpen(true); } }}><span>{selectedType.label}</span><span aria-hidden="true">⌄</span></button>{menuOpen && <div ref={menuRef} className="note-type-menu" role="listbox" aria-label="笔记类型" onKeyDown={menuKeys}>{noteTypes.map(item => <button type="button" role="option" aria-selected={item.id === noteType} key={item.id} onClick={() => { onNoteType(item.id); setMenuOpen(false); triggerRef.current?.focus(); }}><strong>{item.label}</strong><small>{item.detail}</small>{item.id === noteType && <span aria-hidden="true">✓</span>}</button>)}</div>}</div><label>阅读时长（分钟）<input type="number" min="1" max="240" value={duration} disabled={busy} onChange={event => onDuration(event.target.value)} /></label></div>
       <div className="note-dialog-source"><div className="note-dialog-source-head"><strong>指定资料 · 必选</strong><button type="button" disabled={busy} onClick={onChooseMaterials}>{materials.length ? "修改资料" : "选择资料"}</button></div>{materials.length ? <div className="note-config-files">{materials.map(item => { const label = materialLabel(item); const duplicate = materials.filter(other => materialLabel(other) === label).length > 1; return <span key={item.document_id} title={`${label} · 编号 ${item.document_id.slice(0, 8)}`}>{label}{duplicate ? ` · ${item.document_id.slice(0, 8)}` : ""}{item.parse_status !== "ready" ? ` · ${item.parse_status === "failed" ? "处理失败" : "处理中"}` : ""}</span>; })}</div> : <small>只会使用你选中的当前课程资料。</small>}{materials.some(item => item.parse_status !== "ready") && <small>请等待处理完成；失败的文件请在资料选择中重试或移除。</small>}</div>

@@ -31,6 +31,7 @@ class PostgresStore:
         "conversation": "conversations",
         "message": "messages",
         "note_job": "note_jobs",
+        "quiz_job": "quiz_jobs",
         "export_job": "export_jobs",
         "review_session": "review_sessions",
         "knowledge_point": "knowledge_points",
@@ -126,6 +127,9 @@ class PostgresStore:
                 cursor.execute("SELECT to_regclass('public.export_jobs') AS table_name")
                 if cursor.fetchone()["table_name"] is None:
                     raise StorageError("缺少导出 Job 表；请先运行数据库迁移")
+                cursor.execute("SELECT to_regclass('public.quiz_jobs') AS table_name")
+                if cursor.fetchone()["table_name"] is None:
+                    raise StorageError("缺少试卷 Job 表；请先运行数据库迁移")
         except psycopg.Error as exc:
             raise StorageError("PostgreSQL 初始化检查失败") from exc
 
@@ -182,7 +186,11 @@ class PostgresStore:
         if table == "fast_quiz_session":
             names.append("session_id")
         if table == "quiz_revision_payload":
-            names.extend(["quiz_revision_id", "state"])
+            names.extend(["quiz_revision_id", "state", "asset_revision_id"])
+        if table == "question_revision":
+            names.extend(["question_revision_id", "quiz_revision_id"])
+        if table == "source_reference":
+            names.append("question_revision_id")
         return {key: data[key] for key in names if key in data}
 
     def put(self, table: str, key: str, data: dict):
@@ -596,6 +604,40 @@ class PostgresStore:
             )
             self.put("export_job", job_id, job)
         return True
+
+    def lock_quiz_request(self, key: str):
+        if not self._transaction_depth:
+            raise StorageError("任务锁必须在事务中执行")
+        self.connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", (key,))
+
+    def claim_quiz_job(self) -> dict | None:
+        from datetime import UTC, datetime, timedelta
+
+        with self.transaction(), self.connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT record_key,user_id,data FROM quiz_jobs WHERE "
+                "(data->>'status'='queued' AND (data->>'available_at')::timestamptz<=now()) "
+                "OR (data->>'status'='running' AND (data->>'lease_until')::timestamptz<now()) "
+                "ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1"
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            job = row["data"]
+            attempt = job["attempts"] + 1
+            if attempt > job["max_attempts"]:
+                job.update(status="failed", lease_until=None, error="生成多次中断，请重试")
+            else:
+                job.update(
+                    status="running",
+                    attempts=attempt,
+                    error=None,
+                    lease_until=(datetime.now(UTC) + timedelta(minutes=15)).isoformat(),
+                )
+            cursor.execute(
+                "UPDATE quiz_jobs SET data=%s WHERE record_key=%s", (Jsonb(job), row["record_key"])
+            )
+        return {**job, "user_id": str(row["user_id"])} if job["status"] == "running" else None
 
     def claim_note_job(self) -> dict | None:
         """Claim a queued note or an expired lease, across worker processes."""

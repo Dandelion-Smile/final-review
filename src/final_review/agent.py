@@ -13,6 +13,7 @@ from .config import Settings
 from .domain import DomainService
 from .llm import ModelError
 from .policy import SOURCE_PRIORITY
+from .quiz_config import merge_quiz_input, resolve_quiz_config
 from .schemas import (
     AgentRequest,
     AgentResponse,
@@ -23,7 +24,9 @@ from .schemas import (
     KnowledgePlan,
     NoteInput,
     Quiz,
+    QuizInput,
     ResumeNoteRequest,
+    ResumeQuizRequest,
     ResumeRequest,
     Submission,
 )
@@ -157,6 +160,7 @@ class FinalReviewAgent:
         for name, node in {
             "route": self._route,
             "exam_profile": self._profile,
+            "quiz_config": self._quiz_config,
             "note_parse": self._note_parse,
             "note_config": self._note_config,
             "note_generate": self._note_generate,
@@ -172,9 +176,14 @@ class FinalReviewAgent:
         graph.add_edge(START, "route")
         graph.add_conditional_edges(
             "route",
-            lambda s: {"quiz": "exam_profile", "note": "note_parse"}.get(s["intent"], "retrieve"),
-            ["exam_profile", "note_parse", "retrieve"],
+            lambda s: (
+                "quiz_config"
+                if s["intent"] == "quiz" and s["request"].get("quiz_input") is not None
+                else {"quiz": "exam_profile", "note": "note_parse"}.get(s["intent"], "retrieve")
+            ),
+            ["quiz_config", "exam_profile", "note_parse", "retrieve"],
         )
+        graph.add_edge("quiz_config", END)
         graph.add_edge("exam_profile", "retrieve")
         graph.add_edge("note_parse", "note_config")
         graph.add_edge("note_config", "note_generate")
@@ -217,8 +226,16 @@ class FinalReviewAgent:
                 else {}
             )
             incoming["owner_id"] = user_id
+            incoming["quiz_input"] = (
+                request.quiz_input.model_dump(mode="json", exclude_unset=True)
+                if request.quiz_input is not None
+                else None
+            )
             if incoming["exam_profile"] is None:
                 incoming["exam_profile"] = snapshot.values.get("request", {}).get("exam_profile")
+            if incoming["quiz_input"] is not None:
+                existing = self.store.get("review_session", key) or {}
+                self.store.put("review_session", key, {**existing, "pending_quiz_input": None})
             state = {
                 "request": incoming,
                 "run_id": uuid4().hex,
@@ -240,6 +257,42 @@ class FinalReviewAgent:
         with self._lock(key):
             self._pending(key, "exam_profile")
             return self._run(key, Command(resume=request.exam_profile.model_dump(mode="json")))
+
+    def resume_quiz(self, request: ResumeQuizRequest, user_id: str):
+        key = self._key(request.course_id, request.session_id)
+        with self._lock(key):
+            self._pending(key, "quiz_config")
+            snapshot = self.graph.get_state(self._config(key))
+            if snapshot.values["request"].get("owner_id") != user_id:
+                raise SessionConflict("会话所有者不匹配")
+            payload = next(i.value for task in snapshot.tasks for i in task.interrupts)
+            saved = self.store.get("review_session", key) or {}
+            combined = merge_quiz_input(
+                saved.get("pending_quiz_input") or payload["quiz_config"], request.quiz_input
+            )
+            # Validate ownership before consuming the pending interrupt.
+            result = resolve_quiz_config(self.store, user_id, request.course_id, combined)
+            if result.status != "ready":
+                partial = combined.model_dump(mode="json", exclude_unset=True)
+                response = AgentResponse(
+                    session_id=request.session_id,
+                    status="needs_input",
+                    prompt=result.prompt,
+                    quiz_config=partial,
+                )
+                self.store.put(
+                    "review_session",
+                    key,
+                    {
+                        **saved,
+                        "pending_quiz_input": partial,
+                        "response": response.model_dump(mode="json"),
+                    },
+                )
+                return response
+            return self._run(
+                key, Command(resume=combined.model_dump(mode="json", exclude_unset=True))
+            )
 
     def resume_note(self, request: ResumeNoteRequest, user_id: str | None = None):
         key = self._key(request.course_id, request.session_id)
@@ -347,6 +400,12 @@ class FinalReviewAgent:
                 "session_id": result["request"]["session_id"],
                 "response": response.model_dump(mode="json"),
                 "weak_points": result.get("weak_points", []),
+                "pending_quiz_input": (
+                    response.quiz_config
+                    if response.status == "needs_input"
+                    and result["request"].get("quiz_input") is not None
+                    else None
+                ),
             },
         )
         return response
@@ -357,19 +416,79 @@ class FinalReviewAgent:
             interruptions = [i for task in tasks for i in task.interrupts]
         if interruptions:
             payload = interruptions[0].value
+            if "quiz_config" in payload:
+                request = state["request"]
+                saved = (
+                    self.store.get(
+                        "review_session", self._key(request["course_id"], request["session_id"])
+                    )
+                    or {}
+                )
+                partial = saved.get("pending_quiz_input") or payload["quiz_config"]
+                result = resolve_quiz_config(
+                    self.store,
+                    request["owner_id"],
+                    request["course_id"],
+                    QuizInput.model_validate(partial),
+                )
+                payload = {**payload, "quiz_config": partial, "prompt": result.prompt}
             return AgentResponse(
                 session_id=state["request"]["session_id"],
                 status=payload["status"],
                 questions=payload.get("questions", []),
                 prompt=payload.get("prompt"),
                 note_config=state.get("note_input") if state.get("intent") == "note" else None,
+                quiz_config=payload.get("quiz_config"),
                 weak_points=state.get("weak_points", []),
             )
         return AgentResponse.model_validate(state["response"])
 
     def _route(self, state):
         intent = state["request"]["intent"]
-        return {"intent": self.model.route(state["request"]) if intent == "auto" else intent}
+        if intent == "auto" and state["request"].get("quiz_input") is not None:
+            return {"intent": "quiz"}
+        intent = self.model.route(state["request"]) if intent == "auto" else intent
+        if (
+            intent == "quiz"
+            and state["request"].get("quiz_input") is None
+            and any(
+                word in state["request"]["message"]
+                for word in ("试卷", "模拟卷", "模拟考试", "期末卷")
+            )
+        ):
+            return {"intent": intent, "request": {**state["request"], "quiz_input": {}}}
+        return {"intent": intent}
+
+    def _quiz_config(self, state):
+        request = state["request"]
+        owner = request.get("owner_id")
+        if owner is None:
+            raise ValueError("正式试卷配置需要用户身份")
+        partial = QuizInput.model_validate(request["quiz_input"])
+        result = resolve_quiz_config(self.store, owner, request["course_id"], partial)
+        if result.status != "ready":
+            additions = interrupt(
+                {
+                    "status": "needs_input",
+                    "prompt": result.prompt,
+                    "quiz_config": partial.model_dump(mode="json", exclude_unset=True),
+                }
+            )
+            partial = merge_quiz_input(
+                partial.model_dump(mode="json", exclude_unset=True),
+                QuizInput.model_validate(additions),
+            )
+            result = resolve_quiz_config(self.store, owner, request["course_id"], partial)
+        if result.status != "ready":
+            raise SessionConflict("试卷配置尚不完整，请继续补充配置")
+        return {
+            "response": AgentResponse(
+                session_id=request["session_id"],
+                status="configured",
+                answer="试卷配置已就绪，可提交正式试卷生成任务。",
+                quiz_config=result.config.model_dump(mode="json"),
+            ).model_dump(mode="json")
+        }
 
     def _profile(self, state):
         request = dict(state["request"])

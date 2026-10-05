@@ -38,6 +38,105 @@ async function createNote(request: APIRequestContext) {
   return { course, draft: result.draft };
 }
 
+test("notes page reuses generation dialogs and submits a recoverable note task", async ({ page, request }) => {
+  const { course } = await createNote(request);
+  let showProgress = true;
+  await page.route("**/api/courses/*/conversations/*/messages", route => showProgress
+    ? route.fulfill({ json: { items: [], active_note: { status: "running", stage: "正在生成第 1/4 部分",
+      coverage: { selected_files: 1, readable_chunks: 58, read_chunks: 40, partial: true } } } })
+    : route.continue());
+  await page.goto("/#notes");
+  const heading = page.locator(".notes-heading");
+  await expect(heading.getByRole("button", { name: "生成笔记" })).toBeVisible();
+  await expect(heading).not.toContainText("草稿先保存");
+  await expect(page.locator(".notes-footer-hint")).toHaveText("草稿先保存，核对后确认。每条考点都带着它的出处。");
+  await page.getByRole("button", { name: "生成笔记", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "补充笔记要求" });
+  await expect(dialog).toContainText("我的笔记 · 生成笔记");
+  await expect(dialog.getByRole("button", { name: "生成笔记", exact: true })).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(heading.getByRole("button", { name: "生成笔记" })).toBeFocused();
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
+  await page.screenshot({ path: "test-results/notes-generation-mobile.png", fullPage: true });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.screenshot({ path: "test-results/notes-generation-desktop.png", fullPage: true });
+  await heading.getByRole("button", { name: "生成笔记" }).click();
+  await dialog.getByRole("button", { name: "选择资料", exact: true }).click();
+  await page.getByRole("checkbox", { name: /TCP 讲义/ }).check();
+  await page.getByRole("button", { name: /确认选择/ }).click();
+  await expect(dialog).toContainText("TCP 讲义");
+  await dialog.getByRole("spinbutton", { name: "阅读时长（分钟）" }).fill("15");
+  await dialog.getByRole("textbox").fill("侧重三次握手的简答题得分点");
+  await dialog.getByRole("button", { name: "生成笔记", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page).toHaveURL(/#notes$/);
+  const task = page.getByRole("article", { name: "笔记生成任务" });
+  await expect(task).toContainText("正在生成第 1/4 部分");
+  await expect(task).toContainText("本次读取 40 个，部分覆盖");
+  await expect(task.getByRole("button", { name: "取消生成" })).toBeVisible();
+  await expect(heading.getByRole("button", { name: "生成笔记" })).toBeDisabled();
+  const storageKey = `notes-generation-${course.course_id}`;
+  expect(await page.evaluate(key => Boolean(localStorage.getItem(key)), storageKey)).toBeTruthy();
+  await page.reload();
+  await expect(task).toContainText("正在生成第 1/4 部分");
+  await page.screenshot({ path: "test-results/notes-progress-desktop.png", fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
+  await page.screenshot({ path: "test-results/notes-progress-mobile.png", fullPage: true });
+  showProgress = false;
+  await expect(task).toHaveCount(0, { timeout: 30_000 });
+  await expect(page.locator(".note-row")).toHaveCount(2);
+  await expect(page).toHaveURL(/#notes$/);
+  await expect(heading.getByRole("button", { name: "生成笔记" })).toBeEnabled();
+  expect(await page.evaluate(key => localStorage.getItem(key), storageKey)).toBeNull();
+  await page.locator(".note-row").first().click();
+  await expect(page.getByRole("region", { name: "笔记详情" })).toBeVisible();
+});
+
+test("notes generation restores failed tasks, retries and cancels without navigation", async ({ page, request }) => {
+  const { course } = await createNote(request);
+  const taskIds = { conversation: "notes-test-conversation", session: "notes-test-session", event: "notes-test-event",
+    input: { note_type: "chapter", duration_minutes: 10, scope: "", source_document_ids: ["test-doc"] } };
+  const storageKey = `notes-generation-${course.course_id}`;
+  await page.addInitScript(({ key, value }) => localStorage.setItem(key, JSON.stringify(value)), { key: storageKey, value: taskIds });
+  let status = "failed";
+  let disconnected = false;
+  await page.route("**/api/courses/*/conversations/*/messages", route => disconnected
+    ? route.fulfill({ status: 500, json: {} })
+    : route.fulfill({ json: { items: [], active_note: { status, job_id: "test-job", stage: "正在生成第 2/4 部分", error: "模型暂时不可用" } } }));
+  let retries = 0;
+  await page.route("**/agent/retry-note*", route => {
+    expect(new URL(route.request().url()).searchParams.get("job_id")).toBe("test-job");
+    retries += 1; status = "running";
+    return route.fulfill({ json: { status: "queued" } });
+  });
+  let cancellations = 0;
+  await page.route("**/agent/cancel-note*", route => {
+    expect(route.request().postDataJSON()).toEqual({ course_id: course.course_id, session_id: taskIds.session });
+    cancellations += 1;
+    return route.fulfill({ json: { cancelled: true } });
+  });
+  await page.goto("/#notes");
+  const task = page.getByRole("article", { name: "笔记生成任务" });
+  await expect(task).toContainText("模型暂时不可用");
+  await task.getByRole("button", { name: "重试生成" }).click();
+  await expect(task).toContainText("正在生成第 2/4 部分");
+  expect(retries).toBe(1);
+  disconnected = true;
+  await expect(task).toContainText("正在重新连接");
+  await expect(task.getByRole("button", { name: "取消生成" })).toBeVisible();
+  disconnected = false;
+  await expect(task.locator('[role="alert"]')).toHaveCount(0);
+  await task.getByRole("button", { name: "取消生成" }).click();
+  await expect(task).toHaveCount(0);
+  expect(cancellations).toBe(1);
+  expect(await page.evaluate(key => localStorage.getItem(key), storageKey)).toBeNull();
+  await expect(page).toHaveURL(/#notes$/);
+  await expect(page.locator(".notes-heading").getByRole("button", { name: "生成笔记" })).toBeEnabled();
+});
+
 test("confirmed note exports download three formats and print the selected revision", async ({ page, request }) => {
   const { draft } = await createNote(request);
   await page.goto(`/#note/${draft.asset_id}/${draft.revision_id}`);

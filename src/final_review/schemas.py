@@ -147,6 +147,100 @@ class ExamProfile(Model):
     excluded_topics: list[str] = Field(default_factory=list, max_length=30)
 
 
+class QuizBlueprintItem(Model):
+    question_type: QuestionType
+    question_count: int = Field(ge=1, le=100, strict=True)
+
+
+class QuizInput(Model):
+    """Partial user input. None means undecided; [] explicitly selects all sources."""
+
+    exam_id: Identifier | None = None
+    scope_mode: Literal["course", "chapter", "knowledge_points"] | None = None
+    chapter: Annotated[str, Field(max_length=200)] = ""
+    knowledge_points: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(
+        default_factory=list, max_length=100
+    )
+    blueprint: list[QuizBlueprintItem] | None = Field(default=None, min_length=1, max_length=6)
+    duration_mode: Literal["timed", "untimed"] | None = None
+    duration_minutes: int | None = Field(default=None, ge=1, le=240, strict=True)
+    difficulty: Literal["basic", "standard", "advanced", "mixed"] | None = None
+    emphasis: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(
+        default_factory=list, max_length=30
+    )
+    excluded_topics: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(
+        default_factory=list, max_length=30
+    )
+    include_imported_questions: bool | None = Field(default=None, strict=True)
+    source_document_ids: list[Identifier] | None = Field(default=None, max_length=100)
+    source_types: list[SourceType] = Field(default_factory=list, max_length=6)
+    allow_ai_supplement: bool | None = Field(default=None, strict=True)
+    total_score: float | None = Field(default=None, gt=0, le=10000, allow_inf_nan=False)
+    output_kind: Literal["quiz_draft"] = "quiz_draft"
+
+    @model_validator(mode="after")
+    def unique_blueprint(self):
+        if self.blueprint:
+            types = [item.question_type for item in self.blueprint]
+            if len(types) != len(set(types)):
+                raise ValueError("题型蓝图不能重复题型")
+            if sum(item.question_count for item in self.blueprint) > 100:
+                raise ValueError("正式试卷每次最多 100 题")
+        for values in (self.source_document_ids, self.source_types, self.knowledge_points):
+            if values is not None and len(values) != len(set(values)):
+                raise ValueError("资料、来源类型或知识点不能重复")
+        return self
+
+
+class ResolvedQuizConfig(QuizInput):
+    scope_mode: Literal["course", "chapter", "knowledge_points"]
+    blueprint: list[QuizBlueprintItem] = Field(min_length=1, max_length=6)
+    duration_mode: Literal["timed", "untimed"]
+    difficulty: Literal["basic", "standard", "advanced", "mixed"]
+    include_imported_questions: Literal[False]
+    source_document_ids: list[Identifier] = Field(min_length=1, max_length=100)
+    allow_ai_supplement: bool
+    contract_version: Literal[1] = 1
+    course_id: Identifier
+    user_id: Identifier
+    question_count: int = Field(ge=1, le=100)
+    exam_updated_at: str | None = None
+    material_versions: dict[str, str]
+
+    @model_validator(mode="after")
+    def complete_config(self):
+        if self.question_count != sum(item.question_count for item in self.blueprint):
+            raise ValueError("总题量与蓝图不一致")
+        if self.scope_mode == "chapter" and not self.chapter:
+            raise ValueError("章节范围需要章节")
+        if self.scope_mode == "knowledge_points" and not self.knowledge_points:
+            raise ValueError("知识点范围不能为空")
+        if (self.duration_mode == "timed") != (self.duration_minutes is not None):
+            raise ValueError("限时需要分钟数，不限时不能带分钟数")
+        if set(self.emphasis) & set(self.excluded_topics):
+            raise ValueError("重点与排除内容冲突")
+        if set(self.knowledge_points) & set(self.excluded_topics):
+            raise ValueError("知识点与排除内容冲突")
+        if self.scope_mode == "course" and (self.chapter or self.knowledge_points):
+            raise ValueError("全课程范围不能同时限定章节或知识点")
+        if "ai_supplement" in self.source_types:
+            raise ValueError("AI 补充不能作为资料类型")
+        if set(self.material_versions) != set(self.source_document_ids):
+            raise ValueError("资料版本快照不完整")
+        return self
+
+
+class ResumeQuizRequest(Model):
+    course_id: Identifier
+    session_id: Identifier
+    quiz_input: QuizInput
+
+
+class QuizConfigRequest(Model):
+    quiz_input: QuizInput
+    conversation_id: Identifier | None = None
+
+
 NoteType = Literal["chapter", "key_points", "qa_cards", "mnemonic"]
 AudienceLevel = Literal["beginner", "intermediate", "advanced"]
 
@@ -172,6 +266,7 @@ class AgentRequest(Model):
     chapter: Annotated[str, Field(max_length=200)] = ""
     exam_profile: ExamProfile | None = None
     note_input: NoteInput | None = None
+    quiz_input: QuizInput | None = None
 
 
 class ChatMessage(Model):
@@ -193,6 +288,7 @@ class ChatRequest(Model):
     retrieval_action: Literal["general", "overview", "search", "read"] = "search"
     retrieval_query: Annotated[str, Field(max_length=2000)] = ""
     overview_kind: Literal["course", "statistics", "list", "all"] = "all"
+    quiz_input: QuizInput | None = None
 
 
 class ChatDecision(Model):
@@ -205,11 +301,13 @@ class ChatDecision(Model):
     materials_only: bool | None = None
     clarification: Annotated[str, Field(max_length=500)] = ""
     task_message: Annotated[str, Field(max_length=4000)] = ""
-    question_count: int = Field(default=5, ge=1, le=10)
+    question_count: int = Field(default=5, ge=1, le=36)
     question_types: list[QuestionType] = Field(
         default_factory=lambda: ["short_answer"], min_length=1, max_length=6
     )
     random: bool = True
+    quiz_mode: Literal["practice", "draft"] = "practice"
+    quiz_input: QuizInput | None = None
 
 
 class ChatResponse(Model):
@@ -376,6 +474,12 @@ class GeneratedNote(Model):
     points: list[NotePoint] = Field(min_length=1, max_length=100)
 
 
+class QuizJobRequest(Model):
+    quiz_input: QuizInput
+    conversation_id: Identifier | None = None
+    model_id: Identifier | None = None
+
+
 class AgentResponse(Model):
     session_id: str
     status: Literal[
@@ -390,6 +494,7 @@ class AgentResponse(Model):
     prompt: dict | None = None
     note_config: dict | None = None
     draft: dict | None = None
+    quiz_config: dict | None = None
 
     @model_validator(mode="after")
     def public_questions(self):

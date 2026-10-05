@@ -12,6 +12,7 @@ from final_review.config import ChatModelConfig, Settings
 from final_review.export_jobs import process_export_job
 from final_review.material_jobs import process_material_job
 from final_review.note_jobs import process_note_job
+from final_review.quiz_jobs import process_quiz_job
 from final_review.rag import KnowledgeBase
 
 
@@ -57,6 +58,21 @@ def app():
                     else "ask"
                 )
                 content = '{"intent":"' + intent + '"}'
+                if message == "帮我测测TCP掌握得怎么样，8道选择题和2道简答，基础难度":
+                    content = json.dumps(
+                        {
+                            "intent": "quiz",
+                            "quiz_mode": "draft",
+                            "quiz_input": {
+                                "chapter": "TCP",
+                                "difficulty": "basic",
+                                "blueprint": [
+                                    {"question_type": "choice", "question_count": 8},
+                                    {"question_type": "short_answer", "question_count": 2},
+                                ],
+                            },
+                        }
+                    )
             else:
                 content = "可以继续聊天"
             return SimpleNamespace(
@@ -105,6 +121,18 @@ def app():
                 time.sleep(0.1)
 
     Thread(target=note_work, daemon=True).start()
+
+    def quiz_work():
+        import time
+
+        while True:
+            job = store.claim_quiz_job()
+            if job:
+                process_quiz_job(store, agent.model, settings, job)
+            else:
+                time.sleep(0.1)
+
+    Thread(target=quiz_work, daemon=True).start()
 
     def export_work():
         import time

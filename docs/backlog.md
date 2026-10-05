@@ -350,9 +350,9 @@
 - **范围**：考试、章节/知识点、题型、数量、时长、难度、重点、导入题开关与来源约束 schema。
 - **非范围**：编辑页面、在线作答、导出。
 - **验收标准**：未指定关键配置会澄清；题型/数量/来源均可验证；来源标签不伪造。
-- **测试命令**：BE；`uv run pytest -q tests/test_agent.py tests/test_llm.py`。
-- **状态**：待开发
-- **通过情况**：未通过（尚未开发）；必须在 **M3-02** Quiz/Question draft 生成之前完成。
+- **测试命令**：BE；`uv run pytest -q tests/test_m3_quiz_config.py tests/test_m3_quiz_contract.py tests/test_agent.py tests/test_llm.py tests/test_course_chat.py`；FE。
+- **状态**：已完成
+- **通过情况**：已通过；2026-10-04 后端全套 264 项通过、29 项环境依赖测试跳过，Ruff lint/format、前端构建及 diff 检查通过。完整配置、考试预填/覆盖、多轮澄清及重启恢复、owner/course/ready 校验、对话资料/章节范围上限、资料版本快照、六类题型结构、题型/知识点数量配额、分值/顺序及来源校验均已覆盖。来源标签由后端继承或标为综合改编/AI 补充，候选 payload 禁止自报标签；导入题开关为 true 时明确返回能力冲突。正式请求配置就绪后返回 configured，保留快速练习兼容路径；结构化计划和候选输出合同可供 M3-02 接入，尚不发布 Quiz/QuestionRevision 或创建 Attempt。接口、边界与验证证据见 [quiz-generation-contract.md](quiz-generation-contract.md)。本卡完成后 **M3-02** 的配置合同前置已满足；真实模型语义质量及正式 revision 发布仍由 M3-02 验证。
 
 ### M3-02：生成可编辑 Quiz/Question draft revisions
 
@@ -362,8 +362,8 @@
 - **非范围**：确认、用户编辑 UI、开始测试。
 - **验收标准**：每题满足所选题型；无可信来源不得标为材料题；draft 不可用于正式 Attempt。
 - **测试命令**：BE；Quiz generation/validation tests。
-- **状态**：待开发
-- **通过情况**：未通过（尚未开发）；必须在 **M3-03** 试卷编辑、确认与打印之前完成。
+- **状态**：已完成
+- **通过情况**：已通过；2026-10-04 接通聊天配置确认到持久 Quiz Job、独立 worker、出题计划/候选、确定性校验、逐题语义复核和共用最多两次修复预算。原子保存 Quiz/Question draft revisions、分值/顺序、答案/解析/得分点、逐题来源与审计，原对话刷新及“模拟测验”列表可找回和预览。后端全套 287 通过、33 跳过；相关专项 110 通过；随机隔离 PostgreSQL 的迁移及试卷验证 24 通过；浏览器全套 43 通过，前端构建与 Ruff 通过。Qwen 真实模型在合成 TCP 样本上生成 2 题/20 分，一次引用修复后复核并保存，约 57.09 秒；此前不合格候选均被阻断。仅迁移临时测试库，未修改用户课程或重启服务；启用需迁移 009 并启动试卷 worker。编辑、确认、打印及正式 Attempt 仍属后续卡。证据见 [M3-02 验收记录](m3-02-acceptance-2026-10-04.md)。
 
 ### M3-03：实现试卷编辑、确认和两种打印版
 

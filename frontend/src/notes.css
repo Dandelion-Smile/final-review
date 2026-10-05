@@ -4,6 +4,7 @@
   padding: 34px 40px 60px;
   color: #193650;
 }
+.notes-page:not(.note-detail) { padding-top: 22px; }
 .notes-heading small,
 .note-detail-head small {
   color: #637a87;
@@ -20,8 +21,18 @@
   color: #347464;
   font-style: normal;
 }
-.notes-heading p {
-  color: #637a87;
+.notes-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+.notes-heading h1 { margin: 8px 0 0; }
+.notes-generate { flex-shrink: 0; }
+.notes-footer-hint {
+  margin: 20px 0 0;
+  color: #858b90;
+  font-size: 12px;
   line-height: 1.7;
 }
 .notes-page button,
@@ -79,7 +90,7 @@
 .notes-filters {
   display: flex;
   gap: 8px;
-  margin: 28px 0 18px;
+  margin: 18px 0 14px;
 }
 .notes-filters button[aria-pressed="true"],
 .note-source-docs button[aria-pressed="true"] {
@@ -89,11 +100,22 @@
 .notes-list {
   border-top: 1px solid #dce4de;
 }
+.notes-generation-tasks:empty { display: none; }
+.notes-list:has(.notes-generation-row) .notes-empty { display: none; }
+.notes-generation-row { padding: 18px 8px; border-bottom: 1px solid #dce4de; }
+.notes-generation-row > small { display: block; margin-bottom: 10px; color: #637a87; font-size: 13px; }
+.notes-generation-row .note-job-copy > span { display: flex; align-items: center; gap: 10px; }
+.notes-generation-row .note-job-actions .note-job-retry { background: #174f73; color: #fff; }
+.notes-generation-error { margin: 10px 0 0; color: #923b2b; font-size: 13px; }
+.notes-generation-spinner { width: 14px; height: 14px; flex: none; border: 2px solid #cbdcd5; border-top-color: #347464; border-radius: 50%; animation: notes-generation-spin 1s linear infinite; }
+.notes-generation-row.failed .note-job-status { background: #fff8f0; box-shadow: inset 3px 0 #b28b52; }
+@keyframes notes-generation-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .notes-generation-spinner { animation: none; } }
 .note-row {
   display: flex;
   justify-content: space-between;
   gap: 24px;
-  padding: 24px 8px;
+  padding: 18px 8px;
   border-bottom: 1px solid #dce4de;
   text-decoration: none;
   color: #193650 !important;
@@ -467,6 +489,7 @@
   .note-detail h1 {
     font-size: 28px;
   }
+  .notes-heading { flex-wrap: wrap; gap: 12px; }
   .note-row {
     flex-direction: column;
     gap: 14px;

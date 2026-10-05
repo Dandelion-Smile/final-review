@@ -18,6 +18,7 @@
 | 反馈闭环 | 出题 → 用户作答 → 评分 → 更新会话薄弱点 → 下一轮优先覆盖 |
 | 恢复 | 自定义 PostgreSQL Checkpointer，保存图状态、父检查点、pending writes |
 | 笔记复核 | “我的笔记”找回草稿、按考点编辑 Markdown 和引用、差异预览、确认归档与不可变正式版本历史；见 [笔记编辑与确认](docs/note-review.md) |
+| 正式试卷草稿 | 配置确认后后台生成，校验题型/分值/引用并逐题复核；持久化 Quiz/Question revisions，在原对话与“模拟测验”找回并预览答案和来源；见 [试卷草稿生成](docs/quiz-draft-generation.md) |
 | 交付 | FastAPI /docs、JSON 响应、题答分离 Markdown 导出、Docker Compose |
 
 ```mermaid
@@ -66,6 +67,8 @@ uv run uvicorn final_review.api:create_app --factory --host 127.0.0.1 --port 808
 uv run python -m final_review.material_jobs
 # 在第三个终端启动笔记生成 worker
 uv run python -m final_review.note_jobs
+# 在独立终端启动正式试卷生成 worker（使用用户选择的聊天模型）
+uv run python -m final_review.quiz_jobs
 # 首次使用 PDF 导出先安装 Chromium
 uv run playwright install chromium
 # 在第四个终端启动笔记导出 worker（无需模型 Key）
@@ -101,6 +104,7 @@ docker compose up --build -d
 | --- | --- |
 | LLM_API_KEY / LLM_BASE_URL / LLM_MODEL | 聊天模型，须支持工具调用 |
 | NOTE_MODEL_TIMEOUT / NOTE_MODEL_MAX_RETRIES | 笔记 worker 单次模型请求超时（默认 120 秒）和底层重试次数（默认 1）；独立于网页聊天的 MODEL_TIMEOUT |
+| QUIZ_MODEL_TIMEOUT / QUIZ_MAX_REPAIRS | 正式试卷单次模型请求超时（默认 120 秒）与计划/候选共用的修复预算（默认 2）；失败任务可手动重试 |
 | EXPORTS_DIR | 私有导出文件目录（默认 exports）；后端与导出 worker 必须指向同一目录，不可作为静态目录公开 |
 | EXPORT_PANDOC_EXECUTABLE / EXPORT_CHROMIUM_EXECUTABLE | 可选转换器绝对路径；默认使用随依赖安装的 Pandoc 和 Playwright Chromium |
 | EMBEDDING_API_KEY / EMBEDDING_BASE_URL / EMBEDDING_MODEL | Embedding 提供商 |

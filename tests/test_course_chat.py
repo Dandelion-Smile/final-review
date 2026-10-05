@@ -89,6 +89,75 @@ def chat_setup(system, monkeypatch):
         )
 
 
+def test_formal_quiz_chat_clarifies_without_fast_generation(chat_setup, monkeypatch):
+    setup = chat_setup
+    setup.decisions["出一套模拟卷"] = {
+        "intent": "quiz",
+        "quiz_mode": "draft",
+        "question_count": 20,
+        "chapter": "TCP",
+        "source_document_ids": [setup.document_id],
+        "quiz_input": {"chapter": "TCP"},
+    }
+    setup.decisions["基础难度"] = {
+        "intent": "quiz",
+        "quiz_mode": "draft",
+        "quiz_input": {"difficulty": "basic"},
+    }
+    setup.decisions["一题简答，不限时，不纳入导入题，不允许AI补充"] = {
+        "intent": "quiz",
+        "quiz_mode": "draft",
+        "quiz_input": {
+            "blueprint": [{"question_type": "short_answer", "question_count": 1}],
+            "duration_mode": "untimed",
+            "include_imported_questions": False,
+            "allow_ai_supplement": False,
+        },
+    }
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("正式试卷配置不能调用快速练习模型")
+
+    monkeypatch.setattr("final_review.api.build_fast_quiz_model", forbidden)
+    first = send(setup, "出一套模拟卷")
+    assert first.status_code == 200
+    assert first.json()["status"] == "needs_input"
+    assert "difficulty" in first.json()["quiz_configuration"]["missing"]
+    second = send(setup, "基础难度")
+    assert second.status_code == 200
+    assert "difficulty" not in second.json()["quiz_configuration"]["missing"]
+    third = send(setup, "一题简答，不限时，不纳入导入题，不允许AI补充")
+    assert third.status_code == 200
+    assert third.json()["status"] == "needs_input"
+    assert third.json()["quiz_configuration"]["status"] == "ready"
+    confirmed = setup.client.post(
+        "/api/chat/dispatch",
+        json={
+            "course_id": setup.course_id,
+            "conversation_id": "one",
+            "model_id": "selected",
+            "message": "确认试题配置",
+            "quiz_input": third.json()["quiz_configuration"]["quiz_input"],
+        },
+    )
+    assert confirmed.json()["status"] == "queued"
+    assert third.json()["quiz_configuration"]["config"]["source_document_ids"] == [
+        setup.document_id
+    ]
+    assert "pending_quiz" in setup.calls[-1]["messages"][0]["content"]
+
+
+def test_practice_request_opens_configuration_instead_of_fast_generation(chat_setup):
+    setup = chat_setup
+    setup.decisions["来20道练习题"] = {"intent": "quiz", "question_count": 20}
+    result = send(setup, "来20道练习题")
+    assert result.status_code == 200
+    assert result.json()["kind"] == "chat"
+    assert result.json()["status"] == "needs_input"
+    assert "blueprint" in result.json()["quiz_configuration"]["missing"]
+    assert "quiz" not in result.json()
+
+
 def send(setup, message, conversation="one"):
     return setup.client.post(
         "/api/chat/dispatch",
@@ -219,46 +288,69 @@ def test_invalid_citation_is_repaired_and_never_persisted(chat_setup):
     assert [row["role"] for row in history] == ["user"]
 
 
-def test_random_quiz_is_real_restorable_and_hides_answers(chat_setup, monkeypatch):
+def test_quiz_dialog_restores_and_cancels_without_generating(chat_setup, monkeypatch):
     setup = chat_setup
-    setup.decisions["随机出五道题"] = {"intent": "quiz", "question_count": 5}
+    setup.decisions["给我测试一下掌握情况"] = {
+        "intent": "quiz",
+        "quiz_input": {"difficulty": "basic"},
+    }
 
-    class QuizModel:
-        def fast_quiz(self, data):
-            return {
-                "questions": [
-                    {
-                        "id": f"q{index}",
-                        "stem": f"握手第{index}步的作用？",
-                        "knowledge_point": f"握手{index}",
-                        "question_type": "short_answer",
-                        "options": [],
-                        "reference_answer": "同步序列号",
-                        "explanation": "确认收发能力",
-                        "must_include": [],
-                        "source_chunk_ids": [data["evidence"][0]["chunk_id"]],
-                    }
-                    for index in range(5)
-                ]
-            }
+    def forbidden(*args, **kwargs):
+        raise AssertionError("配置确认前不能调用出题模型")
 
-    monkeypatch.setattr("final_review.api.build_fast_quiz_model", lambda *_: QuizModel())
-    result = send(setup, "随机出五道题")
-    assert result.status_code == 200, result.text
-    assert result.json()["kind"] == "quiz"
-    session_id = result.json()["quiz"]["session_id"]
-    path = f"/api/courses/{setup.course_id}/chat-quizzes/{session_id}"
-    questions = setup.client.get(path).json()["questions"]
-    assert len(questions) == 5
-    assert "reference_answer" not in questions[0]
-    assert questions[0]["citations"][0]["file_name"] == "老师课件.pptx"
-    answered = setup.client.get(path + "?include_answers=true").json()["questions"]
-    assert answered[0]["reference_answer"]
-    history = setup.client.get(f"/api/courses/{setup.course_id}/conversations/one/messages").json()[
-        "items"
-    ]
-    assert history[-1]["quiz"] == result.json()["quiz"]
-    assert setup.client.get(f"/api/courses/net/chat-quizzes/{session_id}").status_code == 404
+    monkeypatch.setattr("final_review.api.build_fast_quiz_model", forbidden)
+    result = send(setup, "给我测试一下掌握情况")
+    assert result.json()["status"] == "needs_input"
+    path = f"/api/courses/{setup.course_id}/conversations/one"
+    pending = setup.client.get(path + "/messages").json()["pending_quiz"]
+    assert pending["quiz_input"]["difficulty"] == "basic"
+    assert setup.client.post(path + "/cancel-quiz").json()["cancelled"]
+    assert setup.client.get(path + "/messages").json()["pending_quiz"] is None
+    assert setup.system.store.scan("fast_quiz_session", {}) == []
+    assert send(setup, "给我测试一下掌握情况").json()["status"] == "needs_input"
+
+
+def test_discussing_quizzes_does_not_open_configuration(chat_setup):
+    result = send(chat_setup, "模拟试卷一般如何设计？")
+    assert result.json()["intent"] == "ask"
+    assert "quiz_configuration" not in result.json()
+
+
+def test_complete_model_input_still_waits_for_confirmation_and_cancel_preserves_saved_config(
+    chat_setup,
+):
+    setup = chat_setup
+    explicit = {
+        "scope_mode": "course",
+        "blueprint": [{"question_type": "choice", "question_count": 8}],
+        "difficulty": "basic",
+        "duration_mode": "untimed",
+        "source_document_ids": [],
+        "allow_ai_supplement": False,
+        "include_imported_questions": False,
+    }
+    setup.decisions["要求已说完整"] = {"intent": "quiz", "quiz_input": explicit}
+    result = send(setup, "要求已说完整").json()
+    assert result["status"] == "needs_input"
+    assert result["quiz_configuration"]["status"] == "ready"
+    confirmed = setup.client.post(
+        "/api/chat/dispatch",
+        json={
+            "course_id": setup.course_id,
+            "conversation_id": "one",
+            "model_id": "selected",
+            "message": "确认试题配置",
+            "quiz_input": explicit,
+        },
+    )
+    assert confirmed.json()["status"] == "queued"
+    assert send(setup, "要求已说完整").json()["status"] == "needs_input"
+    setup.client.post(f"/api/courses/{setup.course_id}/conversations/one/cancel-quiz")
+    from final_review.storage import stable_key
+
+    saved = setup.system.store.get("conversation", stable_key(setup.course_id, "one"))
+    assert saved["pending_quiz"] is None
+    assert saved["quiz_config"]["question_count"] == 8
 
 
 def test_sampling_covers_files_and_bounded_read_reports_partial(chat_setup):

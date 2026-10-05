@@ -52,6 +52,16 @@ services:
       agent:
         condition: service_healthy
     restart: on-failure:3
+  quiz-worker:
+    build: .
+    command: ["uv", "run", "--no-sync", "python", "-m", "final_review.quiz_jobs"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://final_review:${POSTGRES_PASSWORD}@postgres:5432/final_review
+    depends_on:
+      agent:
+        condition: service_healthy
+    restart: on-failure:3
   export-worker:
     build: .
     command: ["uv", "run", "--no-sync", "python", "-m", "final_review.export_jobs"]

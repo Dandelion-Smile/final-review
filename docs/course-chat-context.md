@@ -33,13 +33,17 @@
 
 ## 调用路径
 
-`POST /api/chat/dispatch` 返回 `kind=chat|note|quiz`：
+`POST /api/chat/dispatch` 当前返回 `kind=chat|note`（客户端继续兼容历史 quiz 题卡）：
 
 - chat：`reply`、`model` 和真实的 `citations`。
 - note：沿用笔记配置与后台任务流程；指定资料不超过已有五份限制时预填选择。
-- quiz：生成并保存真实练习题，返回 `session_id` 与 `question_count`。
+- 模型判断为 quiz：返回 `kind=chat`、`intent=quiz`、`status=needs_input` 和
+  `quiz_configuration`，前端据此打开与笔记同主题的试题配置弹窗。所有聊天出题请求均先确认，
+  包括自然语言已给齐参数的请求。结构化确认成功后返回 configured，当前 M3-01 只保存配置。
+  刷新通过 messages 的 pending_quiz 恢复；取消接口清除待确认配置。详见
+  [试卷配置合同](quiz-generation-contract.md)。
 
-`GET /api/courses/{course_id}/chat-quizzes/{session_id}` 读取题目与来源；
+`GET /api/courses/{course_id}/chat-quizzes/{session_id}` 继续读取历史练习题与来源；
 用户点击查看答案后使用 `include_answers=true` 读取答案与解析。
 资料来源跳转复用现有资料片段预览器。
 
@@ -50,7 +54,8 @@
 ## 边界
 
 - 单轮直接资料读取预算为 60,000 字符，随机取材预算为 24,000 字符；超过预算时明确说明部分覆盖。
-- 随机练习沿用现有接口每次 1～10 题的限制；笔记配置沿用每次最多五份资料的限制。
+- 独立快速练习接口沿用每次 1～10 题的限制；聊天试题配置最多 36 题、100 份资料；
+  笔记配置沿用每次最多五份资料的限制。
 - 资料未就绪、已删除或超出范围时明确返回原因，不默默扩大读取范围。
 - 字段校验能确认引用位置真实；生成内容的语义正确性仍需结合原文核对。
 - 本次不增加跨对话记忆或每门课单独的风格设置。

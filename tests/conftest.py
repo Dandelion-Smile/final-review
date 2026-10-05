@@ -36,6 +36,27 @@ class MemoryStore:
                     return deepcopy(job)
         return None
 
+    def claim_quiz_job(self):
+        from datetime import UTC, datetime, timedelta
+
+        with self.lock:
+            now = datetime.now(UTC)
+            for job in self.tables.get("quiz_job", {}).values():
+                if job["status"] == "queued" or (
+                    job["status"] == "running" and datetime.fromisoformat(job["lease_until"]) < now
+                ):
+                    job["attempts"] += 1
+                    if job["attempts"] > job["max_attempts"]:
+                        job.update(status="failed", error="生成多次中断，请重试", lease_until=None)
+                        continue
+                    job.update(
+                        status="running",
+                        error=None,
+                        lease_until=(now + timedelta(minutes=15)).isoformat(),
+                    )
+                    return deepcopy(job)
+        return None
+
     def claim_export_job(self):
         from datetime import UTC, datetime, timedelta
 
@@ -355,6 +376,29 @@ class TestEmbeddings(Embeddings):
 
 
 class ScriptedModel:
+    def quiz_draft_plan(self, context, issues=None):
+        from quiz_fixture import fixture_plan
+
+        return fixture_plan(context)
+
+    def quiz_draft(self, context, plan):
+        from quiz_fixture import fixture_draft
+
+        return fixture_draft(context, plan)
+
+    def review_quiz_draft(self, context, draft):
+        return {
+            "items": [
+                {"question_id": q["id"], "supported": True, "issues": []}
+                for q in draft["questions"]
+            ]
+        }
+
+    def repair_quiz_draft(self, context, plan, draft, issues):
+        from final_review.quiz_contract import QuizDraftPlan
+
+        return self.quiz_draft(context, QuizDraftPlan.model_validate(plan))
+
     """Deterministic model responses for workflow tests, never claimed as LLM evaluation."""
 
     def __init__(self):

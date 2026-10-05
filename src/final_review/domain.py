@@ -757,6 +757,8 @@ class DomainService:
         base = self._owned("asset_revision", payload["base_revision_id"])
         if base.get("points"):
             raise DomainConflict("请使用笔记编辑接口，以保留逐条来源")
+        if base.get("quiz_contract_version"):
+            raise DomainConflict("请使用试卷编辑接口，以保留题目与来源关系")
         if base.get("asset_id") != asset_id:
             raise DomainConflict("不能跨资产编辑版本")
         revisions = self.store.scan("asset_revision", {"course_id": asset["course_id"]})
@@ -793,6 +795,8 @@ class DomainService:
             )
             if revision.get("points") and not reviewed:
                 raise DomainConflict("请先查看笔记确认预览")
+            if revision.get("quiz_contract_version"):
+                raise DomainConflict("正式试卷确认将在试卷复核流程中开放")
             if asset.get("status") == "archived":
                 raise DomainConflict("已归档资产不能确认新版本")
             if self._latest_note(asset)["revision_id"] != revision_id:
