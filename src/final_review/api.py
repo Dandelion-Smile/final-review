@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
+from typing import Literal
 from uuid import uuid4
 
 from fastapi import (
@@ -37,12 +38,25 @@ from .exports import (
     public_export,
     read_export,
 )
+from .formal_attempt import (
+    list_formal_attempts,
+    read_formal_attempt,
+    save_formal_answer,
+    start_formal_attempt,
+    submit_formal_attempt,
+)
+from .formal_grading import grade_formal_attempt
+from .formal_result import ask_quiz_followup, read_formal_result
 from .llm import ModelError, build_fast_quiz_model, build_models, build_review_model
 from .material_conversion import SUPPORTED_SUFFIXES
 from .postgres import PostgresStore
 from .quiz_config import merge_quiz_input, resolve_quiz_config
+from .quiz_edit import save_quiz_revision
+from .quiz_edit_contract import QuizRevisionEdit
 from .quiz_generation import read_quiz
 from .quiz_jobs import enqueue_quiz, owned_job, public_quiz_job, retry_quiz
+from .quiz_print import print_quiz_revision
+from .quiz_review import confirm_quiz_revision, quiz_confirm_preview, review_quiz_revision
 from .rag import KnowledgeBase
 from .rendering import render_markdown
 from .schemas import (
@@ -64,6 +78,7 @@ from .schemas import (
     ExamUpdate,
     FastQuizRequest,
     FastQuizSubmission,
+    FormalAnswerSave,
     Identifier,
     MaterialDelete,
     MaterialInput,
@@ -73,6 +88,8 @@ from .schemas import (
     NoteExportCreate,
     NoteRevisionEdit,
     QuizConfigRequest,
+    QuizConfirm,
+    QuizFollowUpRequest,
     QuizInput,
     QuizJobRequest,
     ResumeNoteRequest,
@@ -2094,6 +2111,72 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
             )
         }
 
+    @app.post(
+        "/api/courses/{course_id}/quizzes/{asset_id}/revisions",
+        dependencies=[Depends(authorize)],
+    )
+    def edit_quiz_revision(
+        course_id: Identifier,
+        asset_id: Identifier,
+        request: QuizRevisionEdit,
+        user: CurrentUser = Depends(authorize),
+    ):
+        require_course(course_id, user)
+        return save_quiz_revision(conversation_store(), user.id, course_id, asset_id, request)
+
+    @app.post(
+        "/api/courses/{course_id}/quizzes/{asset_id}/revisions/{revision_id}/review",
+        dependencies=[Depends(authorize)],
+    )
+    def review_edited_quiz(
+        course_id: Identifier,
+        asset_id: Identifier,
+        revision_id: Identifier,
+        user: CurrentUser = Depends(authorize),
+    ):
+        require_course(course_id, user)
+        store = conversation_store()
+        paper = read_quiz(store, user.id, course_id, asset_id, revision_id)
+        model_id = paper["revision"].get("model_id")
+        reviewer = runtime(None if local_test_mode else model_id).model
+        return review_quiz_revision(
+            store, user.id, course_id, asset_id, revision_id, reviewer, model_id or "default"
+        )
+
+    @app.post(
+        "/api/courses/{course_id}/quizzes/{asset_id}/revisions/{revision_id}/confirm-preview",
+        dependencies=[Depends(authorize)],
+    )
+    def preview_quiz_confirmation(
+        course_id: Identifier,
+        asset_id: Identifier,
+        revision_id: Identifier,
+        user: CurrentUser = Depends(authorize),
+    ):
+        require_course(course_id, user)
+        return quiz_confirm_preview(conversation_store(), user.id, course_id, asset_id, revision_id)
+
+    @app.post(
+        "/api/courses/{course_id}/quizzes/{asset_id}/revisions/{revision_id}/confirm",
+        dependencies=[Depends(authorize)],
+    )
+    def confirm_edited_quiz(
+        course_id: Identifier,
+        asset_id: Identifier,
+        revision_id: Identifier,
+        request: QuizConfirm,
+        user: CurrentUser = Depends(authorize),
+    ):
+        require_course(course_id, user)
+        return confirm_quiz_revision(
+            conversation_store(),
+            user.id,
+            course_id,
+            asset_id,
+            revision_id,
+            request.confirmation_id,
+        )
+
     @app.get(
         "/api/courses/{course_id}/quizzes/{asset_id}/revisions/{revision_id}",
         dependencies=[Depends(authorize)],
@@ -2106,6 +2189,155 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
     ):
         require_course(course_id, user)
         return read_quiz(conversation_store(), user.id, course_id, asset_id, revision_id)
+
+    @app.get(
+        "/api/courses/{course_id}/quizzes/{asset_id}/revisions/{revision_id}/print",
+        dependencies=[Depends(authorize)],
+    )
+    def get_quiz_print(
+        course_id: Identifier,
+        asset_id: Identifier,
+        revision_id: Identifier,
+        variant: Literal["questions", "answers"],
+        user: CurrentUser = Depends(authorize),
+    ):
+        require_course(course_id, user)
+        return print_quiz_revision(
+            conversation_store(), user.id, course_id, asset_id, revision_id, variant
+        )
+
+    @app.post(
+        "/api/courses/{course_id}/quizzes/{asset_id}/attempts",
+        dependencies=[Depends(authorize)],
+    )
+    def start_quiz_attempt(
+        course_id: Identifier, asset_id: Identifier, user: CurrentUser = Depends(authorize)
+    ):
+        require_course(course_id, user)
+        return start_formal_attempt(conversation_store(), user.id, course_id, asset_id)
+
+    @app.get(
+        "/api/courses/{course_id}/formal-attempts",
+        dependencies=[Depends(authorize)],
+    )
+    def list_quiz_attempts(course_id: Identifier, user: CurrentUser = Depends(authorize)):
+        require_course(course_id, user)
+        return list_formal_attempts(conversation_store(), user.id, course_id)
+
+    @app.get(
+        "/api/courses/{course_id}/formal-attempts/{attempt_id}",
+        dependencies=[Depends(authorize)],
+    )
+    def get_quiz_attempt(
+        course_id: Identifier, attempt_id: Identifier, user: CurrentUser = Depends(authorize)
+    ):
+        require_course(course_id, user)
+        return read_formal_attempt(conversation_store(), user.id, course_id, attempt_id)
+
+    @app.put(
+        "/api/courses/{course_id}/formal-attempts/{attempt_id}/answers",
+        dependencies=[Depends(authorize)],
+    )
+    def save_quiz_answer(
+        course_id: Identifier,
+        attempt_id: Identifier,
+        request: FormalAnswerSave,
+        user: CurrentUser = Depends(authorize),
+    ):
+        require_course(course_id, user)
+        return save_formal_answer(
+            conversation_store(),
+            user.id,
+            course_id,
+            attempt_id,
+            request.question_revision_id,
+            request.answer,
+            request.expected_version,
+        )
+
+    @app.post(
+        "/api/courses/{course_id}/formal-attempts/{attempt_id}/submit",
+        dependencies=[Depends(authorize)],
+    )
+    def submit_quiz_attempt(
+        course_id: Identifier, attempt_id: Identifier, user: CurrentUser = Depends(authorize)
+    ):
+        require_course(course_id, user)
+        submitted = submit_formal_attempt(conversation_store(), user.id, course_id, attempt_id)
+        try:
+            return grade_attempt(course_id, attempt_id, user)
+        except (DomainConflict, ModelError, ValueError):
+            return {**submitted, "grading_error": "作答已提交，评分暂未完成，请稍后重试"}
+
+    def model_for_attempt(course_id, attempt_id, user):
+        store = conversation_store()
+        detail = read_formal_attempt(store, user.id, course_id, attempt_id)
+        payload = store.get("quiz_revision_payload", detail["attempt"]["quiz_revision_id"])
+        model_id = payload.get("model_id")
+        reviewer = (
+            runtime().model
+            if local_test_mode
+            else (app.state.agents[model_id].model if model_id in app.state.agents else None)
+        )
+        try:
+            model_version = settings.get_chat_model(model_id).model
+        except ValueError:
+            model_version = model_id or "unavailable"
+        return reviewer, model_id, model_version
+
+    def grade_attempt(course_id, attempt_id, user):
+        reviewer, model_id, model_version = model_for_attempt(course_id, attempt_id, user)
+        return grade_formal_attempt(
+            conversation_store(), user.id, course_id, attempt_id, reviewer, model_id, model_version
+        )
+
+    @app.post(
+        "/api/courses/{course_id}/formal-attempts/{attempt_id}/grade",
+        dependencies=[Depends(authorize)],
+    )
+    def grade_quiz_attempt(
+        course_id: Identifier, attempt_id: Identifier, user: CurrentUser = Depends(authorize)
+    ):
+        require_course(course_id, user)
+        return grade_attempt(course_id, attempt_id, user)
+
+    @app.get(
+        "/api/courses/{course_id}/formal-attempts/{attempt_id}/result",
+        dependencies=[Depends(authorize)],
+    )
+    def get_quiz_result(
+        course_id: Identifier, attempt_id: Identifier, user: CurrentUser = Depends(authorize)
+    ):
+        require_course(course_id, user)
+        return read_formal_result(conversation_store(), user.id, course_id, attempt_id)
+
+    @app.post(
+        "/api/courses/{course_id}/formal-attempts/{attempt_id}/result/"
+        "questions/{question_revision_id}/follow-up",
+        dependencies=[Depends(authorize)],
+    )
+    def follow_up_quiz_result(
+        course_id: Identifier,
+        attempt_id: Identifier,
+        question_revision_id: Identifier,
+        request: QuizFollowUpRequest,
+        user: CurrentUser = Depends(authorize),
+    ):
+        require_course(course_id, user)
+        reviewer, model_id, model_version = model_for_attempt(course_id, attempt_id, user)
+        if reviewer is None:
+            raise HTTPException(503, "追问模型暂不可用")
+        return ask_quiz_followup(
+            conversation_store(),
+            user.id,
+            course_id,
+            attempt_id,
+            question_revision_id,
+            request.message,
+            reviewer,
+            model_id,
+            model_version,
+        )
 
     def check_note_chat_scope(course_id, conversation_id, note_input, user):
         conversation = note_conversation(course_id, conversation_id, user)

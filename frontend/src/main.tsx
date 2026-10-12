@@ -15,8 +15,17 @@ import NavigationIcon, { type NavigationIconName } from "./NavigationIcon";
 
 type Page = "home" | "workbench" | "materials" | "notes" | "quiz" | "report";
 const navigation: [Page, NavigationIconName, string][] = [["home", "chat", "AI 对话"], ["workbench", "courses", "课程管理"], ["materials", "materials", "我的资料"], ["notes", "notes", "我的笔记"], ["quiz", "quiz", "模拟测验"], ["report", "report", "学习报告"]];
+function initialPage(): Page {
+  const hash = window.location.hash;
+  if (/^#materials(?:\/|$)/.test(hash)) return "materials";
+  if (/^#note\//.test(hash) || hash === "#notes") return "notes";
+  if (/^#chat\//.test(hash)) return "home";
+  if (hash === "#quiz") return "quiz";
+  if (hash === "#report") return "report";
+  return "workbench";
+}
 function App() {
-  const [page, setPage] = useState<Page>(/^#materials(?:\/|$)/.test(window.location.hash) ? "materials" : /^#note\//.test(window.location.hash) || window.location.hash === "#notes" ? "notes" : /^#chat\//.test(window.location.hash) ? "home" : "workbench");
+  const [page, setPage] = useState<Page>(initialPage);
   const [routeHash, setRouteHash] = useState(window.location.hash);
   const acceptedHash = useRef(window.location.hash);
   const [course, setCourse] = useState<Course | null>(null);
