@@ -891,12 +891,15 @@ def test_material_job_failure_and_retry_are_persistent(database_url):
         store.close()
 
 
-def test_material_worker_processes_real_postgres_job(database_url, tmp_path):
+@pytest.mark.parametrize(
+    "source_text", ["TCP 三次握手同步初始序列号。", "TCP\x00 三次握手同步初始序列号。"]
+)
+def test_material_worker_processes_real_postgres_job(database_url, tmp_path, source_text):
     apply_migrations(database_url)
     with psycopg.connect(database_url) as connection:
         _seed_course(connection)
     source = tmp_path / "lecture.md"
-    source.write_text("TCP 三次握手同步初始序列号。", encoding="utf-8")
+    source.write_text(source_text, encoding="utf-8")
     store = PostgresStore(database_url)
     token = store.bind_user(str(USER))
     try:
@@ -927,7 +930,9 @@ def test_material_worker_processes_real_postgres_job(database_url, tmp_path):
         job = store.claim_material_job()
         process_material_job(store, kb, job, settings.max_upload_mb * 1024 * 1024)
         assert store.get_material_job("job-3")["status"] == "succeeded"
-        assert store.get("document", "material-3")["parse_status"] == "ready"
+        ready = store.get("document", "material-3")
+        assert ready["parse_status"] == "ready"
+        assert "\x00" not in ready["markdown"]
         assert len(store.search([1.0, 0.1, 0.0], "course-1", "", 5)) == 1
     finally:
         store.reset_user(token)

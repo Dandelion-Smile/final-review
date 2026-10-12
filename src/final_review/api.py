@@ -761,6 +761,7 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
             },
         ]
         for _ in range(2):
+            completion = None
             try:
                 completion = client.chat.completions.create(
                     model=selected.model,
@@ -773,14 +774,22 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
                     ),
                     **(
                         {"response_format": {"type": "json_object"}}
-                        if selected.base_url.rstrip("/") == "https://api.deepseek.com"
+                        if selected.base_url.rstrip("/")
+                        in {"https://api.deepseek.com", "https://api.siliconflow.cn/v1"}
                         else {}
                     ),
                 )
                 content = (completion.choices[0].message.content or "").strip()
                 return parse_chat_decision(content)
             except ValidationError as exc:
-                errors = [{"field": error["loc"], "type": error["type"]} for error in exc.errors()]
+                errors = [
+                    {
+                        "field": error["loc"],
+                        "type": error["type"],
+                        "input_type": type(error.get("input")).__name__,
+                    }
+                    for error in exc.errors()
+                ]
                 logger.warning("Chat decision schema validation failed: %s", errors)
                 messages.append(
                     {
@@ -791,7 +800,13 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
                     }
                 )
             except (ValueError, KeyError, IndexError, TypeError, AttributeError):
-                logger.warning("Chat decision was not valid JSON")
+                choices = getattr(completion, "choices", None) or []
+                choice = choices[0] if choices else None
+                logger.warning(
+                    "Chat decision was not valid JSON: finish_reason=%s content_length=%s",
+                    getattr(choice, "finish_reason", None),
+                    len(getattr(getattr(choice, "message", None), "content", "") or ""),
+                )
             except OpenAIError:
                 logger.warning("Chat intent classification provider failed", exc_info=True)
             messages.append(
