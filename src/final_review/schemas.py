@@ -133,6 +133,21 @@ class QuizFollowUpRequest(Model):
     message: Text = Field(max_length=4000)
 
 
+class MasteryMark(Model):
+    status: Literal["mastered", "unmastered"]
+
+
+class MistakePracticeAnswer(Model):
+    answer: int | bool | str
+
+    @field_validator("answer", mode="before")
+    @classmethod
+    def strict_answer_kind(cls, value):
+        if type(value) not in {int, bool, str}:
+            raise ValueError("答案类型无效")
+        return value
+
+
 class ConfirmationConsume(Model):
     confirmation_id: Identifier
 

@@ -91,6 +91,7 @@ def test_empty_database_runner_is_versioned_and_repeatable(database_url):
         "008_note_exports.sql",
         "009_quiz_drafts.sql",
         "010_formal_attempt_history.sql",
+        "011_mistake_practice.sql",
     ]
     assert apply_migrations(database_url) == []
     with psycopg.connect(database_url) as connection, connection.cursor() as cursor:
@@ -106,6 +107,7 @@ def test_empty_database_runner_is_versioned_and_repeatable(database_url):
             "008_note_exports.sql",
             "009_quiz_drafts.sql",
             "010_formal_attempt_history.sql",
+            "011_mistake_practice.sql",
         ]
 
 

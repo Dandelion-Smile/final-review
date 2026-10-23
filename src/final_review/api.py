@@ -49,6 +49,15 @@ from .formal_grading import grade_formal_attempt
 from .formal_result import ask_quiz_followup, read_formal_result
 from .llm import ModelError, build_fast_quiz_model, build_models, build_review_model
 from .material_conversion import SUPPORTED_SUFFIXES
+from .mistakes import (
+    list_mistakes,
+    list_practices,
+    mark_mastery,
+    read_mistake,
+    read_practice,
+    start_practice,
+    submit_practice,
+)
 from .postgres import PostgresStore
 from .quiz_config import merge_quiz_input, resolve_quiz_config
 from .quiz_edit import save_quiz_revision
@@ -80,9 +89,11 @@ from .schemas import (
     FastQuizSubmission,
     FormalAnswerSave,
     Identifier,
+    MasteryMark,
     MaterialDelete,
     MaterialInput,
     MaterialUpdate,
+    MistakePracticeAnswer,
     NoteConfirm,
     NoteConfirmPreview,
     NoteExportCreate,
@@ -2325,6 +2336,67 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
     ):
         require_course(course_id, user)
         return read_formal_result(conversation_store(), user.id, course_id, attempt_id)
+
+    @app.get("/api/mistakes", dependencies=[Depends(authorize)])
+    def get_mistakes(
+        course_id: str | None = None,
+        exam_id: str | None = None,
+        chapter: str | None = None,
+        knowledge_point: str | None = None,
+        question_type: str | None = None,
+        mastery_status: str | None = None,
+        user: CurrentUser = Depends(authorize),
+    ):
+        if course_id:
+            require_course(course_id, user)
+        return list_mistakes(
+            conversation_store(), user.id, course_id=course_id, exam_id=exam_id,
+            chapter=chapter, knowledge_point=knowledge_point,
+            question_type=question_type, mastery_status=mastery_status,
+        )
+
+    @app.get("/api/courses/{course_id}/mistakes/{mistake_id}", dependencies=[Depends(authorize)])
+    def get_mistake(course_id: Identifier, mistake_id: Identifier,
+                    user: CurrentUser = Depends(authorize)):
+        require_course(course_id, user)
+        return read_mistake(conversation_store(), user.id, course_id, mistake_id)
+
+    @app.put("/api/courses/{course_id}/mistakes/{mistake_id}/mastery",
+             dependencies=[Depends(authorize)])
+    def put_mastery(course_id: Identifier, mistake_id: Identifier, request: MasteryMark,
+                    user: CurrentUser = Depends(authorize)):
+        require_course(course_id, user)
+        return mark_mastery(conversation_store(), user.id, course_id, mistake_id, request.status)
+
+    @app.post("/api/courses/{course_id}/mistakes/{mistake_id}/practices",
+              dependencies=[Depends(authorize)])
+    def create_mistake_practice(course_id: Identifier, mistake_id: Identifier,
+                                user: CurrentUser = Depends(authorize)):
+        require_course(course_id, user)
+        return start_practice(conversation_store(), user.id, course_id, mistake_id)
+
+    @app.get("/api/courses/{course_id}/mistakes/{mistake_id}/practices",
+             dependencies=[Depends(authorize)])
+    def get_mistake_practices(course_id: Identifier, mistake_id: Identifier,
+                              user: CurrentUser = Depends(authorize)):
+        require_course(course_id, user)
+        return list_practices(conversation_store(), user.id, course_id, mistake_id)
+
+    @app.get("/api/courses/{course_id}/mistake-practices/{practice_id}",
+             dependencies=[Depends(authorize)])
+    def get_mistake_practice(course_id: Identifier, practice_id: Identifier,
+                             user: CurrentUser = Depends(authorize)):
+        require_course(course_id, user)
+        return read_practice(conversation_store(), user.id, course_id, practice_id)
+
+    @app.post("/api/courses/{course_id}/mistake-practices/{practice_id}/submit",
+              dependencies=[Depends(authorize)])
+    def submit_mistake_practice(course_id: Identifier, practice_id: Identifier,
+                                request: MistakePracticeAnswer,
+                                user: CurrentUser = Depends(authorize)):
+        require_course(course_id, user)
+        return submit_practice(conversation_store(), user.id, course_id, practice_id,
+                               request.answer)
 
     @app.post(
         "/api/courses/{course_id}/formal-attempts/{attempt_id}/result/"

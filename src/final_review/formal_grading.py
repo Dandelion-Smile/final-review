@@ -120,6 +120,9 @@ def grade_formal_attempt(store, user_id, course_id, attempt_id, model, model_id,
         if attempt["status"] != "submitted":
             raise DomainConflict("请先交卷，再评分")
         if attempt.get("grading_snapshot"):
+            from .mistakes import sync_mistakes_for_attempt
+
+            sync_mistakes_for_attempt(store, user_id, course_id, attempt_id)
             return _public(domain, attempt)
         questions, payload = _questions(domain, attempt)
         answers = attempt["answers"]
@@ -201,6 +204,9 @@ def grade_formal_attempt(store, user_id, course_id, attempt_id, model, model_id,
     with store.transaction():
         domain, current = _owned_attempt(store, user_id, course_id, attempt_id, lock=True)
         if current.get("grading_snapshot"):
+            from .mistakes import sync_mistakes_for_attempt
+
+            sync_mistakes_for_attempt(store, user_id, course_id, attempt_id)
             return _public(domain, current)
         if (
             current["status"] != "submitted"
@@ -239,4 +245,7 @@ def grade_formal_attempt(store, user_id, course_id, attempt_id, model, model_id,
                 },
             )
         domain._audit(course_id, "quiz.attempt_graded", "attempt", attempt_id)
+        from .mistakes import sync_mistakes_for_attempt
+
+        sync_mistakes_for_attempt(store, user_id, course_id, attempt_id)
         return _public(domain, current)

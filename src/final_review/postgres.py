@@ -40,6 +40,9 @@ class PostgresStore:
         "attempt": "attempts",
         "attempt_answer": "attempt_answers",
         "question_grade": "question_grades",
+        "mistake": "mistakes",
+        "mastery_observation": "mastery_observations",
+        "mistake_practice": "mistake_practices",
         "learning_event": "learning_events",
         "fast_quiz_session": "fast_quiz_sessions",
         "exam": "exams",
@@ -185,6 +188,10 @@ class PostgresStore:
             )
         if table in {"attempt_answer", "question_grade"}:
             names.extend(["attempt_id", "question_revision_id"])
+        if table == "mistake":
+            names.extend(["attempt_id", "question_revision_id"])
+        if table in {"mastery_observation", "mistake_practice"}:
+            names.append("mistake_id")
         if table == "learning_asset":
             names.extend(["asset_id", "current_revision_id"])
         if table == "asset_revision":

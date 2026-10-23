@@ -151,7 +151,8 @@ export default function FormalAttemptView({ courseId, attemptId, onClose, onSubm
       <p>共 {detail.questions.length} 题 · 满分 {detail.quiz.total_score} 分 · {active ? "作答中" : "已交卷"}</p>
       <p role="timer">{remaining == null ? "不限时" : active ? `剩余 ${Math.floor(remaining / 60)} 分 ${remaining % 60} 秒` : `用时 ${detail.attempt.elapsed_seconds ?? 0} 秒`}</p>
       {snapshot && <section className="formal-grade-summary"><h3>本次得分：{snapshot.total_score} / {snapshot.max_score}</h3>
-        {snapshot.disclaimer && <p>{snapshot.disclaimer}</p>}</section>}
+        {snapshot.disclaimer && <p>{snapshot.disclaimer}</p>}
+        <button type="button" onClick={() => { onClose(); window.location.hash = "#mistakes"; }}>查看我的错题</button></section>}
       {detail.questions.map(question => {
         const id = question.question_revision_id;
         const value = drafts[id];

@@ -420,9 +420,9 @@
 - **范围**：从错误/未掌握答案创建 Mistake，保存原题快照、作答、答案、解析、错因、知识点、状态。
 - **非范围**：提醒、计划、报告 UI。
 - **验收标准**：同一 Attempt 不重复建错题；历史 Quiz revision 可正确回放错题来源。
-- **测试命令**：BE；Mistake service tests。
-- **状态**：待开发
-- **通过情况**：未通过（尚未开发）；必须在 **M4-02** 错题筛选、标记与重做之前完成。
+- **测试命令**：`.venv\Scripts\python.exe -m pytest -q tests/test_m4_mistakes.py`；隔离 PostgreSQL：`.venv\Scripts\python.exe scripts/check_m3_postgres.py tests/test_postgres_migrations.py::test_empty_database_runner_is_versioned_and_repeatable tests/test_m4_mistakes_postgres.py`。
+- **状态**：开发与自动验收完成，待用户前端手动验收
+- **通过情况**：2026-10-21 正式 Attempt 评分事务中按 Attempt＋题目版本生成唯一 Mistake 与初始未掌握事件；保存题目、作答、评分和来源快照，重复评分不重建或重置掌握状态。隔离 PostgreSQL 已验证旧 Quiz revision 替换后仍可追溯、来源不变，且数据库约束拒绝改写错题来源；详见 [M4 第一轮开发与验收记录](m4-round1-development-report-2026-10-21.md)。
 
 ### M4-02：实现错题筛选、标记掌握与重做入口
 
@@ -431,9 +431,9 @@
 - **范围**：按课程、考试、章节、知识点、题型、掌握状态筛选；手动标记；从错题创建重做任务。
 - **非范围**：间隔提醒算法、报告预测分。
 - **验收标准**：所有六种筛选可组合；标记不会改写原 Attempt；重做记录可追溯。
-- **测试命令**：BE；FE；错题筛选 E2E。
-- **状态**：待开发
-- **通过情况**：未通过（尚未开发）；必须在 **M4-03** 每日计划与提醒之前完成。
+- **测试命令**：`.venv\Scripts\python.exe -m pytest -q tests/test_m4_mistakes.py`；隔离 PostgreSQL 同 M4-01；`npm --prefix frontend run test:e2e -- e2e/mistakes.spec.ts`。
+- **状态**：开发与自动验收完成，待用户前端手动验收
+- **通过情况**：2026-10-21 六种条件可组合筛选；标记掌握仅更新 Mistake 并新增独立观察事件，不改 Attempt/QuestionGrade。重练创建独立记录，绑定原错题、Attempt 和题目版本；客观题沿用确定性评分，文字题保留作答供参考答案自查，不自动修改掌握状态。双用户 HTTP、跨课程及数据库隔离、浏览器流程通过；见 [M4 第一轮开发与验收记录](m4-round1-development-report-2026-10-21.md)。
 
 ### M4-03：实现站内间隔复习提醒与每日计划
 
@@ -465,9 +465,9 @@
 - **范围**：报告指标图表、错题列表、计划与站内提醒展示；显式显示置信度和预计分数前提。
 - **非范围**：邮件投递、教师视图。
 - **验收标准**：空数据有正确空态；无分值结构不渲染预计分；移动浏览器可阅读与标记掌握。
-- **测试命令**：BE；FE；报告/错题 E2E。
-- **状态**：待开发
-- **通过情况**：未通过（尚未开发）；必须在 **M5-05** MVP 验收演练之前完成。
+- **测试命令**：本轮错题页 `npm --prefix frontend run test:e2e -- e2e/mistakes.spec.ts`；完整报告/计划页仍需后续 BE、FE 与 E2E。
+- **状态**：部分完成（仅错题集页面；报告和计划界面待后续轮次）
+- **通过情况**：2026-10-21 已有“我的错题”页面、空态、六维筛选、原作答与来源、掌握标记、重练与记录找回，390px 浏览器 E2E 通过；报告指标、计划与提醒仍未实现，不能视为整个 M4-05 完成。详见 [M4 第一轮开发与验收记录](m4-round1-development-report-2026-10-21.md)。
 
 ### M4-06：将报告/错题转化为 Agent 操作卡
 
