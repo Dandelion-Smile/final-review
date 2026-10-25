@@ -130,3 +130,6 @@ main{width:100%;min-height:0;flex:1;overflow-x:hidden;overflow-y:auto;overscroll
  .overview-item>.tile{width:32px;height:36px}
  .overview-start{flex-direction:column;align-items:flex-start}
 }
+
+/* The course name is the sole entry and selection for its landing page. */
+.set-selector.active{background:var(--purple-mid);color:#fff}
