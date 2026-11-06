@@ -1,13 +1,14 @@
 import json
 import logging
 import secrets
-from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from contextlib import asynccontextmanager, nullcontext
+from datetime import UTC, date, datetime, time
 from hashlib import sha256
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
+from anyio import create_task_group
 from fastapi import (
     Depends,
     FastAPI,
@@ -16,14 +17,17 @@ from fastapi import (
     Header,
     HTTPException,
     Request,
-    Response,
     UploadFile,
 )
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from openai import OpenAI, OpenAIError
 from pydantic import ValidationError
 
+from .account_purge import run_account_purge
+from .account_routes import account_router
 from .agent import FinalReviewAgent, SessionConflict
 from .auth import CurrentUser, DatabaseAuth
 from .config import Settings
@@ -68,11 +72,14 @@ from .quiz_print import print_quiz_revision
 from .quiz_review import confirm_quiz_revision, quiz_confirm_preview, review_quiz_revision
 from .rag import KnowledgeBase
 from .rendering import render_markdown
+from .review_home import create_calendar_entry, read_calendar, read_home, set_calendar_completion
 from .schemas import (
     AgentRequest,
     AgentResponse,
     AssetCreate,
     AssetRevisionCreate,
+    CalendarEntryCompletion,
+    CalendarEntryCreate,
     CancelNoteRequest,
     ChatDecision,
     ChatRequest,
@@ -82,7 +89,6 @@ from .schemas import (
     ConversationRename,
     CourseCreate,
     CourseUpdate,
-    Credentials,
     ExamCreate,
     ExamUpdate,
     FastQuizRequest,
@@ -97,6 +103,7 @@ from .schemas import (
     NoteConfirm,
     NoteConfirmPreview,
     NoteExportCreate,
+    NoteInput,
     NoteRevisionEdit,
     QuizConfigRequest,
     QuizConfirm,
@@ -161,7 +168,15 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
                     )
                     for config in settings.available_chat_models()
                 }
-            yield
+            if database_auth.enabled and store is not None:
+                async with create_task_group() as tasks:
+                    tasks.start_soon(run_account_purge, store, settings)
+                    try:
+                        yield
+                    finally:
+                        tasks.cancel_scope.cancel()
+            else:
+                yield
         finally:
             if store is not None:
                 store.close()
@@ -194,7 +209,7 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
                 user = database_auth.current_user(request)
             except HTTPException:
                 user = None
-            if user is not None:
+            if user is not None and user.deletion_due_at is None:
                 token = store.bind_user(user.id)
         try:
             return await call_next(request)
@@ -202,7 +217,7 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
             if token is not None:
                 store.reset_user(token)
 
-    def authorize(
+    def identify(
         request: Request, credentials: HTTPAuthorizationCredentials | None = Depends(bearer)
     ):
         expected = settings.api_token.get_secret_value()
@@ -220,7 +235,12 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
             user = CurrentUser(id="local-user", is_local=True)
         else:
             raise HTTPException(503, "当前服务尚未配置本地认证数据库")
-        yield user
+        return user
+
+    def authorize(user: CurrentUser = Depends(identify)):
+        if user.deletion_due_at:
+            raise HTTPException(403, "账号处于注销恢复期，请前往恢复页面")
+        return user
 
     def runtime(model_id: str | None = None):
         if app.state.agent is None:
@@ -311,8 +331,11 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
         session_id: str,
         event_id: str,
         result: AgentResponse,
+        reply: str | None = None,
     ):
-        content = (result.prompt or {}).get("message") if result.status == "needs_input" else None
+        content = reply or (
+            (result.prompt or {}).get("message") if result.status == "needs_input" else None
+        )
         note_message(
             course_id,
             conversation_id,
@@ -399,33 +422,24 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
     def health():
         return {"status": "ok", "version": "0.1.0"}
 
-    @app.post("/api/auth/sign-up")
-    def sign_up(request: Credentials, response: Response):
-        if not auth_enabled:
-            raise HTTPException(503, "当前服务尚未配置本地认证数据库")
-        user, session_id = database_auth.sign_up(request.email, request.password)
-        database_auth.set_session_cookie(response, session_id)
-        return {"confirmation_required": False, "user": {"email": user.email}}
+    @app.exception_handler(RequestValidationError)
+    async def handle_validation(request: Request, exc: RequestValidationError):
+        if request.url.path.startswith(("/api/auth/", "/api/account/")):
+            return JSONResponse({"detail": "请检查表单填写是否完整"}, status_code=422)
+        return await request_validation_exception_handler(request, exc)
 
-    @app.post("/api/auth/sign-in")
-    def sign_in(request: Credentials, response: Response, http_request: Request):
-        if not auth_enabled:
-            raise HTTPException(503, "当前服务尚未配置本地认证数据库")
-        remote_addr = http_request.client.host if http_request.client else None
-        user, session_id = database_auth.sign_in(request.email, request.password, remote_addr)
-        database_auth.set_session_cookie(response, session_id)
-        return {"user": {"email": user.email}}
+    app.include_router(account_router(database_auth, identify, authorize, enabled=auth_enabled))
 
-    @app.post("/api/auth/sign-out")
-    def sign_out(request: Request, response: Response):
-        if auth_enabled:
-            database_auth.revoke(request)
-        database_auth.clear_session_cookie(response)
-        return {"signed_out": True}
-
-    @app.get("/api/auth/me")
-    def who_am_i(user: CurrentUser = Depends(authorize)):
-        return {"id": user.id, "email": user.email, "local": user.is_local}
+    def require_file_access(user: CurrentUser = Depends(authorize)):
+        store = conversation_store()
+        guard = (
+            store.account_file_access(user.id)
+            if isinstance(store, PostgresStore) else nullcontext(True)
+        )
+        with guard as allowed:
+            if not allowed:
+                raise HTTPException(403, "账户当前无法操作资料文件")
+            yield
 
     @app.get("/api/chat/models", dependencies=[Depends(authorize)])
     def list_chat_models():
@@ -848,6 +862,28 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
         else:
             reply = result.answer or "当前资料不足，暂时无法完成此任务。"
         return ChatResponse(reply=reply, model=selected_model.label, citations=result.citations)
+
+    @app.get("/api/home", dependencies=[Depends(authorize)])
+    def home(today: date, at: time, user: CurrentUser = Depends(authorize)):
+        return read_home(conversation_store(), user.id, today, at)
+
+    @app.get("/api/calendar/entries", dependencies=[Depends(authorize)])
+    def calendar_entries(
+        start: date, end: date, today: date, at: time, user: CurrentUser = Depends(authorize)
+    ):
+        return read_calendar(conversation_store(), user.id, start, end, today, at)
+
+    @app.post("/api/calendar/entries", status_code=201, dependencies=[Depends(authorize)])
+    def add_calendar_entry(request: CalendarEntryCreate, user: CurrentUser = Depends(authorize)):
+        return create_calendar_entry(conversation_store(), user.id, request)
+
+    @app.patch("/api/calendar/entries/{entry_id}/completion", dependencies=[Depends(authorize)])
+    def complete_calendar_entry(
+        entry_id: Identifier,
+        request: CalendarEntryCompletion,
+        user: CurrentUser = Depends(authorize),
+    ):
+        return set_calendar_completion(conversation_store(), user.id, entry_id, request.completed)
 
     @app.get("/api/courses", dependencies=[Depends(authorize)])
     def list_courses(user: CurrentUser = Depends(authorize)):
@@ -1350,7 +1386,7 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
         require_course(request.course_id, user)
         return runtime().kb.ingest(request, user_id=user.id)
 
-    @app.post("/knowledge/upload", dependencies=[Depends(authorize)])
+    @app.post("/knowledge/upload", dependencies=[Depends(require_file_access)])
     def upload(
         request: Request,
         course_id: Identifier = Form(),
@@ -1739,6 +1775,19 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
         require_course(request.course_id, user)
         if conversation_id is None:
             return runtime().invoke(request, user.id)
+        result, _ = start_conversation_note(request, conversation_id, user)
+        return result
+
+    auto_note_reply = "笔记生成任务已提交，完成后可以在这里打开草稿。"
+
+    def start_conversation_note(
+        request: AgentRequest,
+        conversation_id: str,
+        user: CurrentUser,
+        *,
+        auto_sources: list[dict] | None = None,
+        source_scope_set: bool = False,
+    ) -> tuple[AgentResponse, dict | None]:
         if request.intent != "note":
             raise HTTPException(422, "对话记录仅支持笔记任务")
         event_id = f"{request.session_id}-start"
@@ -1747,7 +1796,7 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
             stable_key(request.course_id, conversation_id, "note", f"{event_id}-assistant"),
         ):
             note_conversation(request.course_id, conversation_id, user)
-            return runtime().read(request.course_id, request.session_id)
+            return runtime().read(request.course_id, request.session_id), None
         conversation = note_conversation(
             request.course_id, conversation_id, user, title=request.message
         )
@@ -1788,10 +1837,51 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
                 },
             )
             raise
+        config = result.note_config or {}
+        if (
+            result.status == "needs_input"
+            and auto_sources
+            and config.get("note_type")
+            and config.get("duration_minutes")
+        ):
+            source_types = config.get("source_types") or []
+            candidates = [
+                item["document_id"]
+                for item in auto_sources
+                if not source_types or item.get("source_type") in source_types
+            ]
+            if (source_scope_set or source_types) and 1 <= len(candidates) <= 5:
+                note_input = NoteInput.model_validate({**config, "source_document_ids": candidates})
+                try:
+                    with conversation_store().transaction():
+                        record_note_result(
+                            request.course_id,
+                            conversation_id,
+                            user,
+                            request.session_id,
+                            event_id,
+                            result,
+                            reply=auto_note_reply,
+                        )
+                        job = enqueue_note(
+                            ResumeNoteRequest(
+                                course_id=request.course_id,
+                                session_id=request.session_id,
+                                note_input=note_input,
+                            ),
+                            conversation_id,
+                            f"{request.session_id}-auto",
+                            user,
+                            automatic=True,
+                        )
+                    return result, job
+                except HTTPException as exc:
+                    if exc.status_code not in {409, 422}:
+                        raise
         record_note_result(
             request.course_id, conversation_id, user, request.session_id, event_id, result
         )
-        return result
+        return result, None
 
     @app.post("/api/chat/dispatch", dependencies=[Depends(authorize)])
     def dispatch_chat(
@@ -1839,7 +1929,7 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
         materials = CourseMaterials(conversation_store(), request.course_id, user.id)
         if intent != "clarify":
             try:
-                materials.select(document_ids, chapter)
+                scoped_materials = materials.select(document_ids, chapter)
             except ValueError as exc:
                 raise HTTPException(409, str(exc)) from exc
         updated = note_conversation(
@@ -1859,7 +1949,7 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
             )
         if intent == "note":
             session_id = f"note-{uuid4()}"
-            result = invoke(
+            result, note_job = start_conversation_note(
                 AgentRequest(
                     course_id=request.course_id,
                     session_id=session_id,
@@ -1868,8 +1958,10 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
                 ),
                 conversation_id=request.conversation_id,
                 user=user,
+                auto_sources=scoped_materials if request.auto_queue_note else None,
+                source_scope_set=bool(document_ids or chapter),
             )
-            if document_ids and len(document_ids) <= 5:
+            if note_job is None and document_ids and len(document_ids) <= 5:
                 current = note_conversation(request.course_id, request.conversation_id, user)
                 active = current.get("active_note")
                 if active:
@@ -1878,8 +1970,6 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
                         "source_document_ids": document_ids,
                     }
                     note_state(request.course_id, request.conversation_id, user, active)
-            # The existing note dialog still confirms type, reading time and sources.
-            # Return the conversation restriction so it cannot silently widen the sources.
             return {
                 "kind": "note",
                 "intent": intent,
@@ -1887,6 +1977,7 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
                 "result": result.model_dump(mode="json"),
                 "source_document_ids": document_ids,
                 "chapter": chapter,
+                **({"note_job": note_job, "reply": auto_note_reply} if note_job else {}),
             }
         if intent == "clarify":
             reply = decision.clarification or (
@@ -1997,7 +2088,7 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
                 if quiz_job and quiz_job["status"] == "succeeded"
                 else "试卷配置已就绪，生成任务已排队。完成后可在当前对话查看草稿。"
                 if result.status == "ready" and request.quiz_input is not None
-                else "请在弹窗中确认试题要求和生成依据。"
+                else "请在输入框上方分步确认试题要求和生成依据。"
             )
             event_id = stable_key(quiz_job["job_id"], "submission") if quiz_job else uuid4().hex
             note_message(
@@ -2563,6 +2654,16 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
         event_id: Identifier,
         user: CurrentUser = Depends(authorize),
     ):
+        return enqueue_note(request, conversation_id, event_id, user)
+
+    def enqueue_note(
+        request: ResumeNoteRequest,
+        conversation_id: str,
+        event_id: str,
+        user: CurrentUser,
+        *,
+        automatic: bool = False,
+    ):
         require_course(request.course_id, user)
         check_note_chat_scope(request.course_id, conversation_id, request.note_input, user)
         store = conversation_store()
@@ -2615,17 +2716,18 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
                 "created_at": now,
             }
             store.put("note_job", job_id, job)
-            note_message(
-                request.course_id,
-                conversation_id,
-                user,
-                f"{event_id}-user",
-                "user",
-                f"补充笔记要求：指定资料 {'、'.join(source_names)}；"
-                f"笔记类型 {request.note_input.note_type or '默认'}；"
-                f"写作要求 {request.note_input.scope or '无'}；"
-                f"阅读时长 {request.note_input.duration_minutes or '未指定'} 分钟",
-            )
+            if not automatic:
+                note_message(
+                    request.course_id,
+                    conversation_id,
+                    user,
+                    f"{event_id}-user",
+                    "user",
+                    f"补充笔记要求：指定资料 {'、'.join(source_names)}；"
+                    f"笔记类型 {request.note_input.note_type or '默认'}；"
+                    f"写作要求 {request.note_input.scope or '无'}；"
+                    f"阅读时长 {request.note_input.duration_minutes or '未指定'} 分钟",
+                )
             note_state(
                 request.course_id,
                 conversation_id,

@@ -6,6 +6,8 @@ from test_m3_quiz_edit import request_for
 from test_m3_quiz_edit_postgres import generated
 from test_m3_quiz_postgres import USER, database_url, prepared  # noqa: F401
 
+from final_review.account_purge import purge_expired_accounts
+from final_review.config import Settings
 from final_review.formal_attempt import (
     read_formal_attempt,
     save_formal_answer,
@@ -26,7 +28,7 @@ from final_review.storage import StorageError, stable_key
 pytestmark = pytest.mark.integration
 
 
-def test_formal_attempt_can_finish_after_parent_is_superseded(database_url):  # noqa: F811
+def test_formal_attempt_can_finish_after_parent_is_superseded(database_url, tmp_path):  # noqa: F811
     store, config = prepared(database_url)
     try:
         card = generated(store, config)
@@ -92,5 +94,35 @@ def test_formal_attempt_can_finish_after_parent_is_superseded(database_url):  # 
             read_formal_attempt(store, str(USER), "course-1", attempt_id)["questions"][0]["stem"]
             != "新版 TCP 题目"
         )
+        assert store.connection.execute(
+            "SELECT kind FROM user_notifications WHERE event_key=%s", (f"grade:{attempt_id}",)
+        ).fetchone()["kind"] == "grading_ready"
+        uploads, exports = tmp_path / "uploads", tmp_path / "exports"
+        directory = uploads / str(USER) / "course-1"
+        directory.mkdir(parents=True)
+        exports.mkdir()
+        (directory / "personal.txt").write_text("account file")
+        export_id = "export-" + "1" * 32
+        export_file = exports / f"{export_id}-1.md"
+        export_file.write_text("account export")
+        unrelated_file = exports / "unrelated.txt"
+        unrelated_file.write_text("preserve")
+        store.connection.execute(
+            """INSERT INTO export_jobs(record_key,user_id,course_id,data)
+               VALUES(%s,%s,'course-1','{}')""",
+            (export_id, USER),
+        )
+        settings = Settings(_env_file=None, uploads_dir=str(uploads), exports_dir=str(exports))
+        assert purge_expired_accounts(store, settings) == 0
+        store.connection.execute(
+            "UPDATE app_users SET deletion_due_at=now()-interval '1 second' WHERE id=%s",
+            (USER,),
+        )
+        assert purge_expired_accounts(store, settings) == 1
+        assert not directory.exists() and not export_file.exists() and unrelated_file.exists()
+        for table in ("app_users", "asset_revisions", "question_grades", "user_notifications"):
+            assert store.connection.execute(f"SELECT count(*) AS total FROM {table}").fetchone()[
+                "total"
+            ] == 0
     finally:
         store.close()

@@ -34,13 +34,14 @@ export class ApiError extends Error {
   constructor(message: string, public status: number) { super(message); }
 }
 
-export async function api<T>(path: string, method = "GET", data?: unknown): Promise<T> {
-  const response = await fetch(path, {
-    method,
-    credentials: "same-origin",
-    headers: data === undefined ? undefined : { "Content-Type": "application/json" },
-    body: data === undefined ? undefined : JSON.stringify(data),
-  });
+export function checkSession(response: Response, path: string) {
+  if (response.status === 401 && !path.startsWith("/api/auth/")) {
+    window.dispatchEvent(new Event("final-review-session-expired"));
+  }
+}
+
+export async function apiResponse<T>(response: Response, path: string): Promise<T> {
+  checkSession(response, path);
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
     const detail = typeof body.detail === "string" ? body.detail : "请求失败，请稍后重试";
@@ -49,8 +50,19 @@ export async function api<T>(path: string, method = "GET", data?: unknown): Prom
   return body as T;
 }
 
+export async function api<T>(path: string, method = "GET", data?: unknown): Promise<T> {
+  const response = await fetch(path, {
+    method,
+    credentials: "same-origin",
+    headers: data === undefined ? undefined : { "Content-Type": "application/json" },
+    body: data === undefined ? undefined : JSON.stringify(data),
+  });
+  return apiResponse<T>(response, path);
+}
+
 export async function downloadFile(path: string): Promise<void> {
   const response = await fetch(path, { credentials: "same-origin" });
+  checkSession(response, path);
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
     throw new ApiError(typeof body.detail === "string" ? body.detail : "下载失败", response.status);

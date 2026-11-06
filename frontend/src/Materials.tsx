@@ -1,5 +1,6 @@
+import { courseHref, legacyHash } from "./course-routes";
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { api, type Course } from "./workbench-api";
+import { api, checkSession, type Course } from "./workbench-api";
 import MaterialSelect from "./MaterialSelect";
 import "./materials.css";
 
@@ -25,8 +26,7 @@ const sourceSelectOptions = sourceOptions.map(([value, label]) => ({ value, labe
 const documentPath = (courseId: string, documentId: string) => `/api/courses/${encodeURIComponent(courseId)}/documents/${encodeURIComponent(documentId)}`;
 
 export default function Materials({ selectedCourse }: { selectedCourse: Course | null }) {
-  const [courses, setCourses] = useState<Course[]>([]);
-  const [courseId, setCourseId] = useState("");
+  const [courseId, setCourseId] = useState(selectedCourse?.course_id ?? "");
   const [items, setItems] = useState<Material[]>([]);
   const [jobs, setJobs] = useState<MaterialJob[]>([]);
   const [files, setFiles] = useState<UploadSelection[]>([]);
@@ -53,7 +53,7 @@ export default function Materials({ selectedCourse }: { selectedCourse: Course |
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const openedHash = useRef("");
-  const [sourceHash, setSourceHash] = useState(window.location.hash);
+  const [sourceHash, setSourceHash] = useState(legacyHash(window.location.hash));
   const hasActiveJobs = jobs.some(job => job.status === "queued" || job.status === "running")
     || items.some(item => item.parse_status === "queued" || item.parse_status === "running");
   const chapters = [...new Set(items.map(item => item.chapter ?? ""))].sort((a, b) => a.localeCompare(b, "zh-CN"));
@@ -74,7 +74,7 @@ export default function Materials({ selectedCourse }: { selectedCourse: Course |
   }
 
   useEffect(() => {
-    const onHashChange = () => setSourceHash(window.location.hash);
+    const onHashChange = () => setSourceHash(legacyHash(window.location.hash));
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
@@ -86,15 +86,7 @@ export default function Materials({ selectedCourse }: { selectedCourse: Course |
   }, [sourceHash, courseId]);
 
   useEffect(() => {
-    api<{ items: Course[] }>("/api/courses")
-      .then(data => {
-        const available = data.items.filter(item => item.status !== "deleted");
-        setCourses(available);
-        const linkedCourse = window.location.hash.startsWith("#materials/") ? decodeURIComponent(window.location.hash.split("/")[1] || "") : "";
-        setCourseId(available.find(item => item.course_id === linkedCourse)?.course_id
-          ?? available.find(item => item.course_id === selectedCourse?.course_id)?.course_id ?? available[0]?.course_id ?? "");
-      })
-      .catch(error => setMessage(error instanceof Error ? error.message : "课程加载失败"));
+    setCourseId(selectedCourse?.course_id ?? "");
   }, [selectedCourse?.course_id]);
 
   useEffect(() => {
@@ -122,7 +114,7 @@ export default function Materials({ selectedCourse }: { selectedCourse: Course |
     const [, encodedCourse, encodedDocument, encodedChunks] = hash.slice(1).split("/");
     const linkedCourse = decodeURIComponent(encodedCourse || "");
     const linkedDocument = decodeURIComponent(encodedDocument || "");
-    const linkedChunkIds = [...new Set((encodedChunks || "").split(",").filter(Boolean).map(decodeURIComponent))];
+    const linkedChunkIds = [...new Set(decodeURIComponent(encodedChunks || "").split(",").filter(Boolean))];
     if (linkedCourse !== courseId || !linkedDocument || !linkedChunkIds.length) return;
     openedHash.current = hash;
     const base = documentPath(courseId, linkedDocument);
@@ -142,7 +134,9 @@ export default function Materials({ selectedCourse }: { selectedCourse: Course |
 
   async function retry(jobId: string) {
     try {
-      const response = await fetch(`/api/courses/${encodeURIComponent(courseId)}/material-jobs/${jobId}/retry`, { method: "POST", credentials: "same-origin" });
+      const path = `/api/courses/${encodeURIComponent(courseId)}/material-jobs/${jobId}/retry`;
+      const response = await fetch(path, { method: "POST", credentials: "same-origin" });
+      checkSession(response, path);
       if (!response.ok) throw new Error("重试失败，请刷新后再试");
       setMessage("已重新排队处理。");
       setJobs(current => current.map(job => job.job_id === jobId ? { ...job, status: "queued", stage: null, error_message: null } : job));
@@ -181,6 +175,7 @@ export default function Materials({ selectedCourse }: { selectedCourse: Course |
             method: "POST", credentials: "same-origin", body: form,
             headers: { "Idempotency-Key": item.key },
           });
+          checkSession(response, "/knowledge/upload");
           const body = await response.json().catch(() => ({}));
           if (!response.ok) throw new Error(typeof body.detail === "string" ? body.detail : "上传失败");
           if (body.status === "failed") {
@@ -291,7 +286,7 @@ export default function Materials({ selectedCourse }: { selectedCourse: Course |
     <form className="materials-upload box" onSubmit={submit}>
       <h2>添加资料</h2>
       <fieldset className="materials-fields" disabled={busy} style={{ border: 0, padding: 0, minWidth: 0 }}>
-        <div className="materials-control"><span>课程</span><MaterialSelect label="课程" value={courseId} disabled={busy} onChange={value => { setCourseId(value); setFilterChapter(""); setFilterSource(""); setFilterStatus(""); }} options={[{ value: "", label: "选择课程" }, ...courses.map(item => ({ value: item.course_id, label: item.name }))]} /></div>
+        <div className="materials-control"><span>课程</span><div className="material-current-course" title={selectedCourse?.name}>{selectedCourse?.name || "未选择课程"}</div></div>
         <div className="materials-control"><span>来源类型</span><MaterialSelect label="来源类型" value={sourceType} onChange={value => setSourceType(value as SourceType)} disabled={busy} options={sourceSelectOptions} /></div>
         <label>标题<input value={title} onChange={event => setTitle(event.target.value)} placeholder={files.length > 1 ? "批量上传使用各自文件名" : "留空则使用文件名"} disabled={files.length > 1 || files.some(item => item.metadata)} maxLength={200}/></label>
         <label>章节<input value={chapter} onChange={event => setChapter(event.target.value)} placeholder="可选" maxLength={200}/></label>
@@ -366,7 +361,7 @@ export default function Materials({ selectedCourse }: { selectedCourse: Course |
         </div>}
       </div>
       {previewError && <p className="material-dialog-error" role="alert">{previewError}</p>}
-      <div className="wb-dialog-actions"><a href={documentPath(courseId, sourcePreview.document_id) + "/download"}>下载原文件</a><button type="button" onClick={() => { setSourcePreview(null); setPreviewTab("content"); setReferencedChunkIds([]); setPreviewError(""); openedHash.current = ""; setSourceHash(""); if (window.location.hash.startsWith("#materials/")) history.replaceState(null, "", window.location.pathname + window.location.search); }}>关闭</button></div>
+      <div className="wb-dialog-actions"><a href={documentPath(courseId, sourcePreview.document_id) + "/download"}>下载原文件</a><button type="button" onClick={() => { setSourcePreview(null); setPreviewTab("content"); setReferencedChunkIds([]); setPreviewError(""); openedHash.current = ""; setSourceHash(""); if (legacyHash(window.location.hash).startsWith("#materials/")) window.location.hash = courseHref(courseId); }}>关闭</button></div>
     </section></div>}
     {editing && <div className="wb-overlay" role="presentation"><form className="wb-dialog material-dialog" role="dialog" aria-modal="true" aria-labelledby="material-edit-title" onSubmit={saveEdit}><h2 id="material-edit-title">编辑资料信息</h2><p>文件内容保持不变，章节和来源会同步用于资料检索。</p><label>标题<input value={editTitle} onChange={event => setEditTitle(event.target.value)} maxLength={200} required/></label><label>章节<input value={editChapter} onChange={event => setEditChapter(event.target.value)} maxLength={200} placeholder="可选"/></label><div className="materials-control"><span>来源类型</span><MaterialSelect label="来源类型" value={editSource} onChange={value => setEditSource(value as SourceType)} disabled={busy} options={sourceSelectOptions} /></div>{dialogError && <p className="material-dialog-error" role="alert">{dialogError}</p>}<div className="wb-dialog-actions"><button type="button" onClick={() => setEditing(null)} disabled={busy}>取消</button><button className="wb-primary" disabled={busy || !editTitle.trim()}>{busy ? "正在保存…" : "保存资料信息"}</button></div></form></div>}
     {deleting && <div className="wb-overlay" role="presentation"><section className="wb-dialog material-dialog" role="dialog" aria-modal="true" aria-labelledby="material-delete-title"><span className="wb-eyebrow">删除影响</span><h2 id="material-delete-title">删除“{deleting.item.title}”？</h2><p>删除后，原文件和检索内容将不可再使用。</p><div className="material-impact"><span>正式资产 <b>{deleting.preview.affected_assets}</b></span><span>正式版本引用 <b>{deleting.preview.blocking_references}</b></span></div>{deleting.preview.blocking_references > 0 ? <div className="material-snapshot-choice"><p>这份资料仍被正式内容引用。默认禁止删除；若继续，系统会保留文件名、来源类型、当前可用的文档级定位和必要文本摘录，供这些内容说明来源。原文件与检索内容仍会删除。</p><label><input type="checkbox" checked={retainSnapshot} onChange={event => setRetainSnapshot(event.target.checked)}/> 我了解影响，保留来源快照后删除</label></div> : <p>目前没有正式内容引用这份资料。确认后将删除原文件和检索内容。</p>}<p className="wb-expiry">本次确认有效至 {new Date(deleting.preview.expires_at).toLocaleString("zh-CN")}</p>{dialogError && <p className="material-dialog-error" role="alert">{dialogError} <button type="button" onClick={() => { const item = deleting.item; setDeleting(null); void openDelete(item); }}>重新预览</button></p>}<div className="wb-dialog-actions"><button type="button" onClick={() => setDeleting(null)} disabled={busy}>取消</button><button type="button" className="wb-danger" onClick={() => void confirmDelete()} disabled={busy || (deleting.preview.blocking_references > 0 && !retainSnapshot)}>{busy ? "正在删除…" : "确认删除资料"}</button></div></section></div>}

@@ -46,6 +46,7 @@ class PostgresStore:
         "learning_event": "learning_events",
         "fast_quiz_session": "fast_quiz_sessions",
         "exam": "exams",
+        "calendar_entry": "calendar_entries",
         "learning_asset": "learning_assets",
         "asset_revision": "asset_revisions",
         "quiz_revision_payload": "quiz_revision_payloads",
@@ -96,6 +97,20 @@ class PostgresStore:
         finally:
             self._local.transaction_depth -= 1
 
+    @contextmanager
+    def account_file_access(self, user_id: str):
+        """Serialize file operations against the permanent deletion of this owner."""
+        connection = self.connection
+        key = f"account-files:{user_id}"
+        connection.execute("SELECT pg_advisory_lock_shared(hashtextextended(%s,0))", (key,))
+        try:
+            active = connection.execute(
+                "SELECT 1 FROM app_users WHERE id=%s AND deletion_due_at IS NULL", (user_id,)
+            ).fetchone()
+            yield bool(active)
+        finally:
+            connection.execute("SELECT pg_advisory_unlock_shared(hashtextextended(%s,0))", (key,))
+
     def close(self):
         with self._connections_lock:
             self._closed = True
@@ -135,6 +150,9 @@ class PostgresStore:
                 cursor.execute("SELECT to_regclass('public.quiz_jobs') AS table_name")
                 if cursor.fetchone()["table_name"] is None:
                     raise StorageError("缺少试卷 Job 表；请先运行数据库迁移")
+                cursor.execute("SELECT to_regclass('public.calendar_entries') AS table_name")
+                if cursor.fetchone()["table_name"] is None:
+                    raise StorageError("缺少备忘录表；请先运行数据库迁移")
         except psycopg.Error as exc:
             raise StorageError("PostgreSQL 初始化检查失败") from exc
 
@@ -175,6 +193,11 @@ class PostgresStore:
         if table == "course":
             names.extend(
                 ["status", "archived_at", "deleted_at", "purge_after", "deletion_confirmed_at"]
+            )
+        if table == "calendar_entry":
+            names.extend(
+                ["kind", "title", "description", "scheduled_on", "all_day",
+                 "start_time", "end_time", "completed_at", "updated_at"]
             )
         if table == "attempt":
             names.extend(
@@ -591,9 +614,11 @@ class PostgresStore:
         with self.transaction():
             with self.connection.cursor() as cursor:
                 cursor.execute(
-                    "SELECT record_key,user_id,data FROM export_jobs WHERE "
-                    "data->>'status'='queued' OR (data->>'status'='running' AND "
-                    "(data->>'lease_until')::timestamptz<now()) "
+                    "SELECT record_key,user_id,data FROM export_jobs j WHERE "
+                    "(data->>'status'='queued' OR (data->>'status'='running' AND "
+                    "(data->>'lease_until')::timestamptz<now())) "
+                    "AND EXISTS (SELECT 1 FROM app_users u WHERE u.id=j.user_id "
+                    "AND u.deletion_due_at IS NULL) "
                     "ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1"
                 )
                 row = cursor.fetchone()
@@ -642,11 +667,13 @@ class PostgresStore:
 
         with self.transaction(), self.connection.cursor() as cursor:
             cursor.execute(
-                "SELECT record_key,user_id,data FROM quiz_jobs WHERE "
-                "(data->>'status'='queued' AND "
+                "SELECT record_key,user_id,data FROM quiz_jobs j WHERE "
+                "((data->>'status'='queued' AND "
                 "(data->>'available_at')::timestamptz<=clock_timestamp()) "
                 "OR (data->>'status'='running' AND "
-                "(data->>'lease_until')::timestamptz<clock_timestamp()) "
+                "(data->>'lease_until')::timestamptz<clock_timestamp())) "
+                "AND EXISTS (SELECT 1 FROM app_users u WHERE u.id=j.user_id "
+                "AND u.deletion_due_at IS NULL) "
                 "ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1"
             )
             row = cursor.fetchone()
@@ -674,10 +701,12 @@ class PostgresStore:
         with self.transaction():
             with self.connection.cursor() as cursor:
                 cursor.execute(
-                    "SELECT record_key,user_id,data FROM note_jobs WHERE "
-                    "(data->>'status'='queued' AND (data->>'available_at')::timestamptz<=now()) "
+                    "SELECT record_key,user_id,data FROM note_jobs j WHERE "
+                    "((data->>'status'='queued' AND (data->>'available_at')::timestamptz<=now()) "
                     "OR (data->>'status'='running' AND "
-                    "(data->>'lease_until')::timestamptz<now()) "
+                    "(data->>'lease_until')::timestamptz<now())) "
+                    "AND EXISTS (SELECT 1 FROM app_users u WHERE u.id=j.user_id "
+                    "AND u.deletion_due_at IS NULL) "
                     "ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1"
                 )
                 row = cursor.fetchone()
@@ -882,9 +911,11 @@ class PostgresStore:
                         (expired["error_message"], expired["document_id"], expired["user_id"]),
                     )
                 cursor.execute(
-                    "SELECT * FROM material_jobs WHERE "
-                    "(status='queued' AND available_at<=now()) OR "
-                    "(status='running' AND lease_until<now() AND attempts<max_attempts) "
+                    "SELECT * FROM material_jobs j WHERE "
+                    "((status='queued' AND available_at<=now()) OR "
+                    "(status='running' AND lease_until<now() AND attempts<max_attempts)) "
+                    "AND EXISTS (SELECT 1 FROM app_users u WHERE u.id=j.user_id "
+                    "AND u.deletion_due_at IS NULL) "
                     "ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1"
                 )
                 row = cursor.fetchone()

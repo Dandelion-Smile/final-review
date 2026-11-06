@@ -7,7 +7,7 @@ from threading import Barrier
 import pytest
 from fastapi.testclient import TestClient
 from test_note_review_postgres import seed_note
-from test_postgres_migrations import database_url  # noqa: F401
+from test_postgres_migrations import database_url, sign_in_test_account  # noqa: F401
 
 from final_review.api import create_app
 from final_review.config import Settings
@@ -36,8 +36,8 @@ def test_export_real_http_owners_lease_and_migration(database_url, tmp_path):  #
             (other, "export-other@example.test"),
         ):
             assert (
-                client.post(
-                    "/api/auth/sign-up", json={"email": email, "password": "password1"}
+                sign_in_test_account(
+                    client, database_url, {"email": email, "password": "password1"}
                 ).status_code
                 == 200
             )

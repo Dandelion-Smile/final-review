@@ -23,7 +23,8 @@ test("formal generation survives reload and shows answers, sources and saved dra
   await expect(dialog).toBeVisible();
   await dialog.getByRole("button", { name: "AI 补充题", exact: true }).click();
   await dialog.getByRole("option", { name: "不允许", exact: true }).click();
-  await dialog.getByRole("button", { name: "确认试题配置" }).click();
+  await dialog.getByRole("button", { name: "下一步" }).click();
+  await dialog.getByRole("button", { name: "确认并生成" }).click();
   await expect(dialog).toHaveCount(0);
   await page.reload();
   const card = page.getByRole("button", { name: /TCP 模拟试卷.*查看试卷草稿/ });
@@ -45,9 +46,13 @@ test("formal generation survives reload and shows answers, sources and saved dra
   await expect(page).toHaveURL(/#materials\//);
   await page.getByRole("button", { name: "关闭", exact: true }).last().click();
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.getByRole("button", { name: "模拟测验", exact: true }).first().click();
+  await page.getByRole("button", { name: "测试", exact: true }).first().click();
   await expect(page.getByRole("heading", { name: "试卷与在线测试", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "TCP 模拟试卷 查看草稿 →" }).click();
+  await expect(page.getByRole("button", { name: "TCP 模拟试卷 查看草稿 →" })).toBeVisible();
+  await page.getByRole("button", { name: "主页", exact: true }).click();
+  await page.getByRole("link", { name: "查看试卷", exact: true }).click();
+  await expect(page).toHaveURL(/\/quizzes\/papers\//);
+  await page.reload();
   const latest = page.getByRole("dialog", { name: "试卷草稿预览" });
   await expect(latest).toContainText("6 题 · 共 20 分");
   await latest.getByRole("button", { name: "编辑试卷" }).click();
@@ -72,8 +77,10 @@ test("formal generation survives reload and shows answers, sources and saved dra
   await attempt.getByRole("button", { name: "保存本题答案" }).first().click();
   await expect(attempt).toContainText("已保存");
   await page.reload();
-  await expect(page.getByRole("heading", { name: "我的作答" })).toBeVisible();
-  await page.getByRole("button", { name: /继续作答/ }).click();
+  await expect(attempt.locator(".formal-options input[type=radio]").first()).toBeChecked();
+  await page.goto("/#/home");
+  await page.getByRole("link", { name: "继续作答", exact: true }).click();
+  await expect(page).toHaveURL(/\/quizzes\/attempts\//);
   const resumed = page.getByRole("dialog", { name: "TCP 模拟试卷" });
   await expect(resumed.locator(".formal-options input[type=radio]").first()).toBeChecked();
   await resumed.getByRole("button", { name: "交卷" }).click();

@@ -1,0 +1,128 @@
+/* V2 navigation proportions, using the existing blue and cream palette. */
+.shell.course-shell{padding-left:224px}
+.course-shell>aside{width:224px;padding:8px;scrollbar-width:none;overflow-x:hidden;z-index:10}
+.course-shell>aside::-webkit-scrollbar{display:none}
+.course-side-header{height:40px;min-height:40px;display:flex;align-items:center;justify-content:space-between;gap:7px;padding:0 4px;margin-bottom:8px;flex-shrink:0}
+.course-brand{display:flex;align-items:center;gap:7px;min-width:0;color:#fff;font-size:16px;font-weight:650;white-space:nowrap}
+.course-brand>.navigation-icon{width:22px;height:22px;flex-basis:22px;color:#f3f2df}
+.sidebar-toggle{display:grid;place-items:center;width:28px;height:28px;flex:0 0 28px;padding:0;border:0;border-radius:5px;background:transparent;color:#c1d0d8}
+.sidebar-toggle svg{width:17px;height:17px}
+.sidebar-toggle:hover{background:#ffffff16;color:#fff}
+.course-shell>aside>nav{display:flex;flex-direction:column;gap:2px;padding:0}
+.course-shell>aside>nav>button,.course-context{display:flex;align-items:center;gap:10px;height:34px;min-height:34px;width:100%;padding:6px 10px;border:0;border-radius:6px;background:transparent;color:#e7edf0;text-align:left;font:13px/20px "Microsoft YaHei UI","PingFang SC",sans-serif;transition:background .15s}
+.course-shell>aside>nav>button.active,.course-shell>aside>nav>button:hover{background:#f3f2df;color:#183451}
+.course-shell>aside>nav>button>.navigation-icon,.course-context>.navigation-icon{width:16px;height:16px;flex:0 0 16px;margin:0}
+.course-shell .nav-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.course-nav-label{margin:10px 4px 4px;padding:9px 6px 0;border-top:1px solid #ffffff25;color:#b6cad6;font-size:11px;line-height:16px}
+.course-context{font-weight:600;margin-bottom:3px}
+.course-shell>aside>nav>.course-subnav{padding-left:21px}
+.course-shell>main{min-width:0}
+.course-mobile-header,.course-menu-backdrop{display:none}
+.course-unavailable{padding:60px 20px;text-align:center}
+.course-unavailable a{color:#265573}
+@media(min-width:761px){
+  .shell.course-shell.sidebar-collapsed{padding-left:64px}
+  .course-shell.sidebar-collapsed>aside{width:64px}
+  .sidebar-collapsed .course-side-header{justify-content:center;padding:0}
+  .sidebar-collapsed .course-brand,.sidebar-collapsed .nav-text,.sidebar-collapsed .course-nav-label span{display:none}
+  .course-shell.sidebar-collapsed>aside>nav>button,.sidebar-collapsed .course-context{justify-content:center;padding:6px 0;gap:0}
+  .sidebar-collapsed .course-nav-label{padding:0;min-height:1px;margin:10px 4px 7px}
+}
+
+/* Course cards keep management available without opening it by default. */
+.course-shell .workbench{padding:18px 0 40px}
+.course-shell .wb-heading{align-items:center;margin:14px 0 24px}
+.course-shell .wb-heading h1{font:600 30px/1.3 "Microsoft YaHei UI","PingFang SC",sans-serif;margin:0 0 8px}
+.course-shell .wb-heading p{font-size:14px}
+.course-shell .wb-layout{display:flex;flex-direction:column;gap:24px}
+.course-shell .wb-courses{width:100%;min-height:0;padding:0;border:0;background:transparent;box-shadow:none}
+.course-list-toolbar{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:18px 20px;margin-bottom:20px;background:#fffefa;border:1px solid #e3e1dc;border-radius:10px}
+.course-search{flex:1;min-width:180px}
+.course-search>span{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+.course-search input{width:100%;min-height:40px;padding:9px 12px;border:1px solid #d5dcda;border-radius:7px;background:white;color:#193650;font:14px "Microsoft YaHei UI",sans-serif}
+.course-list-toolbar .wb-tabs{margin:0}
+.course-list-toolbar .wb-tabs button{padding:8px 12px}
+.course-list-toolbar select{min-height:40px;padding:8px 10px;border:1px solid #d5dcda;border-radius:7px;background:white;color:#456175;font-size:13px}
+.course-shell .wb-course-list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px}
+.course-list-card,.course-create-card{display:flex;flex-direction:column;min-width:0;min-height:280px;padding:23px;border:1px solid #e3e1dc;border-radius:12px;background:#fffefa;color:#193650;text-align:left}
+.course-list-card-head{display:flex;align-items:center;gap:13px;min-width:0}
+.course-list-icon{display:grid;place-items:center;width:48px;height:54px;flex:0 0 48px;border-radius:10px;background:#e4edf1;color:#275675}
+.course-list-icon svg{width:28px;height:28px}
+.course-list-card h2{margin:0;overflow-wrap:anywhere;font:600 19px/1.5 "Microsoft YaHei UI",sans-serif}
+.course-card-manage{margin-left:auto;align-self:flex-start;padding:4px 7px;border:0;border-radius:5px;background:transparent;color:#73838d;letter-spacing:1px}
+.course-card-manage:hover{background:#edf3f5;color:#193650}
+.course-card-description{min-height:40px;margin:14px 0 18px;color:#6d7d88;font-size:13px;line-height:1.7;overflow-wrap:anywhere}
+.course-card-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));padding:16px 0;margin-top:auto;margin-bottom:18px;border-block:1px solid #e3e1dc;text-align:center}
+.course-card-stats a{display:grid;gap:6px;border-right:1px solid #e3e1dc;color:#71808b;text-decoration:none;font-size:12px}
+.course-card-stats a:last-child{border:0}
+.course-card-stats a:hover{color:#123c5c;text-decoration:underline}
+.course-card-stats b{color:#193650;font-size:20px;font-weight:600}
+.course-card-bottom{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:auto}
+.course-card-bottom small{color:#7c8a93;font-size:11px}
+.course-card-bottom button{flex-shrink:0;padding:4px 0;border:0;background:transparent;color:#265573;font-size:13px}
+.course-card-bottom button:hover{text-decoration:underline}
+.course-create-card{align-items:center;justify-content:center;gap:12px;border:1px dashed #bdcdd1;background:transparent;text-align:center}
+.course-create-card:hover{background:#edf3f380;border-color:#6f969f}
+.course-create-card>span{font-size:40px;font-weight:300;color:#53798c}
+.course-create-card strong{font-size:16px}
+.course-create-card small{color:#788992;font-size:12px;line-height:1.8}
+.course-card-recovery{color:#a64b3d;font-size:13px;line-height:1.8}
+.course-shell .wb-detail{width:100%;min-height:0}
+.course-management-heading{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:22px;padding-bottom:14px;border-bottom:1px solid #e3e1dc}
+.course-management-heading button{border:0;background:transparent;color:#265573;font-size:13px}
+
+/* Conversation tools belong to the tutor, scoped to its current course. */
+.chat-conversation-actions{display:flex;align-items:center;gap:6px;flex-shrink:0}
+.chat>header .history-chat,.chat>header .new-chat{width:auto;height:34px;margin:0;padding:7px 10px;border:1px solid #d5e0e2;border-radius:6px;font:13px "Microsoft YaHei UI",sans-serif;color:#35556d;white-space:nowrap}
+.chat>header .history-chat:hover,.chat>header .new-chat:hover{background:#edf3f5}
+.chat-conversation-actions button:disabled{cursor:not-allowed;opacity:.5}
+.conversation-history{width:min(560px,calc(100vw - 32px));max-height:80dvh;padding:24px;border:1px solid #d5e0e2;border-radius:12px;background:#fffefa;color:#193650;box-shadow:0 20px 70px #071d3155}
+.conversation-history::backdrop{background:#0c2c4277}
+.conversation-history-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:20px}
+.conversation-history-heading h2{margin:0;font:600 20px "Microsoft YaHei UI",sans-serif}
+.conversation-history-heading p{margin:8px 0 0;color:#71808d;font-size:13px}
+.conversation-history-heading>button{width:30px;height:30px;border:0;border-radius:5px;background:transparent;color:#536d80;font-size:24px}
+.conversation-history-empty{padding:24px 0;color:#71808d;line-height:1.8;font-size:14px}
+.conversation-history-list{display:grid;gap:6px}
+.conversation-history-row{display:flex;align-items:center;gap:4px;border-radius:7px}
+.conversation-history-row>button:first-child{display:grid;gap:6px;flex:1;min-width:0;padding:12px;border:0;border-radius:7px;background:transparent;color:#193650;text-align:left}
+.conversation-history-row>button:first-child:hover,.conversation-history-row>button.selected{background:#eaf2ef}
+.conversation-history-row strong{overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:14px}
+.conversation-history-row small{color:#788b95;font-size:11px}
+.conversation-history-rename{flex-shrink:0;padding:7px;border:0;border-radius:5px;background:transparent;color:#456b80;font-size:12px}
+.conversation-history-row form{width:100%;padding:10px;border:1px solid #c4d8cf;border-radius:7px;background:#f2f8f3}
+.conversation-history-row form input{width:100%;padding:9px;border:1px solid #b7cec7;border-radius:5px;font:14px "Microsoft YaHei UI",sans-serif}
+.conversation-history-row form>div{display:flex;justify-content:flex-end;gap:7px;margin-top:8px}
+.conversation-history-row form button{padding:6px 12px;border:1px solid #cad3d4;border-radius:5px;background:#fff;color:#265573}
+.conversation-history-row form button[type=submit]{background:#123c5c;color:white}
+@media(max-width:1200px){.course-shell .wb-course-list{grid-template-columns:repeat(2,minmax(0,1fr))}.course-list-toolbar{gap:10px}.course-list-toolbar .wb-tabs button{padding:8px}}
+@media(max-width:760px){
+  .shell.course-shell{padding-left:0}
+  .course-shell>aside{display:none;width:224px}
+  .course-shell>aside.is-open{display:flex;z-index:60}
+  .course-menu-backdrop{display:block;position:fixed;inset:0;z-index:59;border:0;background:#0c2c4277}
+  .course-mobile-header{height:52px;display:flex;align-items:center;gap:12px;padding:8px 16px;background:#103e5e;color:#fff}
+  .course-mobile-header button{width:32px;height:32px;border:0;border-radius:5px;background:#ffffff12;color:white;font-size:18px}
+  .course-mobile-header>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}
+  .course-shell>main{padding:12px 16px 24px}
+  .course-shell>main.dialog-main{height:calc(100dvh - 52px);margin:0;padding:0}
+  .course-shell .workbench{padding-top:10px}
+  .course-shell .wb-heading{gap:12px;display:flex;align-items:flex-start}
+  .course-shell .wb-heading h1{font-size:26px}
+  .course-shell .wb-heading p{font-size:12px;line-height:1.7}
+  .course-shell .wb-heading>.wb-create-button{margin:0;font-size:13px}
+  .course-shell .top{height:36px;font-size:12px;gap:10px}
+  .course-list-toolbar{padding:14px}
+  .course-search{flex-basis:100%}
+  .course-list-toolbar .wb-tabs{flex:1}
+  .course-shell .wb-course-list{gap:14px}
+  .course-list-card,.course-create-card{padding:18px}
+  .dialog-page .chat{padding:14px 16px}
+  .chat>header{flex-wrap:wrap}
+  .chat-title-area{flex-basis:100%}
+  .chat-conversation-actions{margin-left:auto}
+}
+@media(max-width:520px){.course-shell .wb-course-list{grid-template-columns:minmax(0,1fr)}.course-create-card{min-height:180px}.course-list-toolbar select{width:100%}.course-list-toolbar .wb-tabs button{padding:8px 6px}}
+@media(prefers-reduced-motion:reduce){.course-shell *{transition:none!important}}
+
+.material-current-course{min-height:40px;padding:10px 12px;border:1px solid #d6dedc;border-radius:6px;background:#f3f6f3;color:#35556d;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

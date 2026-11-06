@@ -1,5 +1,7 @@
+import ConversationHistory from "./ConversationHistory";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ApiError, api } from "./workbench-api";
+import { ApiError, api, checkSession } from "./workbench-api";
+import AccountMenu from "./AccountMenu";
 import NoteConfigDialog from "./NoteConfigDialog";
 import QuizConfigDialog, { type PendingQuiz, type QuizInput, type QuizConfiguration } from "./QuizConfigDialog";
 import QuizDraftPreview, { quizStages, type QuizDraftCard, type QuizJob } from "./QuizDraftPreview";
@@ -9,13 +11,15 @@ import NoteMaterialPicker, { materialLabel, type NoteMaterial } from "./NoteMate
 type ChatModel = { id: string; label: string };
 type DraftCard = { asset_id: string; revision_id: string; title: string; note_type: string; url: string };
 type AgentResult = { session_id: string; status: string; answer: string; prompt?: { message: string; required: string[] }; note_config?: { note_type?: string; scope?: string; duration_minutes?: number }; draft?: DraftCard };
-type DispatchResult = { kind: "note"; intent: "note"; session_id: string; result: AgentResult; source_document_ids?: string[] | null }
+type DispatchResult = { kind: "note"; intent: "note"; session_id: string; result: AgentResult; source_document_ids?: string[] | null; note_job?: { job_id: string }; reply?: string }
   | { kind: "chat" | "quiz"; intent: "ask" | "quiz" | "clarify"; reply: string; model: string; citations?: ChatCitation[]; quiz?: ChatQuizCard; status?: string; quiz_configuration?: QuizConfiguration; quiz_scope?: PendingQuiz["scope"]; quiz_job?: QuizJob };
 type NoteCoverage = { selected_files: number; readable_chunks: number; read_chunks: number; partial: boolean; files: { document_id: string; file_name: string; readable_chunks: number; read_chunks: number }[] };
 type Message = { from: "agent" | "user"; text: string; model?: string; draft?: DraftCard; citations?: ChatCitation[]; quiz?: ChatQuizCard; quiz_draft?: QuizDraftCard };
 type StoredMessage = { role: "user" | "assistant"; content: string; model?: string; draft?: DraftCard; citations?: ChatCitation[]; quiz?: ChatQuizCard; quiz_draft?: QuizDraftCard };
 function restoreMessage(item: StoredMessage): Message {
-  return { from: item.role === "user" ? "user" : "agent", text: item.content, model: item.model,
+  const text = item.role === "assistant" && item.content === "请在弹窗中确认试题要求和生成依据。"
+    ? "请在输入框上方分步确认试题要求和生成依据。" : item.content;
+  return { from: item.role === "user" ? "user" : "agent", text, model: item.model,
     draft: item.draft, citations: item.citations, quiz: item.quiz, quiz_draft: item.quiz_draft };
 }
 type ActiveNote = { session_id: string; status: "needs_input" | "queued" | "running" | "failed"; job_id?: string; stage?: string; error?: string; coverage?: NoteCoverage; prompt?: AgentResult["prompt"]; note_input?: { note_type?: string; scope?: string; duration_minutes?: number; source_document_ids?: string[] } };
@@ -33,6 +37,7 @@ async function noteRequest(path: string, body?: unknown): Promise<AgentResult> {
       headers: body === undefined ? undefined : { "Content-Type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
+    checkSession(response, path);
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : "笔记请求失败");
     return data as AgentResult;
@@ -42,7 +47,8 @@ async function noteRequest(path: string, body?: unknown): Promise<AgentResult> {
   } finally { window.clearTimeout(timeout); }
 }
 
-export default function ChatHome({ courseId, selectedConversationId, titleRefreshKey, onConversationCreated, onConversationRenamed, onNewConversation }: { courseId: string | null; selectedConversationId: string | null; titleRefreshKey: number; onConversationCreated: (id: string) => void; onConversationRenamed: () => void; onNewConversation: () => void }) {
+export default function ChatHome({ courseId, selectedConversationId, titleRefreshKey, onConversationCreated, onConversationRenamed, onNewConversation, onConversationSelected }: { courseId: string | null; selectedConversationId: string | null; titleRefreshKey: number; onConversationCreated: (id: string) => void; onConversationRenamed: () => void; onNewConversation: () => void; onConversationSelected: (id: string) => void }) {
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [models, setModels] = useState<ChatModel[]>([]);
   const [noteModel, setNoteModel] = useState("");
   const [modelId, setModelId] = useState("");
@@ -74,6 +80,7 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
   const [pickerOpen, setPickerOpen] = useState(false);
   const [noteCancelling, setNoteCancelling] = useState(false);
   const [pendingQuiz, setPendingQuiz] = useState<PendingQuiz | null>(null);
+  const [quizPickerOpen, setQuizPickerOpen] = useState(false);
   const [quizError, setQuizError] = useState("");
   const [quizJob, setQuizJob] = useState<QuizJob | null>(null);
   const [previewQuiz, setPreviewQuiz] = useState<QuizDraftCard | null>(null);
@@ -87,11 +94,16 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
   const conversationId = useRef(`chat-${crypto.randomUUID()}`);
   const mounted = useRef(true);
   const quizWasOpen = useRef(false);
+  const noteWasOpen = useRef(false);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => {
-    if (quizWasOpen.current && !pendingQuiz) composerTextareaRef.current?.focus();
-    quizWasOpen.current = Boolean(pendingQuiz);
-  }, [pendingQuiz]);
+    if (quizWasOpen.current && !pendingQuiz && !isSending) composerTextareaRef.current?.focus();
+    quizWasOpen.current = Boolean(pendingQuiz) || (quizWasOpen.current && isSending);
+  }, [pendingQuiz, isSending]);
+  useEffect(() => {
+    if (noteWasOpen.current && !notePrompt && !isSending && !pickerOpen) composerTextareaRef.current?.focus();
+    noteWasOpen.current = Boolean(notePrompt) || (noteWasOpen.current && isSending);
+  }, [notePrompt, isSending, pickerOpen]);
 
   useLayoutEffect(() => {
     const textarea = composerTextareaRef.current;
@@ -120,7 +132,10 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
     else if (input.scope !== undefined) setNoteScope(input.scope);
     if (input.duration_minutes) setNoteDuration(String(input.duration_minutes));
     const uploaded = JSON.parse(localStorage.getItem(`note-uploads-${currentCourse}-${activeNote?.session_id}`) || "[]") as string[];
-    const selectedIds = new Set([...(input.source_document_ids ?? []), ...uploaded]);
+    const selection = localStorage.getItem(`note-selection-${currentCourse}-${activeNote?.session_id}`);
+    const selectedIds = new Set<string>(selection === null
+      ? [...(input.source_document_ids ?? []), ...uploaded]
+      : JSON.parse(selection));
     if (selectedIds.size) {
       void api<{ items: NoteMaterial[] }>(`/api/courses/${encodeURIComponent(currentCourse)}/documents`)
         .then(data => { if (active()) setNoteMaterials(data.items.filter(item => selectedIds.has(item.document_id))); })
@@ -155,9 +170,11 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
     setNoteJobStage(""); setNoteCoverage(undefined);
     setNoteMaterials([]);
     setNoteScope("");
+    setNoteType("key_points");
+    setNoteDuration("10");
     setPickerOpen(false);
     setNoteCancelling(false);
-    setPendingQuiz(null); setQuizError("");
+    setPendingQuiz(null); setQuizPickerOpen(false); setQuizError("");
     setQuizJob(null); setPreviewQuiz(null); quizSubmitKey.current = crypto.randomUUID();
     conversationId.current = selectedConversationId ?? `chat-${crypto.randomUUID()}`;
     if (courseId && selectedConversationId) {
@@ -208,6 +225,10 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
           setNoteCoverage(data.active_note?.coverage);
           setNotePrompt(data.active_note?.status === "needs_input" ? data.active_note.prompt : undefined);
           setNoteRecovery(["queued", "running", "failed"].includes(data.active_note?.status ?? "") ? data.active_note!.status as "queued" | "running" | "failed" : null);
+          if (data.active_note?.status === "needs_input") {
+            const id = selectedConversationId;
+            restoreNoteInput(data.active_note, courseId, () => mounted.current && conversationId.current === id);
+          }
         }).catch(() => {});
     }, 2000);
     return () => { active = false; window.clearInterval(timer); };
@@ -240,7 +261,7 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
   }, [courseId, composerMaterials]);
 
   async function attachComposerFiles(files: File[]) {
-    if (!files.length || composerUploadLock.current) return;
+    if (!files.length || composerUploadLock.current || pendingQuiz) return;
     if (!courseId) { setModelError("请先到“课程管理”选择一门课程，再添加文件。"); return; }
     if (noteSession || isSending) {
       setModelError("请先完成或取消当前笔记任务，再添加新资料。"); return;
@@ -267,6 +288,7 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
             method: "POST", credentials: "same-origin", body,
             headers: { "Idempotency-Key": crypto.randomUUID() },
           });
+          checkSession(response, "/knowledge/upload");
           const result = await response.json().catch(() => ({}));
           if (!response.ok) throw new Error(typeof result.detail === "string" ? result.detail : "上传失败");
           if (!current()) break;
@@ -336,27 +358,32 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
   }
 
   async function resumeNote() {
-    if (!courseId || !noteSession || isSending || !noteMaterials.length
-        || noteMaterials.some(item => item.parse_status !== "ready")) return;
+    const duration = Number(noteDuration);
+    if (!courseId || !noteSession || isSending || noteCancelling || !noteMaterials.length
+        || noteMaterials.some(item => item.parse_status !== "ready")
+        || !Number.isInteger(duration) || duration < 1 || duration > 240) return;
+    const id = conversationId.current;
     setIsSending(true);
     setModelError("");
     try {
-      const result = await api<{ job_id: string; status: "queued" }>(`/agent/queue-note?conversation_id=${encodeURIComponent(conversationId.current)}&event_id=${crypto.randomUUID()}`, "POST", {
+      const result = await api<{ job_id: string; status: "queued" }>(`/agent/queue-note?conversation_id=${encodeURIComponent(id)}&event_id=${crypto.randomUUID()}`, "POST", {
         course_id: courseId, session_id: noteSession,
-        note_input: { note_type: noteType, scope: noteScope.trim(), duration_minutes: Number(noteDuration),
+        note_input: { note_type: noteType, scope: noteScope.trim(), duration_minutes: duration,
           source_document_ids: noteMaterials.map(item => item.document_id) },
       });
+      if (!mounted.current || conversationId.current !== id) return;
       setMessages(current => [...current, { from: "user", text: `补充笔记要求：使用 ${noteMaterials.map(materialLabel).join("、")}；${noteScope.trim() ? `写作要求 ${noteScope.trim()}；` : ""}阅读时长 ${noteDuration} 分钟` }]);
       setNotePrompt(undefined);
       localStorage.removeItem(`note-uploads-${courseId}-${noteSession}`);
       localStorage.removeItem(`note-scope-${courseId}-${noteSession}`);
+      localStorage.removeItem(`note-selection-${courseId}-${noteSession}`);
       setNoteJobId(result.job_id);
       setNoteRecovery("queued");
       setNoteJobStage("");
       setNoteCoverage(undefined);
     } catch (error) {
-      setModelError(error instanceof Error ? error.message : "笔记任务提交失败");
-    } finally { setIsSending(false); }
+      if (mounted.current && conversationId.current === id) setModelError(error instanceof Error ? error.message : "笔记任务提交失败");
+    } finally { if (mounted.current && conversationId.current === id) setIsSending(false); }
   }
 
   async function cancelNote() {
@@ -374,6 +401,7 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
       setNoteMaterials([]);
       localStorage.removeItem(`note-uploads-${courseId}-${noteSession}`);
       localStorage.removeItem(`note-scope-${courseId}-${noteSession}`);
+      localStorage.removeItem(`note-selection-${courseId}-${noteSession}`);
       setNoteScope("");
       setMessages(current => [...current, { from: "agent", text: "已取消笔记生成。你可以继续聊天，或重新发起笔记任务。" }]);
     } catch (error) {
@@ -440,7 +468,7 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
 
   async function send(value = draft) {
     const message = value.trim();
-    if (!message || isSending) return;
+    if (!message || isSending || pendingQuiz) return;
     if (composerUploading) { setModelError("请等待文件上传完成后再发送。"); return; }
     if (composerMaterials.some(item => item.parse_status !== "ready")) {
       setModelError("请等待附件处理完成；处理失败的文件请移除后重新上传。"); return;
@@ -468,26 +496,37 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
         course_id: courseId,
         conversation_id: requestConversationId,
         model_id: modelId,
+        auto_queue_note: true,
         attachment_document_ids: composerMaterials.map(item => item.document_id),
       });
       if (!mounted.current || conversationId.current !== requestConversationId) return;
       if (result.kind === "note") {
         setNoteSession(result.session_id);
-        if (composerMaterials.length) {
-          setNoteMaterials(current => [...current.filter(item => !composerMaterials.some(
-            attached => attached.document_id === item.document_id)), ...composerMaterials]);
-          localStorage.setItem(`note-uploads-${courseId}-${result.session_id}`,
-            JSON.stringify(composerMaterials.map(item => item.document_id)));
+        if (result.note_job) {
           setComposerMaterials([]);
-        }
-        showAgentResult(result.result);
-        if (result.source_document_ids?.length && result.source_document_ids.length <= 5) {
-          restoreNoteInput({ session_id: result.session_id, status: "needs_input",
-            note_input: { source_document_ids: result.source_document_ids } }, courseId, () => mounted.current);
+          setMessages(current => [...current, { from: "agent", text: result.reply || "笔记生成任务已排队。" }]);
+          setNoteJobId(result.note_job.job_id);
+          setNoteRecovery("queued");
+          setNoteJobStage("");
+          setNoteCoverage(undefined);
+        } else {
+          if (composerMaterials.length) {
+            setNoteMaterials(current => [...current.filter(item => !composerMaterials.some(
+              attached => attached.document_id === item.document_id)), ...composerMaterials]);
+            localStorage.setItem(`note-uploads-${courseId}-${result.session_id}`,
+              JSON.stringify(composerMaterials.map(item => item.document_id)));
+            setComposerMaterials([]);
+          }
+          showAgentResult(result.result);
+          if (result.source_document_ids?.length && result.source_document_ids.length <= 5) {
+            restoreNoteInput({ session_id: result.session_id, status: "needs_input",
+              note_input: { source_document_ids: result.source_document_ids } }, courseId,
+              () => mounted.current && conversationId.current === requestConversationId);
+          }
         }
       } else {
-        setMessages(current => [...current, { from: "agent", text: result.reply,
-          model: result.model || selectedLabel, citations: result.citations, quiz: result.quiz }]);
+        setMessages(current => [...current, restoreMessage({ role: "assistant", content: result.reply,
+          model: result.model || selectedLabel, citations: result.citations, quiz: result.quiz })]);
         setComposerMaterials([]);
         if (result.quiz_configuration && result.status === "needs_input") {
           setPendingQuiz({ quiz_input: result.quiz_configuration.quiz_input, scope: result.quiz_scope });
@@ -537,6 +576,7 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
         body: JSON.stringify({ course_id: courseId, conversation_id: id, model_id: modelId,
           message: "确认试题配置", quiz_input: input }),
       });
+      checkSession(response, "/api/chat/dispatch");
       const result = await response.json() as DispatchResult & { detail?: string };
       if (!response.ok) throw new Error(typeof result.detail === "string" ? result.detail : "试卷生成请求失败");
       if (!mounted.current || conversationId.current !== id) return;
@@ -549,7 +589,6 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
             const history = await api<{ items: StoredMessage[] }>(`/api/courses/${encodeURIComponent(courseId)}/conversations/${encodeURIComponent(id)}/messages`);
             if (mounted.current && conversationId.current === id) setMessages(history.items.map(restoreMessage));
           }
-          composerTextareaRef.current?.focus();
         } else setQuizError(result.quiz_configuration.prompt?.message || "请检查试题配置");
       }
     } catch (error) {
@@ -577,14 +616,13 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
       await api(`/api/courses/${encodeURIComponent(courseId)}/conversations/${encodeURIComponent(id)}/cancel-quiz`, "POST");
       if (!mounted.current || conversationId.current !== id) return;
       setPendingQuiz(null);
-      composerTextareaRef.current?.focus();
     } catch (error) {
       if (mounted.current && conversationId.current === id) setQuizError(error instanceof Error ? error.message : "取消失败");
     } finally { if (mounted.current && conversationId.current === id) setIsSending(false); }
   }
 
-  return <div className="dialog-page" inert={Boolean(notePrompt || pendingQuiz)}><section className="chat">
-    <header><div className="chat-title-area">{editingTitle ? <form className="chat-title-editor" onSubmit={event => { event.preventDefault(); void saveTitle(); }}><input autoFocus aria-label="对话名称" maxLength={100} value={titleDraft} onChange={event => setTitleDraft(event.target.value)} onKeyDown={event => { if (event.key === "Escape") setEditingTitle(false); }} /><button type="submit" disabled={savingTitle}>保存</button><button type="button" onClick={() => setEditingTitle(false)}>取消</button></form> : <button className="chat-title-button" type="button" disabled={!selectedConversationId} title={selectedConversationId ? "点击重命名对话" : "发送消息后可重命名"} onClick={() => { setTitleDraft(conversationTitle); setEditingTitle(true); }}><h2>{conversationTitle}</h2>{selectedConversationId && <span aria-hidden="true">✎</span>}</button>}</div><button className="new-chat" type="button" onClick={newConversation} disabled={isSending}>＋ 新对话</button></header>
+  return <div className="dialog-page" inert={pickerOpen || quizPickerOpen}><section className="chat">
+    <header><div className="chat-title-area">{editingTitle ? <form className="chat-title-editor" onSubmit={event => { event.preventDefault(); void saveTitle(); }}><input autoFocus aria-label="对话名称" maxLength={100} value={titleDraft} onChange={event => setTitleDraft(event.target.value)} onKeyDown={event => { if (event.key === "Escape") setEditingTitle(false); }} /><button type="submit" disabled={savingTitle}>保存</button><button type="button" onClick={() => setEditingTitle(false)}>取消</button></form> : <button className="chat-title-button" type="button" disabled={!selectedConversationId} title={selectedConversationId ? "点击重命名对话" : "发送消息后可重命名"} onClick={() => { setTitleDraft(conversationTitle); setEditingTitle(true); }}><h2>{conversationTitle}</h2>{selectedConversationId && <span aria-hidden="true">✎</span>}</button>}</div><div className="chat-conversation-actions"><button className="history-chat" type="button" disabled={!courseId || isSending} onClick={() => setHistoryOpen(true)}>历史对话</button><button className="new-chat" type="button" onClick={newConversation} disabled={isSending}>＋ 新建对话</button><AccountMenu /></div></header>{historyOpen && courseId && <ConversationHistory courseId={courseId} selectedId={selectedConversationId} onSelect={onConversationSelected} onClose={() => setHistoryOpen(false)} onRenamed={onConversationRenamed} />}
     <div className="messages" ref={messagesRef} aria-live="polite">
       {historyLoading ? <div className="empty-chat" role="status">正在加载对话…</div> : messages.length === 0 && <div className="empty-chat chat-welcome">
         <div className="chat-welcome-content">
@@ -612,19 +650,37 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
       {noteRecovery && noteSession && <article className="message agent note-job-message" role="status"><i aria-hidden="true">✦</i><div><label>助手</label><div className="note-job-status"><div className="note-job-copy"><span>{noteRecovery === "queued" ? "笔记任务已排队，正在等待生成。" : noteRecovery === "running" ? `正在生成笔记${noteJobStage ? ` · ${noteJobStage}` : "…"}` : `笔记生成失败${noteJobError ? `：${noteJobError}` : ""}`}</span>{noteCoverage && <small>{coverageSummary(noteCoverage)}</small>}</div><div className="note-job-actions">{noteRecovery === "failed" && <button type="button" className="note-job-retry" disabled={isSending} onClick={() => void recoverNote()}>{noteJobId ? "重试生成" : "恢复笔记任务"}</button>}<button type="button" className="note-job-cancel" disabled={noteCancelling} onClick={() => void cancelNote()}>{noteCancelling ? "正在取消…" : noteRecovery === "failed" ? "结束任务" : "取消生成"}</button></div></div></div></article>}
       {quizJob && <article className="message agent note-job-message" role="status"><i aria-hidden="true">✦</i><div><label>助手</label><p>{quizJob.status === "failed" ? `试卷生成失败：${quizJob.error || "请稍后重试"}` : `正在生成试卷 · ${quizStages[quizJob.stage] || "处理中"}${quizJob.progress ? ` · 已完成 ${quizJob.progress.completed_questions}/${quizJob.progress.total_questions} 题` : ""}`}</p>{quizJob.status === "failed" && <button type="button" disabled={isSending} onClick={() => void retryQuiz()}>重试生成试卷</button>}</div></article>}
       {previewQuiz && courseId && <QuizDraftPreview courseId={courseId} card={previewQuiz} onClose={() => setPreviewQuiz(null)} />}
-      {isSending && <div className="chat-thinking" role="status">✦　正在生成回复…</div>}
+      {isSending && <article className="message agent chat-thinking" role="status">
+        <i aria-hidden="true">✦</i><div><label>助手</label><p>正在生成回复…</p></div>
+      </article>}
     </div>
-    {modelError && <p className="chat-error" role="alert">{modelError}</p>}
-    {pendingQuiz && courseId && <QuizConfigDialog courseId={courseId} pending={pendingQuiz} busy={isSending} error={quizError} onConfirm={input => void confirmQuiz(input)} onCancel={() => void cancelQuiz()} />}
-    {notePrompt && !pickerOpen && <NoteConfigDialog noteType={noteType} onNoteType={setNoteType} duration={noteDuration} onDuration={setNoteDuration} materials={noteMaterials} onChooseMaterials={() => setPickerOpen(true)} requirements={noteScope} onRequirements={value => { setNoteScope(value); if (courseId && noteSession) localStorage.setItem(`note-scope-${courseId}-${noteSession}`, value); }} onGenerate={() => void resumeNote()} onCancel={() => void cancelNote()} busy={isSending || noteCancelling} error={modelError} promptMessage={notePrompt.message} generationModel={noteModel} />}
-    {pickerOpen && courseId && <NoteMaterialPicker courseId={courseId} selected={noteMaterials} onUploaded={item => { setNoteMaterials(current => current.some(existing => existing.document_id === item.document_id) ? current.map(existing => existing.document_id === item.document_id ? item : existing) : [...current, item]); if (noteSession) { const key = `note-uploads-${courseId}-${noteSession}`; const ids = JSON.parse(localStorage.getItem(key) || "[]") as string[]; localStorage.setItem(key, JSON.stringify([...new Set([...ids, item.document_id])])); } }} onConfirm={items => { setNoteMaterials(items); if (noteSession) { const key = `note-uploads-${courseId}-${noteSession}`; const ids = JSON.parse(localStorage.getItem(key) || "[]") as string[]; localStorage.setItem(key, JSON.stringify(ids.filter(id => items.some(item => item.document_id === id)))); } setPickerOpen(false); }} onClose={() => setPickerOpen(false)} />}
-    <div className={`composer composer-attachment${composerDragOver ? " drag-over" : ""}`} onDragOver={event => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; setComposerDragOver(true); } }} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setComposerDragOver(false); }} onDrop={event => { event.preventDefault(); setComposerDragOver(false); void attachComposerFiles(Array.from(event.dataTransfer.files)); }}>
+    {modelError && !notePrompt && <p className="chat-error" role="alert">{modelError}</p>}
+    {notePrompt && !pickerOpen && <NoteConfigDialog inline noteType={noteType} onNoteType={setNoteType} duration={noteDuration} onDuration={setNoteDuration} materials={noteMaterials} onChooseMaterials={() => setPickerOpen(true)} requirements={noteScope} onRequirements={value => { setNoteScope(value); if (courseId && noteSession) localStorage.setItem(`note-scope-${courseId}-${noteSession}`, value); }} onGenerate={() => void resumeNote()} onCancel={() => void cancelNote()} busy={isSending || noteCancelling} error={modelError} promptMessage={notePrompt.message} generationModel={noteModel} />}
+    {pickerOpen && courseId && <NoteMaterialPicker courseId={courseId} selected={noteMaterials}
+      onUploaded={item => {
+        setNoteMaterials(current => current.some(existing => existing.document_id === item.document_id)
+          ? current.map(existing => existing.document_id === item.document_id ? item : existing)
+          : [...current, item]);
+        if (noteSession) {
+          const key = `note-selection-${courseId}-${noteSession}`;
+          const ids = JSON.parse(localStorage.getItem(key) || JSON.stringify(noteMaterials.map(item => item.document_id))) as string[];
+          localStorage.setItem(key, JSON.stringify([...new Set([...ids, item.document_id])]));
+        }
+      }} onConfirm={items => {
+        setNoteMaterials(items);
+        if (noteSession) localStorage.setItem(`note-selection-${courseId}-${noteSession}`, JSON.stringify(items.map(item => item.document_id)));
+        setPickerOpen(false);
+      }} onClose={() => setPickerOpen(false)} />}
+    {pendingQuiz && courseId && <QuizConfigDialog courseId={courseId} pending={pendingQuiz} busy={isSending} error={quizError}
+      pickerOpen={quizPickerOpen} onPickerOpenChange={setQuizPickerOpen}
+      onConfirm={input => void confirmQuiz(input)} onCancel={() => void cancelQuiz()} />}
+    <div className={`composer composer-attachment${composerDragOver ? " drag-over" : ""}`} inert={Boolean(pendingQuiz)} onDragOver={event => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; setComposerDragOver(true); } }} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setComposerDragOver(false); }} onDrop={event => { event.preventDefault(); setComposerDragOver(false); void attachComposerFiles(Array.from(event.dataTransfer.files)); }}>
       {composerDragOver && <div className="composer-drop-hint">松开以添加到当前课程资料</div>}
       {(composerUploading || composerMaterials.length > 0) && <div className="composer-attachments" aria-label="已添加的资料">{composerUploading && <span className="composer-attachment-chip">正在上传文件…</span>}{composerMaterials.map(item => <span className="composer-attachment-chip" key={item.document_id}><strong>{item.file_name || item.title}</strong><small>{item.parse_status === "ready" ? "可检索" : item.parse_status === "failed" ? "处理失败" : "处理中"}</small><button type="button" aria-label={`移除 ${item.file_name || item.title}`} onClick={() => setComposerMaterials(current => current.filter(candidate => candidate.document_id !== item.document_id))}>×</button></span>)}</div>}
       <div className="composer-row">
-      <textarea ref={composerTextareaRef} rows={1} aria-label="输入你的问题" value={draft} disabled={!courseId || isSending || historyLoading || historyFailed} onChange={event => setDraft(event.target.value)} onKeyDown={event => {
+      <textarea ref={composerTextareaRef} rows={1} aria-label="输入你的问题" value={draft} disabled={!courseId || isSending || historyLoading || historyFailed || Boolean(notePrompt)} onChange={event => setDraft(event.target.value)} onKeyDown={event => {
         if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); }
-      }} placeholder={isSending ? "助手正在思考……" : "输入你的问题…"} />
+      }} placeholder={pendingQuiz ? "在上方卡片分步确认试题要求…" : notePrompt ? "在上方卡片补充笔记要求…" : isSending ? "助手正在思考……" : "输入你的问题…"} />
       <div className="composer-controls"><div className="composer-left-actions"><button type="button" className="composer-attach-trigger" aria-label="添加课程文件" title="添加文件，也可直接拖入输入框" disabled={Boolean(noteSession) || isSending || composerUploading} onClick={() => composerFileInputRef.current?.click()}>＋</button><input ref={composerFileInputRef} className="composer-file-input" type="file" multiple accept=".md,.txt,.pdf,.ppt,.pptx,.doc,.docx,.png,.jpg,.jpeg,.webp" aria-label="选择聊天资料文件" onChange={event => void attachComposerFiles(Array.from(event.target.files ?? []))} /><div className="model-picker" ref={modelPickerRef} onKeyDown={handleModelKeys}>
         <button className="model-trigger" ref={modelTriggerRef} type="button" aria-label="选择聊天模型" title={models.find(model => model.id === modelId)?.label ?? "加载模型中…"} aria-haspopup="listbox" aria-expanded={modelMenuOpen} disabled={isSending || models.length === 0} onClick={() => setModelMenuOpen(open => !open)}>
           <span>{models.find(model => model.id === modelId)?.label ?? "加载模型中…"}</span>
@@ -637,7 +693,7 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
             modelTriggerRef.current?.focus();
           }}><span className="model-option-icon" aria-hidden="true">✦</span><span>{model.label}</span>{model.id === modelId && <span className="model-check" aria-hidden="true">✓</span>}</button>)}
         </div>}
-      </div></div><button className="send" disabled={isSending || historyLoading || historyFailed || composerUploading || composerMaterials.some(item => item.parse_status !== "ready") || !draft.trim() || !modelId} onClick={() => void send()} aria-label="发送消息">{isSending ? "…" : "➤"}</button></div>
+      </div></div><button className="send" disabled={isSending || historyLoading || historyFailed || Boolean(notePrompt) || composerUploading || composerMaterials.some(item => item.parse_status !== "ready") || !draft.trim() || !modelId} onClick={() => void send()} aria-label="发送消息">{isSending ? "…" : "➤"}</button></div>
     </div>
     </div>
   </section></div>;

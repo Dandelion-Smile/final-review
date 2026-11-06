@@ -2,6 +2,7 @@
 
 import logging
 import time
+from contextlib import nullcontext
 from pathlib import Path
 
 from langchain_openai import OpenAIEmbeddings
@@ -19,6 +20,16 @@ logger = logging.getLogger(__name__)
 
 def process_material_job(store, kb: KnowledgeBase, job: dict, max_bytes: int) -> None:
     """Process a claimed job; the attempt number fences out stale workers."""
+    guard = (
+        store.account_file_access(job["user_id"])
+        if isinstance(store, PostgresStore) else nullcontext(True)
+    )
+    with guard as allowed:
+        if allowed:
+            _process_material_job(store, kb, job, max_bytes)
+
+
+def _process_material_job(store, kb: KnowledgeBase, job: dict, max_bytes: int) -> None:
     token = store.bind_user(job["user_id"]) if hasattr(store, "bind_user") else None
     interpreter = None
     try:

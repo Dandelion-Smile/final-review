@@ -53,6 +53,7 @@ class SurrealStore:
         "learning_event",
         "fast_quiz_session",
         "exam",
+        "calendar_entry",
         "learning_asset",
         "asset_revision",
         "quiz_revision_payload",

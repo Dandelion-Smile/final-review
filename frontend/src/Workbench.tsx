@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "antd";
-import AccountStatus from "./AccountStatus";
 import { api, ApiError, type Course, type DeletionPreview, type Exam, type ExamInput } from "./workbench-api";
 import "./workbench.css";
+import NavigationIcon from "./NavigationIcon";
+import { courseHref } from "./course-routes";
 
 const questionTypes = [
   ["choice", "选择题"], ["fill_blank", "填空题"], ["true_false", "判断题"],
@@ -13,13 +14,17 @@ const statusText = { active: "进行中", archived: "已归档", deleted: "回�
 const splitLines = (value: string) => value.split("\n").map(x => x.trim()).filter(Boolean);
 const emptyExam = (): ExamInput => ({ name: "", exam_at: null, total_score: null, blueprint: [], emphasis: [], exclusions: [], notes: "", generation_preferences: {} });
 
-type Props = { selectedId: string | null; onSelect: (course: Course | null) => void };
+type Props = { selectedId: string | null; onSelect: (course: Course | null) => void; onEnter: (course: Course) => void };
 type CourseEdit = { kind: "create" | "edit"; course?: Course };
 
-export default function Workbench({ selectedId, onSelect }: Props) {
+export default function Workbench({ selectedId, onSelect, onEnter }: Props) {
   const [courses, setCourses] = useState<Course[]>([]);
   const [exams, setExams] = useState<Exam[]>([]);
-  const [filter, setFilter] = useState<"active" | "archived" | "deleted">("active");
+  const [filter, setFilter] = useState<"all" | "active" | "archived" | "deleted">("all");
+  const [search, setSearch] = useState("");
+  const [sort, setSort] = useState("updated");
+  const [showDetail, setShowDetail] = useState(false);
+  const [stats, setStats] = useState<Record<string, (number | null)[]>>({});
   const [courseEdit, setCourseEdit] = useState<CourseEdit | null>(null);
   const [examEdit, setExamEdit] = useState<Exam | "new" | null>(null);
   const [preview, setPreview] = useState<{ course: Course; data: DeletionPreview } | null>(null);
@@ -27,7 +32,6 @@ export default function Workbench({ selectedId, onSelect }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [unauthorized, setUnauthorized] = useState(false);
 
   const refreshCourses = useCallback(async (preferId?: string) => {
     const data = await api<{ items: Course[] }>("/api/courses");
@@ -49,7 +53,6 @@ export default function Workbench({ selectedId, onSelect }: Props) {
       setLoading(false);
     }).catch(e => {
       if (!active) return;
-      setUnauthorized(e instanceof ApiError && e.status === 401);
       setError(e instanceof Error ? e.message : "课程加载失败");
       setLoading(false);
     });
@@ -116,28 +119,52 @@ export default function Workbench({ selectedId, onSelect }: Props) {
     } finally { setBusy(false); }
   }
 
-  const visible = courses.filter(x => (x.status ?? "active") === filter);
+  useEffect(() => {
+    let active = true;
+    setStats({});
+    void Promise.all(courses.filter(item => item.status !== "deleted").map(async item => {
+      const results = await Promise.allSettled(["documents", "notes", "quizzes"].map(section =>
+        api<{ items: unknown[] }>(`/api/courses/${encodeURIComponent(item.course_id)}/${section}`)));
+      if (active) setStats(current => ({ ...current, [item.course_id]: results.map(result => result.status === "fulfilled" ? result.value.items.length : null) }));
+    }));
+    return () => { active = false; };
+  }, [courses]);
+  useEffect(() => {
+    if (showDetail) document.getElementById("course-management")?.scrollIntoView({ block: "start" });
+  }, [showDetail, selectedId]);
+  const visible = courses.filter(x => (filter === "all" ? x.status !== "deleted" : (x.status ?? "active") === filter)
+    && `${x.name} ${x.subject || ""}`.toLocaleLowerCase().includes(search.toLocaleLowerCase()))
+    .sort((a, b) => sort === "name" ? a.name.localeCompare(b.name, "zh-CN") : b.updated_at.localeCompare(a.updated_at));
   const counts = { active: courses.filter(x => !x.status || x.status === "active").length, archived: courses.filter(x => x.status === "archived").length, deleted: courses.filter(x => x.status === "deleted").length };
 
   return <div className="workbench">
-    <AccountStatus key={unauthorized ? "signed-out" : "signed-in"} />
-    <div className="wb-heading"><div><span className="wb-eyebrow">课程管理</span><h1>把每一场考试，放回它的课程里。</h1><p>先整理课程，再记录考试范围与老师的要求。</p></div><Button type="primary" size="large" className="wb-create-button" onClick={() => setCourseEdit({ kind: "create" })}>＋ 新建课程</Button></div>
+    <div className="wb-heading"><div><h1>我的课程</h1><p>把每门课程的资料与复习内容放在一起。</p></div><Button type="primary" size="large" className="wb-create-button" onClick={() => setCourseEdit({ kind: "create" })}>＋ 新建课程</Button></div>
     {notice && <p className="wb-notice" role="status">{notice}</p>}
     {error && <p className="wb-error" role="alert">{error} <button onClick={() => { setError(""); refreshCourses().catch(e => setError(String(e))); }}>重新加载</button></p>}
-    {unauthorized ? <SignIn onDone={() => { setUnauthorized(false); setError(""); setLoading(true); refreshCourses().then(() => setLoading(false)).catch(e => { setError(String(e)); setLoading(false); }); }} /> :
-      <div className="wb-layout">
-        <section className="wb-courses" aria-label="课程列表"><div className="wb-section-head"><h2>我的课程</h2><span>{courses.length} 门</span></div>
-          <div className="wb-tabs" role="group" aria-label="课程状态">{(["active", "archived", "deleted"] as const).map(status => <button key={status} className={filter === status ? "selected" : ""} onClick={() => setFilter(status)}>{statusText[status]} <b>{counts[status]}</b></button>)}</div>
-          {loading ? <p className="wb-empty">正在加载课程…</p> : visible.length === 0 ? <p className="wb-empty">{filter === "active" ? "还没有进行中的课程。点击“新建课程”开始。" : filter === "archived" ? "没有已归档课程。" : "回收期内没有已删除课程。"}</p> :
-            <div className="wb-course-list">{visible.map(course => <button key={course.course_id} className={selectedId === course.course_id ? "wb-course-card current" : "wb-course-card"} onClick={() => onSelect(course)}><span className="wb-course-top"><span>{statusText[course.status ?? "active"]}</span><span>↗</span></span><strong>{course.name}</strong><small>{course.subject || "未填写学科"}{course.status === "deleted" && course.purge_after ? ` · ${new Date(course.purge_after).toLocaleDateString("zh-CN")} 前可恢复` : ""}</small></button>)}</div>}
+    <div className="wb-layout">
+        <section className="wb-courses" aria-label="课程列表">
+          <div className="course-list-toolbar"><label className="course-search"><span>搜索课程</span><input type="search" aria-label="搜索课程" placeholder="搜索课程" value={search} onChange={event => setSearch(event.target.value)} /></label>
+            <div className="wb-tabs" role="group" aria-label="课程状态">{(["all", "active", "archived", "deleted"] as const).map(status => <button type="button" key={status} className={filter === status ? "selected" : ""} onClick={() => setFilter(status)}>{status === "all" ? "全部" : statusText[status]} <b>{status === "all" ? counts.active + counts.archived : counts[status]}</b></button>)}</div>
+            <select aria-label="课程排序" value={sort} onChange={event => setSort(event.target.value)}><option value="updated">最近更新</option><option value="name">名称排序</option></select>
+          </div>
+          {loading ? <p className="wb-empty" role="status">正在加载课程…</p> : <div className="wb-course-list">
+            {!search && (filter === "all" || filter === "active") && <button type="button" className="course-create-card" onClick={() => setCourseEdit({ kind: "create" })}><span>＋</span><strong>创建新的课程</strong><small>添加一门课程，开始整理资料与复习内容</small></button>}
+            {visible.map(item => <article className="course-list-card" key={item.course_id}>
+              <div className="course-list-card-head"><span className="course-list-icon"><NavigationIcon name="courses" /></span><h2>{item.name}</h2><button type="button" className="course-card-manage" aria-label={`管理${item.name}`} onClick={() => { onSelect(item); setShowDetail(true); }}>•••</button></div>
+              <p className="course-card-description">{item.subject || "资料、笔记与测试，集中管理这门课程的复习。"}</p>
+              {item.status === "deleted" ? <p className="course-card-recovery">{item.purge_after ? `${new Date(item.purge_after).toLocaleDateString("zh-CN")} 前可恢复` : "课程处于回收期"}</p> : <div className="course-card-stats">{(["materials", "notes", "quiz"] as const).map((page, index) => <a key={page} href={courseHref(item.course_id, page)}><span>{["资料", "笔记", "测试"][index]}</span><b>{stats[item.course_id]?.[index] ?? "—"}</b></a>)}</div>}
+              <div className="course-card-bottom"><small>{item.status === "archived" ? "已归档" : item.status === "deleted" ? "回收期" : `更新于 ${new Date(item.updated_at).toLocaleDateString("zh-CN")}`}</small><button type="button" onClick={() => { if (item.status === "deleted") { onSelect(item); setShowDetail(true); } else onEnter(item); }}>{item.status === "deleted" ? "管理课程" : "进入课程"}<span aria-hidden="true"> →</span></button></div>
+            </article>)}
+            {!visible.length && <p className="wb-empty">{search ? "没有匹配的课程，请试试其他关键词。" : filter === "archived" ? "没有已归档课程。" : filter === "deleted" ? "回收期内没有已删除课程。" : "还没有课程，点击新建课程开始。"}</p>}
+          </div>}
         </section>
-        <section className="wb-detail" aria-label="课程详情">{!selected ? <div className="wb-detail-empty"><span>✦</span><h2>选一门课程，开始整理考试。</h2><p>课程管理资料会保存在你的账户中。</p></div> : <>
+        {showDetail && <section id="course-management" className="wb-detail" aria-label="课程详情"><div className="course-management-heading"><strong>课程管理与考试安排</strong><button type="button" onClick={() => setShowDetail(false)}>收起管理</button></div>{!selected ? <div className="wb-detail-empty"><span>✦</span><h2>选一门课程，开始整理考试。</h2><p>课程管理资料会保存在你的账户中。</p></div> : <>
           <div className="wb-detail-head"><div><span className="wb-eyebrow">{statusText[selected.status ?? "active"]} · 课程项目</span><h2>{selected.name}</h2><p>{selected.subject || "尚未填写学科"}</p></div><div className="wb-actions">{selected.status === "deleted" ? <button disabled={busy} onClick={() => run(() => api(`/api/courses/${selected.course_id}/restore`, "POST"), "课程已恢复。", selected.course_id)}>恢复课程</button> : <><button disabled={busy} onClick={() => setCourseEdit({ kind: "edit", course: selected })}>编辑课程</button>{selected.status === "archived" ? <button disabled={busy} onClick={() => run(() => api(`/api/courses/${selected.course_id}/restore`, "POST"), "课程已恢复。", selected.course_id)}>恢复课程</button> : <button disabled={busy} onClick={() => run(() => api(`/api/courses/${selected.course_id}/archive`, "POST"), "课程已归档。", selected.course_id)}>归档课程</button>}<button className="wb-danger-link" disabled={busy} onClick={() => openPreview(selected)}>删除课程</button></>}</div></div>
           {selected.status === "deleted" ? <div className="wb-recovery"><h3>课程处于回收期</h3><p>资料、考试、学习资产和作答记录已暂停使用。{selected.purge_after && `请在 ${new Date(selected.purge_after).toLocaleDateString("zh-CN")} 前恢复。`}</p></div> : <><div className="wb-exam-head"><div><span className="wb-eyebrow">考试安排</span><h3>关联考试 <small>{exams.length} 场</small></h3></div><button className="wb-primary" disabled={busy} onClick={() => setExamEdit("new")}>＋ 添加考试</button></div>
             {exams.length === 0 ? <p className="wb-empty wb-exam-empty">还没有考试。添加日期、题型和老师重点，之后可以继续补全。</p> : <div className="wb-exams">{exams.map(exam => <article key={exam.exam_id} className="wb-exam"><div className="wb-exam-date"><b>{exam.exam_at ? new Date(exam.exam_at).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" }) : "待定"}</b><small>{exam.exam_at ? new Date(exam.exam_at).getFullYear() : "日期"}</small></div><div className="wb-exam-main"><span>{exam.status === "archived" ? "已归档" : "进行中"}</span><h4>{exam.name}</h4><p>{exam.blueprint.length ? exam.blueprint.map(item => `${labels[item.question_type] ?? item.question_type} ${item.question_count} 题`).join(" · ") : "题型结构待补充"}{exam.total_score ? ` · 满分 ${exam.total_score}` : ""}</p>{exam.emphasis.length > 0 && <small>重点：{exam.emphasis.join("、")}</small>}</div><div className="wb-exam-actions">{exam.status === "active" ? <><button onClick={() => setExamEdit(exam)}>编辑</button><button disabled={busy} onClick={() => run(() => api(`/api/exams/${exam.exam_id}/archive`, "POST"), "考试已归档。", selected.course_id)}>归档</button></> : <span>只读</span>}</div></article>)}</div>}
           </>}
-        </>}</section>
-      </div>}
+        </>}</section>}
+    </div>
     {courseEdit && <CourseDialog edit={courseEdit} busy={busy} onClose={() => setCourseEdit(null)} onSave={async (name, subject) => {
       const ok = await run(async () => courseEdit.kind === "create" ? api<Course>("/api/courses", "POST", { name }) : api<Course>(`/api/courses/${courseEdit.course!.course_id}`, "PATCH", { name, subject, expected_updated_at: courseEdit.course!.updated_at }), courseEdit.kind === "create" ? "课程已创建。" : "课程已更新。", courseEdit.course?.course_id);
       if (ok) setCourseEdit(null);
@@ -148,11 +175,6 @@ export default function Workbench({ selectedId, onSelect }: Props) {
     }} />}
     {preview && <div className="wb-overlay" role="presentation"><section className="wb-dialog wb-confirm" role="dialog" aria-modal="true" aria-labelledby="delete-title"><span className="wb-eyebrow">删除影响</span><h2 id="delete-title">删除“{preview.course.name}”？</h2><p>课程将在回收期内保留 30 天。确认后，该课程及关联内容会暂停使用。</p><div className="wb-impact"><span>资料 <b>{preview.data.impact.materials}</b></span><span>考试 <b>{preview.data.impact.exams}</b></span><span>学习资产 <b>{preview.data.impact.learning_assets}</b></span><span>作答记录 <b>{preview.data.impact.attempts}</b></span></div><p className="wb-expiry">本次确认有效至 {new Date(preview.data.expires_at).toLocaleString("zh-CN")}</p><div className="wb-dialog-actions"><button onClick={() => setPreview(null)} disabled={busy}>取消</button><button className="wb-danger" onClick={confirmDelete} disabled={busy}>{busy ? "正在删除…" : "确认删除课程"}</button></div></section></div>}
   </div>;
-}
-
-function SignIn({ onDone }: { onDone: () => void }) {
-  const [email, setEmail] = useState(""); const [password, setPassword] = useState(""); const [error, setError] = useState(""); const [busy, setBusy] = useState(false);
-  return <form className="wb-signin" onSubmit={async e => { e.preventDefault(); setBusy(true); setError(""); try { await api("/api/auth/sign-in", "POST", { email, password }); onDone(); } catch (err) { setError(err instanceof Error ? err.message : "登录失败"); } finally { setBusy(false); } }}><h2>登录后管理课程</h2><label>邮箱<input type="email" required value={email} onChange={e => setEmail(e.target.value)} /></label><label>密码<input type="password" required value={password} onChange={e => setPassword(e.target.value)} /></label>{error && <p role="alert">{error}</p>}<button className="wb-primary" disabled={busy}>{busy ? "正在登录…" : "登录"}</button></form>;
 }
 
 function CourseDialog({ edit, busy, onClose, onSave }: { edit: CourseEdit; busy: boolean; onClose: () => void; onSave: (name: string, subject: string) => void }) {

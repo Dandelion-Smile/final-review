@@ -15,6 +15,8 @@ from final_review.note_jobs import process_note_job
 from final_review.quiz_jobs import process_quiz_job
 from final_review.rag import KnowledgeBase
 
+COMPLETE_NOTE_REQUEST = "用 TCP 讲义生成一份笔记，整理成 12 分钟的考点清单"
+
 
 def app():
     from tempfile import mkdtemp
@@ -58,6 +60,8 @@ def app():
                     else "ask"
                 )
                 content = '{"intent":"' + intent + '"}'
+                if message == COMPLETE_NOTE_REQUEST:
+                    content = json.dumps({"intent": "note", "chapter": "TCP"})
                 if message == "帮我测测TCP掌握得怎么样，8道选择题和2道简答，基础难度":
                     content = json.dumps(
                         {
@@ -83,12 +87,19 @@ def app():
         def __init__(self, **kwargs):
             self.chat = SimpleNamespace(completions=TestCompletions())
 
+    class WorkbenchModel(ScriptedModel):
+        def note_request(self, request):
+            config = super().note_request(request)
+            if request["message"] == COMPLETE_NOTE_REQUEST:
+                config.update(note_type="key_points", duration_minutes=12)
+            return config
+
     import importlib
 
     importlib.import_module("final_review.api").OpenAI = TestOpenAI
     store = MemoryStore()
     agent = FinalReviewAgent(
-        store, KnowledgeBase(store, TestEmbeddings(), settings), ScriptedModel(), settings
+        store, KnowledgeBase(store, TestEmbeddings(), settings), WorkbenchModel(), settings
     )
     application = create_app(settings, agent)
 

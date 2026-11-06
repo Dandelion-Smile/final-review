@@ -86,8 +86,63 @@ def test_bounded_evidence_repair(system, bad_citations, unsupported):
     system.model.unsupported = unsupported
     result = system.invoke(request(intent="ask"))
     assert result.status == "insufficient_evidence"
-    assert system.model.retrieval_calls == 2
+    assert system.model.retrieval_calls == 1
+    state = system.graph.get_state(system._config(system._key("net", "test"))).values
+    assert state["attempts"] == system.settings.max_repairs + 1
+    assert "回答未通过证据校验" in result.answer
     assert not result.citations
+
+
+@pytest.mark.parametrize("needs_more_evidence", [False, True])
+def test_ask_chooses_repair_stage(system, monkeypatch, needs_more_evidence):
+    answer_text = "缓存条目的有效期为五分钟。"
+    retrieve_calls = []
+
+    def retrieve(_request, _kb, broaden=False):
+        retrieve_calls.append(broaden)
+        content = "缓存可减少重复读取。" if needs_more_evidence and not broaden else answer_text
+        return [
+            {
+                "chunk_id": "cache-expanded" if broaden else "cache-initial",
+                "document_id": "cache-guide",
+                "title": "缓存说明",
+                "course_id": "cache",
+                "chapter": "缓存",
+                "source_type": "ai_supplement",
+                "content": content,
+                "similarity": 0.9,
+            }
+        ]
+
+    def answer(data):
+        source = data["evidence"][0]
+        text = source["content"]
+        if not needs_more_evidence and not data["issues_to_fix"]:
+            text += "这是考试必考点。"
+        return {
+            "answer": text,
+            "citations": [{"chunk_id": source["chunk_id"], "quote": source["content"]}],
+        }
+
+    def verify(data):
+        supported = data["output"]["answer"] == answer_text
+        issue = "缺少有效期资料" if needs_more_evidence else "无考试依据"
+        return {
+            "supported": supported,
+            "issues": [] if supported else [issue],
+            "needs_more_evidence": needs_more_evidence and not supported,
+        }
+
+    monkeypatch.setattr(system.model, "retrieve", retrieve)
+    monkeypatch.setattr(system.model, "answer", answer)
+    monkeypatch.setattr(system.model, "verify", verify)
+    result = system.invoke(
+        AgentRequest(course_id="cache", session_id="repair", message="缓存多久过期？", intent="ask")
+    )
+    assert result.status == "completed"
+    assert result.answer == answer_text
+    assert result.citations[0].content == answer_text
+    assert retrieve_calls == ([False, True] if needs_more_evidence else [False])
 
 
 def test_no_evidence_does_not_generate(system):
@@ -100,6 +155,7 @@ def test_no_evidence_does_not_generate(system):
         )
     )
     assert result.status == "insufficient_evidence"
+    assert "资料不足以回答" in result.answer
 
 
 def test_ask_has_grounded_citation(system):

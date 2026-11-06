@@ -16,7 +16,8 @@ test("course loading preserves a navigation event still in flight", async ({ pag
   // Model the hash changing before its queued event is delivered, while courses load.
   await page.evaluate(() => { window.history.pushState(null, "", "#materials"); });
   finishLoading();
-  await expect(page.getByRole("button", { name: /当前课程 导航恢复/ })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("current-course-id"))).not.toBeNull();
+  await expect(page).toHaveURL(/#materials$/);
   await page.evaluate(() => { window.dispatchEvent(new HashChangeEvent("hashchange")); });
   await expect(page.getByLabel("文件", { exact: true })).toBeVisible();
 });
@@ -25,7 +26,7 @@ test("themed material controls support keyboard selection and narrow screens", a
   await request.post("http://127.0.0.1:8081/api/courses", { data: { name: "Web服务端技术原理及应用" } });
   await page.setViewportSize({ width: 1440, height: 1050 });
   await page.goto("/");
-  await page.getByRole("button", { name: "我的资料" }).first().click();
+  await page.goto("/#materials");
   const source = page.getByRole("combobox", { name: "来源类型", exact: true });
   await source.click();
   await expect(page.getByRole("option", { name: "平时作业", exact: true })).toHaveAttribute("aria-selected", "true");
@@ -48,7 +49,7 @@ test("themed material controls support keyboard selection and narrow screens", a
 test("batch uploads five files with shared metadata and rejects six", async ({ page, request }) => {
   const course = await (await request.post("http://127.0.0.1:8081/api/courses", { data: { name: "批量资料" } })).json();
   await page.goto("/");
-  await page.getByRole("button", { name: "我的资料" }).first().click();
+  await page.goto("/#materials");
   const files = Array.from({ length: 6 }, (_, index) => ({
     name: `batch-${index + 1}.md`, mimeType: "text/markdown", buffer: Buffer.from(`第 ${index + 1} 份测试资料`),
   }));
@@ -76,7 +77,7 @@ test("batch uploads five files with shared metadata and rejects six", async ({ p
 test("batch continues after upload failure and retries only failed files", async ({ page, request }) => {
   await request.post("http://127.0.0.1:8081/api/courses", { data: { name: "重试资料" } });
   await page.goto("/");
-  await page.getByRole("button", { name: "我的资料" }).first().click();
+  await page.goto("/#materials");
   const uploads: { name: string; title: string; key: string | undefined }[] = [];
   await page.route("**/knowledge/upload", async route => {
     const payload = route.request().postDataBuffer()!.toString();
@@ -108,7 +109,7 @@ test("student uploads course material and sees a readable failure", async ({ pag
   await page.getByRole("button", { name: "＋ 新建课程" }).click();
   await page.getByRole("dialog", { name: "新建课程" }).getByRole("textbox", { name: "课程名称" }).fill("计算机网络");
   await page.getByRole("button", { name: "保存课程" }).click();
-  await page.getByRole("button", { name: "我的资料" }).first().click();
+  await page.goto("/#materials");
 
   await expect(page.getByRole("heading", { name: "添加资料" })).toBeVisible();
   await page.getByRole("combobox", { name: "来源类型", exact: true }).click();
@@ -119,7 +120,7 @@ test("student uploads course material and sees a readable failure", async ({ pag
   await expect(page.getByText("review.md", { exact: false }).first()).toBeVisible();
   await expect(page.locator(".material-status.ready")).toBeVisible();
   await page.reload();
-  await page.getByRole("button", { name: "我的资料" }).first().click();
+  await page.goto("/#materials");
   await expect(page.locator(".material-status.ready")).toBeVisible();
 
   await page.getByLabel("文件").setInputFiles({ name: "bad.png", mimeType: "image/png", buffer: Buffer.from("invalid image") });
@@ -134,7 +135,7 @@ test("student edits, filters and deletes an unreferenced material", async ({ pag
   await page.getByRole("button", { name: "＋ 新建课程" }).click();
   await page.getByRole("dialog", { name: "新建课程" }).getByRole("textbox", { name: "课程名称" }).fill("计算机网络");
   await page.getByRole("button", { name: "保存课程" }).click();
-  await page.getByRole("button", { name: "我的资料" }).first().click();
+  await page.goto("/#materials");
   await page.getByLabel("章节", { exact: true }).fill("第一章");
   await page.getByLabel("文件").setInputFiles({ name: "lecture.md", mimeType: "text/markdown", buffer: Buffer.from("网络三次握手") });
   await page.getByRole("button", { name: "上传并处理" }).click();
@@ -196,7 +197,7 @@ test("student opens a material excerpt and returns to its link", async ({ page }
   await page.getByRole("button", { name: "＋ 新建课程" }).click();
   await page.getByRole("dialog", { name: "新建课程" }).getByRole("textbox", { name: "课程名称" }).fill("人工智能");
   await page.getByRole("button", { name: "保存课程" }).click();
-  await page.getByRole("button", { name: "我的资料" }).first().click();
+  await page.goto("/#materials");
   await page.getByLabel("文件").setInputFiles({
     name: "lecture.md", mimeType: "text/markdown", buffer: Buffer.from("Source excerpt for review"),
   });
@@ -254,8 +255,8 @@ test("material polling continues when job and document snapshots differ", async 
     items: [{ job_id: "polling-job", document_id: "polling-document", status: "succeeded", attempts: 1 }],
   } }));
   await page.goto("/");
-  await expect(page.getByRole("button", { name: /当前课程 状态刷新/ })).toBeVisible();
-  await page.getByRole("button", { name: "我的资料" }).first().click();
+  await expect(page.getByRole("heading", { name: "状态刷新", exact: true })).toBeVisible();
+  await page.goto("/#materials");
   await expect(page.locator(".material-status.ready")).toHaveCount(1);
   expect(reads).toBeGreaterThan(1);
 });
@@ -263,7 +264,7 @@ test("material polling continues when job and document snapshots differ", async 
 test("plain knowledge preview offers original slides and excluded page warnings", async ({ page, request }) => {
   await request.post("http://127.0.0.1:8081/api/courses", { data: { name: "智能资料预览" } });
   await page.goto("/");
-  await page.getByRole("button", { name: "我的资料" }).first().click();
+  await page.goto("/#materials");
   await page.getByLabel("文件", { exact: true }).setInputFiles({
     name: "plain.md", mimeType: "text/markdown", buffer: Buffer.from("# 请求流程\n\n**Servlet** 调用 `service()` 方法。"),
   });
@@ -320,7 +321,7 @@ test("plain knowledge preview offers original slides and excluded page warnings"
 test("partial page retains verified knowledge and lists only failed blocks for review", async ({ page, request }) => {
   await request.post("http://127.0.0.1:8081/api/courses", { data: { name: "逐块核验预览" } });
   await page.goto("/");
-  await page.getByRole("button", { name: "我的资料" }).first().click();
+  await page.goto("/#materials");
   await page.getByLabel("文件", { exact: true }).setInputFiles({
     name: "partial.md", mimeType: "text/markdown", buffer: Buffer.from("# 正确代码\n\nservice()"),
   });
@@ -363,7 +364,7 @@ test("continuous reading scrolls while tabs and actions stay visible", async ({ 
   await page.getByRole("button", { name: "＋ 新建课程" }).click();
   await page.getByRole("dialog", { name: "新建课程" }).getByRole("textbox", { name: "课程名称" }).fill("长资料");
   await page.getByRole("button", { name: "保存课程" }).click();
-  await page.getByRole("button", { name: "我的资料" }).first().click();
+  await page.goto("/#materials");
   const longText = Array.from({ length: 80 }, (_, index) => `第 ${index + 1} 段：${"资料片段内容。".repeat(30)}`).join("\n\n");
   await page.getByLabel("文件").setInputFiles({
     name: "long.md", mimeType: "text/markdown", buffer: Buffer.from(longText),

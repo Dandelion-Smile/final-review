@@ -1,3 +1,4 @@
+from datetime import date, time
 from enum import StrEnum
 from typing import Annotated, Literal
 
@@ -62,6 +63,40 @@ class ExamCreate(Model):
 
 class ExamUpdate(ExamCreate):
     expected_updated_at: str
+
+
+class CalendarEntryCreate(Model):
+    kind: Literal["study", "exam", "class", "other", "todo"]
+    title: Annotated[str, Field(min_length=1, max_length=80)]
+    description: Annotated[str, Field(max_length=1000)] = ""
+    course_id: Identifier | None = None
+    scheduled_on: date | None = None
+    all_day: bool = True
+    start_time: time | None = None
+    end_time: time | None = None
+
+    @model_validator(mode="after")
+    def validate_schedule(self):
+        if self.kind == "exam" and not self.course_id:
+            raise ValueError("考试必须关联课程")
+        if self.kind == "other" and self.course_id:
+            raise ValueError("其他日程不能关联课程")
+        if not self.scheduled_on and (self.kind != "todo" or not self.all_day):
+            raise ValueError("请选择日期")
+        if self.all_day:
+            if self.start_time is not None or self.end_time is not None:
+                raise ValueError("全天安排无需填写起止时间")
+        elif (
+            self.start_time is None or self.end_time is None
+            or self.start_time.tzinfo is not None or self.end_time.tzinfo is not None
+            or self.end_time <= self.start_time
+        ):
+            raise ValueError("请填写同一天的起止时间，结束时间须晚于开始时间")
+        return self
+
+
+class CalendarEntryCompletion(Model):
+    completed: bool
 
 
 class AssetCreate(Model):
@@ -290,7 +325,7 @@ class NoteInput(Model):
         default_factory=list, max_length=20
     )
     audience_level: AudienceLevel | None = None
-    source_types: list[SourceType] = Field(default_factory=list, max_length=6)
+    source_types: list[SourceType] = Field(default_factory=list, max_length=len(SourceType))
     source_document_ids: list[Identifier] = Field(default_factory=list, max_length=100)
 
 
@@ -325,6 +360,7 @@ class ChatRequest(Model):
     retrieval_query: Annotated[str, Field(max_length=2000)] = ""
     overview_kind: Literal["course", "statistics", "list", "all"] = "all"
     quiz_input: QuizInput | None = None
+    auto_queue_note: bool = False
 
 
 class ChatDecision(Model):

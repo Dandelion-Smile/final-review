@@ -2,6 +2,7 @@
 
 import logging
 import time
+from contextlib import nullcontext
 from hashlib import sha256
 from pathlib import Path
 
@@ -25,6 +26,16 @@ def result_path(settings: Settings, job: dict) -> Path:
 
 
 def process_export_job(store, settings: Settings, job: dict) -> None:
+    guard = (
+        store.account_file_access(job["user_id"])
+        if isinstance(store, PostgresStore) else nullcontext(True)
+    )
+    with guard as allowed:
+        if allowed:
+            _process_export_job(store, settings, job)
+
+
+def _process_export_job(store, settings: Settings, job: dict) -> None:
     token = store.bind_user(job["user_id"])
     root = Path(settings.exports_dir).resolve()
     # Attempt-specific paths prevent a worker with an expired lease overwriting a newer result.

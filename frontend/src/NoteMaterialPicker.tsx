@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { api } from "./workbench-api";
+import { api, checkSession } from "./workbench-api";
 import "./note-material-picker.css";
 
 export type NoteMaterial = {
@@ -116,6 +116,7 @@ export default function NoteMaterialPicker({ courseId, selected, onUploaded, onC
         method: "POST", credentials: "same-origin", body,
         headers: { "Idempotency-Key": crypto.randomUUID() },
       });
+      checkSession(response, "/knowledge/upload");
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(typeof result.detail === "string" ? result.detail : "上传失败");
       const documents = await refresh();

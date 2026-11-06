@@ -3,7 +3,8 @@ from fastapi.testclient import TestClient
 
 from final_review.agent import FinalReviewAgent, SessionConflict
 from final_review.api import create_app
-from final_review.schemas import AgentRequest, NoteInput, ResumeNoteRequest
+from final_review.llm import ModelError
+from final_review.schemas import AgentRequest, NoteInput, ResumeNoteRequest, SourceType
 
 
 def ready_document(system, *, owner="local-user", course="net", status="ready"):
@@ -327,6 +328,38 @@ def test_failed_note_start_can_recover_without_duplicate_messages(system, monkey
         history = client.get(history_url).json()
         assert [item["role"] for item in history["items"]] == ["user", "assistant"]
         assert history["active_note"]["status"] == "needs_input"
+
+
+def test_all_source_types_are_accepted_when_recovering_note_extraction(system, monkeypatch):
+    ready_document(system)
+
+    def unavailable(_request):
+        raise ModelError("模型暂时不可用")
+
+    monkeypatch.setattr(system.model, "note_request", unavailable)
+    with TestClient(create_app(system.settings, system)) as client:
+        started = client.post(
+            "/agent/invoke?conversation_id=chat-all-materials",
+            json={
+                "course_id": "net",
+                "session_id": "note-all-materials",
+                "message": "根据课程全部已就绪资料生成复习笔记",
+                "intent": "note",
+            },
+        )
+        assert started.status_code == 502
+
+        monkeypatch.setattr(
+            system.model, "note_request", lambda _: {"source_types": list(SourceType)}
+        )
+        recovered = client.post(
+            "/agent/recover?course_id=net&session_id=note-all-materials"
+            "&conversation_id=chat-all-materials"
+        )
+        assert recovered.status_code == 200
+        assert recovered.json()["status"] == "needs_input"
+        assert "source_document_ids" in recovered.json()["prompt"]["required"]
+        assert recovered.json()["note_config"]["source_types"] == list(SourceType)
 
 
 def test_cancel_note_closes_pending_chat_and_blocks_old_session(system):

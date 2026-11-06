@@ -29,6 +29,8 @@ test("ordinary chat retains source links after reload", async ({ page, request }
   await page.getByRole("textbox", { name: /输入你的问题/ }).fill("解释 HTTP");
   await page.getByRole("button", { name: "发送消息" }).click();
   await expect(page.getByRole("link", { name: /HTTP.pptx · 第 3 张幻灯片/ })).toBeVisible();
+  await expect(page.getByText("解释 HTTP", { exact: true })).toHaveCSS("border-top-width", "1px");
+  await expect(page.getByText("HTTP 是无状态协议。[资料1]", { exact: true })).toHaveCSS("border-top-width", "0px");
   await page.reload();
   await expect(page.getByRole("link", { name: /HTTP.pptx · 第 3 张幻灯片/ })).toBeVisible();
   await page.screenshot({ path: "test-results/course-chat-sources.png" });
@@ -96,7 +98,8 @@ test("chat switches models and sends conversation history", async ({ page, reque
   await page.getByRole("button", { name: "＋ 新建课程" }).click();
   await page.getByRole("dialog", { name: "新建课程" }).getByRole("textbox", { name: "课程名称" }).fill("高等数学");
   await page.getByRole("button", { name: "保存课程" }).click();
-  await page.getByRole("button", { name: "AI 对话" }).click();
+  await page.getByRole("button", { name: "进入课程", exact: true }).click();
+  await page.getByRole("button", { name: "AI 辅导", exact: true }).click();
   await expect(page.getByRole("button", { name: "选择聊天模型" })).toContainText("DeepSeek");
   await page.getByRole("textbox", { name: /输入你的问题/ }).focus();
   const focusStyle = await page.getByRole("textbox", { name: /输入你的问题/ }).evaluate(element => {
@@ -130,7 +133,7 @@ test("note request creates an openable sourced draft", async ({ page, request })
   await page.getByRole("button", { name: "＋ 新建课程" }).click();
   await page.getByRole("dialog", { name: "新建课程" }).getByRole("textbox", { name: "课程名称" }).fill("计算机网络");
   await page.getByRole("button", { name: "保存课程" }).click();
-  await expect(page.getByRole("button", { name: /当前课程 计算机网络/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "计算机网络", exact: true })).toBeVisible();
   const courses = await (await request.get("http://127.0.0.1:8081/api/courses")).json();
   const courseId = courses.items[0].course_id as string;
   await request.post("http://127.0.0.1:8081/api/courses", { data: { name: "历史恢复对照课程" } });
@@ -139,7 +142,8 @@ test("note request creates an openable sourced draft", async ({ page, request })
       markdown: "# 三次握手\n\nTCP 三次握手同步双方初始序列号并确认双方收发能力。" },
   });
   expect(ingested.ok()).toBeTruthy();
-  await page.getByRole("button", { name: "AI 对话" }).click();
+  await page.getByRole("button", { name: "进入课程", exact: true }).click();
+  await page.getByRole("button", { name: "AI 辅导", exact: true }).click();
   await page.getByRole("textbox", { name: "输入你的问题" }).fill("生成笔记，整理成适合背诵的考点清单");
   await page.getByRole("button", { name: "发送消息" }).click();
   await expect(page.getByText("补充笔记要求")).toBeVisible();
@@ -169,8 +173,8 @@ test("note request creates an openable sourced draft", async ({ page, request })
   await page.getByRole("dialog", { name: "补充笔记要求" }).screenshot({ path: "test-results/note-config.png" });
   await page.getByRole("dialog", { name: "补充笔记要求" }).getByRole("button", { name: "生成笔记" }).click();
   await expect(page.getByRole("dialog", { name: "补充笔记要求" })).toHaveCount(0);
-  await page.getByRole("button", { name: "我的资料" }).click();
-  await page.getByRole("button", { name: "AI 对话" }).click();
+  await page.getByRole("button", { name: "资料", exact: true }).click();
+  await page.getByRole("button", { name: "AI 辅导", exact: true }).click();
   await expect(page.getByRole("link", { name: /打开笔记草稿/ })).toBeVisible();
   await page.reload();
   await expect(page.getByRole("link", { name: /打开笔记草稿/ })).toBeVisible();
@@ -183,14 +187,18 @@ test("note request creates an openable sourced draft", async ({ page, request })
   await page.getByRole("textbox", { name: "对话名称" }).fill("TCP 笔记记录");
   await page.getByRole("button", { name: "保存" }).click();
   await expect(page.getByRole("button", { name: "TCP 笔记记录" })).toBeVisible();
-  await page.getByRole("button", { name: /当前课程 计算机网络/ }).click();
-  const conversations = page.getByRole("dialog", { name: "课程与对话" });
-  await conversations.getByRole("button", { name: "切换课程" }).click();
-  await conversations.getByRole("option", { name: "历史恢复对照课程" }).click();
+  await page.getByRole("button", { name: "我的课程", exact: true }).click();
+  await page.locator(".course-list-card").filter({ hasText: "历史恢复对照课程" }).getByRole("button", { name: "进入课程", exact: true }).click();
+  await page.getByRole("button", { name: "AI 辅导", exact: true }).click();
+  await page.getByRole("button", { name: "历史对话", exact: true }).click();
+  const conversations = page.getByRole("dialog", { name: "历史对话", exact: true });
   await expect(conversations.getByRole("button", { name: /TCP 笔记记录/ })).toHaveCount(0);
-  await conversations.getByRole("button", { name: "切换课程" }).click();
-  await conversations.getByRole("option", { name: "计算机网络" }).click();
-  await conversations.getByRole("button", { name: /TCP 笔记记录/ }).click();
+  await conversations.getByRole("button", { name: "关闭历史对话" }).click();
+  await page.getByRole("button", { name: "我的课程", exact: true }).click();
+  await page.locator(".course-list-card").filter({ hasText: "计算机网络" }).getByRole("button", { name: "进入课程", exact: true }).click();
+  await page.getByRole("button", { name: "AI 辅导", exact: true }).click();
+  await page.getByRole("button", { name: "历史对话", exact: true }).click();
+  await conversations.getByRole("button", { name: /^TCP 笔记记录 / }).click();
   await expect(page.getByText(/生成笔记，整理成适合背诵的考点清单/)).toBeVisible();
   await expect(page.getByText(/指定资料 TCP 讲义/)).toBeVisible();
   await expect(page.getByText(/可以继续聊天/).last()).toBeVisible();
@@ -270,6 +278,33 @@ test("natural note request enters the note flow", async ({ page, request }) => {
   await expect(page.getByRole("dialog", { name: "补充笔记要求" })).toBeVisible();
 });
 
+test("a complete note request queues immediately and opens a real draft", async ({ page, request }) => {
+  await request.post("http://127.0.0.1:8081/test/reset");
+  const course = await (await request.post("http://127.0.0.1:8081/api/courses", {
+    data: { name: "计算机网络" },
+  })).json();
+  for (const [title, chapter] of [["TCP 讲义", "TCP"], ["HTTP 讲义", "HTTP"]]) {
+    const response = await request.post("http://127.0.0.1:8081/knowledge/ingest", { data: {
+      course_id: course.course_id, title, chapter, source_type: "teacher_ppt",
+      markdown: `# ${chapter}\n\n${chapter} 是计算机网络课程的一部分。`,
+    } });
+    expect(response.ok()).toBeTruthy();
+  }
+  await page.goto(`/#chat/${course.course_id}`);
+  await expect(page.getByRole("button", { name: "选择聊天模型" })).toContainText("Review");
+  await page.getByRole("textbox", { name: "输入你的问题" }).fill("用 TCP 讲义生成一份笔记，整理成 12 分钟的考点清单");
+  const dispatch = page.waitForResponse(response => response.url().endsWith("/api/chat/dispatch"));
+  await page.getByRole("button", { name: "发送消息" }).click();
+  const result = await (await dispatch).json();
+  expect(result.note_job).toMatchObject({ status: "queued" });
+  await expect(page.getByText(/笔记生成任务已提交/)).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "补充笔记要求" })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: /打开笔记草稿/ })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("link", { name: /打开笔记草稿/ })).toBeVisible();
+  await expect(page.getByText(/补充笔记要求：指定资料/)).toHaveCount(0);
+});
+
 test("note material picker distinguishes duplicates and excludes failed files", async ({ page, request }) => {
   await request.post("http://127.0.0.1:8081/test/reset");
   const course = await (await request.post("http://127.0.0.1:8081/api/courses", { data: { name: "Web 服务端" } })).json();
@@ -280,7 +315,7 @@ test("note material picker distinguishes duplicates and excludes failed files", 
     { document_id: "broken-three", title: "损坏课件", file_name: "损坏课件.pptx", source_type: "teacher_ppt", chapter: "", parse_status: "failed", parse_error: "文件无法解析" },
   ] } }));
   await page.goto(`/#chat/${course.course_id}`);
-  await expect(page.getByRole("button", { name: /当前课程 Web 服务端/ })).toBeVisible();
+  await expect(page.locator(".course-context")).toBeVisible();
   await expect(page.getByRole("button", { name: "选择聊天模型" })).toContainText("Review");
   await page.getByRole("textbox", { name: /输入你的问题/ }).fill("生成笔记");
   await page.getByRole("button", { name: "发送消息" }).click();
@@ -344,7 +379,7 @@ test("note request keeps the form open when chapter does not match chosen materi
   } });
   await page.route("**/api/chat/models", route => route.fulfill({ json: { items: [{ id: "review", label: "Review" }] } }));
   await page.goto(`/#chat/${course.course_id}`);
-  await expect(page.getByRole("button", { name: /当前课程 Web 服务端/ })).toBeVisible();
+  await expect(page.locator(".course-context")).toBeVisible();
   await expect(page.getByRole("button", { name: "选择聊天模型" })).toContainText("Review");
   await page.getByRole("textbox", { name: /输入你的问题/ }).fill("生成笔记");
   await page.getByRole("button", { name: "发送消息" }).click();
@@ -376,8 +411,16 @@ test("note config keeps composer fixed and cancellation restores ordinary chat",
   await page.getByRole("button", { name: "发送消息" }).click();
   const dialog = page.getByRole("dialog", { name: "补充笔记要求" });
   await expect(dialog).toBeVisible();
+  await expect(dialog).toHaveClass(/note-question-card/);
+  await expect(dialog).not.toHaveAttribute("aria-modal", "true");
+  await expect(dialog).toContainText("这份笔记要参考哪些资料？");
+  await expect(page.locator(".note-dialog-backdrop")).toHaveCount(0);
   const during = await composer.boundingBox();
   expect(during?.y).toBeCloseTo(before!.y, 0);
+  const card = await dialog.boundingBox();
+  expect(card!.x).toBeCloseTo(during!.x, 0);
+  expect(card!.width).toBeCloseTo(during!.width, 0);
+  expect(card!.y + card!.height).toBeLessThan(during!.y);
   await dialog.getByRole("button", { name: "考点清单" }).click();
   const options = dialog.getByRole("listbox", { name: "笔记类型" });
   await expect(options).toBeVisible();
@@ -391,6 +434,10 @@ test("note config keeps composer fixed and cancellation restores ordinary chat",
   await dialog.screenshot({ path: "test-results/note-config-dialog.png" });
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(dialog).toBeVisible();
+  const mobileCard = await dialog.boundingBox();
+  const mobileComposer = await composer.boundingBox();
+  expect(mobileCard!.x).toBeCloseTo(mobileComposer!.x, 0);
+  expect(mobileCard!.width).toBeCloseTo(mobileComposer!.width, 0);
   await dialog.screenshot({ path: "test-results/note-config-dialog-mobile.png" });
   const oldBackend = (route: import("@playwright/test").Route) => route.fulfill({ status: 404, json: { detail: "Not Found" } });
   await page.route("**/agent/cancel-note*", oldBackend);
@@ -409,7 +456,7 @@ test("note config keeps composer fixed and cancellation restores ordinary chat",
   await expect(page.getByText(/可以继续聊天/).first()).toBeVisible();
 });
 
-test("course switcher restores ordinary chat and shows five recent conversations", async ({ page, request }) => {
+test("tutor restores all ordinary conversations and course cards switch their scope", async ({ page, request }) => {
   await request.post("http://127.0.0.1:8081/test/reset");
   const first = await (await request.post("http://127.0.0.1:8081/api/courses", { data: { name: "数学" } })).json();
   const second = await (await request.post("http://127.0.0.1:8081/api/courses", { data: { name: "物理" } })).json();
@@ -420,36 +467,29 @@ test("course switcher restores ordinary chat and shows five recent conversations
   await page.route("**/api/courses/*/conversations/*/messages", route => route.fulfill({ json: { items: [{ role: "user", content: "旧问题" }, { role: "assistant", content: "旧回答" }, ...calls.map(call => ({ role: "user", content: call.message }))] } }));
   await page.route("**/api/chat/dispatch", route => { calls.push(route.request().postDataJSON()); return route.fulfill({ json: { kind: "chat", intent: "ask", reply: "继续回答", model: "Review" } }); });
   await page.goto(`/#chat/${first.course_id}/chat-0`);
-  await expect(page.getByRole("button", { name: /课程管理/ })).toBeVisible();
-  await expect(page.getByRole("button", { name: /课程与考试/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "我的课程", exact: true })).toBeVisible();
   await expect(page.getByText("旧回答")).toBeVisible();
-  await page.getByRole("button", { name: /当前课程 数学/ }).click();
-  const panel = page.getByRole("dialog", { name: "课程与对话" });
-  await expect(panel).toHaveCSS("position", "fixed");
-  await expect(panel).toHaveCSS("z-index", "10000");
-  expect(await panel.evaluate(element => element.parentElement === document.body)).toBeTruthy();
-  await expect(panel.locator(".course-conversations button")).toHaveCount(5);
-  await panel.getByRole("button", { name: "查看更多" }).click();
-  await expect(panel.locator(".course-conversations button")).toHaveCount(7);
-  await panel.getByRole("button", { name: /数学对话 6/ }).click();
-  await expect(page).toHaveURL(new RegExp(`#chat/${first.course_id}/chat-6$`));
+  await page.getByRole("button", { name: "历史对话", exact: true }).click();
+  const panel = page.getByRole("dialog", { name: "历史对话", exact: true });
+  await expect(panel.locator(".conversation-history-row")).toHaveCount(7);
+  await panel.getByRole("button", { name: /^数学对话 6 / }).click();
+  await expect(page).toHaveURL(new RegExp(`/courses/${first.course_id}/tutor/chat-6$`));
   await page.reload();
   await expect(page.getByText("旧回答")).toBeVisible();
   await page.getByRole("textbox", { name: /输入你的问题/ }).fill("接着说");
   await page.getByRole("button", { name: "发送消息" }).click();
   await expect(page.getByText("继续回答")).toBeVisible();
   expect(calls[0].conversation_id).toBe("chat-6");
-  await page.getByRole("button", { name: /当前课程 数学/ }).click();
-  await panel.getByRole("button", { name: "切换课程" }).click();
-  await panel.getByRole("option", { name: "物理" }).click();
-  await expect(page.getByRole("button", { name: /当前课程 物理/ })).toBeVisible();
-  await expect(panel.getByRole("button", { name: /物理对话/ })).toBeVisible();
+  await page.getByRole("button", { name: "我的课程", exact: true }).click();
+  await page.locator(".course-list-card").filter({ hasText: "物理" }).getByRole("button", { name: "进入课程", exact: true }).click();
+  await page.getByRole("button", { name: "AI 辅导", exact: true }).click();
+  await expect(page.locator(".course-context")).toHaveText("物理");
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByRole("button", { name: /当前课程 物理/ }).click();
-  await expect(page.getByRole("dialog", { name: "课程与对话" })).toBeVisible();
+  await page.getByRole("button", { name: "历史对话", exact: true }).click();
+  await expect(panel.getByRole("button", { name: /^物理对话 / })).toBeVisible();
 });
 
-test("conversation can be renamed from chat title and history context menu", async ({ page, request }) => {
+test("conversation can be renamed from chat title and tutor history", async ({ page, request }) => {
   await request.post("http://127.0.0.1:8081/test/reset");
   const course = await (await request.post("http://127.0.0.1:8081/api/courses", { data: { name: "高等数学" } })).json();
   const conversation = await (await request.post(`http://127.0.0.1:8081/api/courses/${course.course_id}/conversations`, { data: { title: "未命名对话" } })).json();
@@ -459,14 +499,13 @@ test("conversation can be renamed from chat title and history context menu", asy
   await page.getByRole("textbox", { name: "对话名称" }).fill("微积分复习");
   await page.getByRole("button", { name: "保存" }).click();
   await expect(page.getByRole("button", { name: "微积分复习" })).toBeVisible();
-  await page.getByRole("button", { name: /当前课程 高等数学/ }).click();
-  const panel = page.getByRole("dialog", { name: "课程与对话" });
-  await panel.getByRole("button", { name: /微积分复习/ }).click({ button: "right" });
-  await page.getByRole("menuitem", { name: "重命名对话" }).click();
+  await page.getByRole("button", { name: "历史对话", exact: true }).click();
+  const panel = page.getByRole("dialog", { name: "历史对话", exact: true });
+  await panel.getByRole("button", { name: "重命名微积分复习", exact: true }).click();
   await panel.getByRole("textbox", { name: "对话名称" }).fill("期末重点");
   await panel.getByRole("button", { name: "保存" }).click();
-  await expect(panel.getByRole("button", { name: /期末重点/ })).toBeVisible();
-  await panel.getByRole("button", { name: "关闭切换面板" }).click();
+  await expect(panel.getByRole("button", { name: /^期末重点 / })).toBeVisible();
+  await panel.getByRole("button", { name: "关闭历史对话" }).click();
   await expect(page.getByRole("button", { name: "期末重点" })).toBeVisible();
   await page.reload();
   await expect(page.getByRole("button", { name: "期末重点" })).toBeVisible();

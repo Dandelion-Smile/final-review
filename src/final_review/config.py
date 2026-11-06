@@ -43,6 +43,13 @@ class Settings(BaseSettings):
     auth_cookie_secure: bool = True
     auth_cookie_domain: str = ""
     auth_session_days: int = Field(default=30, ge=1, le=365)
+    auth_email_code_secret: SecretStr = SecretStr("")
+    smtp_host: str = ""
+    smtp_port: int = Field(default=587, ge=1, le=65535)
+    smtp_security: str = "starttls"
+    smtp_sender: str = ""
+    smtp_username: str = ""
+    smtp_password: SecretStr = SecretStr("")
     api_token: SecretStr = SecretStr("")
     uploads_dir: str = "uploads"
     exports_dir: str = "exports"

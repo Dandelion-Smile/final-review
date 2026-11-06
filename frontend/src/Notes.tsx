@@ -1,3 +1,4 @@
+import { courseHref, legacyHash, readRoute } from "./course-routes";
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { ConfigProvider, Select } from "antd";
@@ -224,7 +225,7 @@ export default function Notes({
               <a
                 className="note-row"
                 key={item.asset_id}
-                href={`#note/${item.asset_id}/${item.latest_revision_id}`}
+                href={course ? courseHref(course.course_id, "notes", [item.asset_id, item.latest_revision_id]) : `#note/${item.asset_id}/${item.latest_revision_id}`}
               >
                 <div>
                   <small>
@@ -360,12 +361,12 @@ function NoteEditor({
           })),
         },
       );
-      if (window.location.hash !== `#note/${assetId}/${revisionId}`) return;
+      if (legacyHash(window.location.hash) !== `#note/${assetId}/${revisionId}`) return;
       setDirty(false);
       dirtyRef.current = false;
       setData(saved);
       setEditing(false);
-      window.location.hash = `#note/${assetId}/${saved.revision.revision_id}`;
+      window.location.hash = window.location.hash.startsWith("#/courses/") && data ? courseHref(data.asset.course_id, "notes", [assetId, saved.revision.revision_id]) : `#note/${assetId}/${saved.revision.revision_id}`;
     } catch (reason) {
       setError(errorText(reason));
     } finally {
@@ -488,7 +489,7 @@ function NoteEditor({
             label="查看版本"
             value={revisionId}
             onChange={(value) => {
-              window.location.hash = `#note/${assetId}/${value}`;
+              window.location.hash = window.location.hash.startsWith("#/courses/") && data ? courseHref(data.asset.course_id, "notes", [assetId, value]) : `#note/${assetId}/${value}`;
             }}
             options={data.history.map((row) => ({
               value: row.revision_id,
@@ -499,7 +500,7 @@ function NoteEditor({
       </div>
       {!(revision.confirmed_at && ["confirmed", "superseded", "archived"].includes(revision.state)) && (
         <p className="note-export-hint">草稿需确认后才能导出。
-          {data.asset.current_revision_id && <a href={`#note/${assetId}/${data.asset.current_revision_id}`}>打开正式版本</a>}
+          {data.asset.current_revision_id && <a href={courseHref(data.asset.course_id, "notes", [assetId, data.asset.current_revision_id])}>打开正式版本</a>}
         </p>
       )}
       {error && (
@@ -823,7 +824,7 @@ function NoteEditor({
 
 function BackToNotes() {
   return (
-    <button type="button" className="note-back" onClick={() => { window.location.hash = "#notes"; }}>
+    <button type="button" className="note-back" onClick={() => { const route = readRoute(window.location.hash); window.location.hash = route.courseId ? courseHref(route.courseId, "notes") : "#notes"; }}>
       <svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
         <path d="m8 5-5 5 5 5M3 10h14" />
       </svg>

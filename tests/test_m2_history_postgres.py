@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 from conftest import ScriptedModel, TestEmbeddings
 from fastapi.testclient import TestClient
-from test_postgres_migrations import database_url  # noqa: F401
+from test_postgres_migrations import database_url, sign_in_test_account  # noqa: F401
 
 from final_review.agent import FinalReviewAgent
 from final_review.api import create_app
@@ -89,9 +89,8 @@ def test_note_history_restart_owner_scope_and_cancel(database_url, monkeypatch, 
         with TestClient(app) as owner, TestClient(app) as other:
             for client, email in [(owner, "owner@m2.test"), (other, "other@m2.test")]:
                 assert (
-                    client.post(
-                        "/api/auth/sign-up",
-                        json={
+                    sign_in_test_account(
+                        client, database_url, {
                             "email": email,
                             "password": "acceptance-password",
                         },

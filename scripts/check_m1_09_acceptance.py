@@ -26,6 +26,7 @@ from psycopg.conninfo import make_conninfo
 from pydantic import SecretStr
 
 from final_review.api import create_app
+from final_review.auth import DatabaseAuth
 from final_review.config import Settings
 from final_review.migrations import apply_migrations
 from final_review.postgres import PostgresStore
@@ -221,21 +222,23 @@ def main():
                 "embedding_api_key": SecretStr(""),
             }
         )
+        owner_credentials = {"email": "owner@m109.test", "password": "m109-test-password"}
+        other_credentials = {"email": "other@m109.test", "password": "m109-test-password"}
+        auth = DatabaseAuth(api_settings)
+        auth.setup()
+        try:
+            auth.sign_up(**owner_credentials)
+            auth.sign_up(**other_credentials)
+        finally:
+            auth.close()
         app = create_app(api_settings)
         with TestClient(app) as owner:
             other = TestClient(app)
-            owner_result = owner.post(
-                "/api/auth/sign-up",
-                json={"email": "owner@m109.test", "password": "m109-test-password"},
-            )
-            check("owner registration", owner_result.status_code == 200)
+            owner_result = owner.post("/api/auth/sign-in", json=owner_credentials)
+            check("owner sign-in", owner_result.status_code == 200)
             check(
-                "second user registration",
-                other.post(
-                    "/api/auth/sign-up",
-                    json={"email": "other@m109.test", "password": "m109-test-password"},
-                ).status_code
-                == 200,
+                "second user sign-in",
+                other.post("/api/auth/sign-in", json=other_credentials).status_code == 200,
             )
             course = owner.post("/api/courses", json={"name": "M1-09 隔离验收"}).json()
             second_course = owner.post("/api/courses", json={"name": "其他课程"}).json()[

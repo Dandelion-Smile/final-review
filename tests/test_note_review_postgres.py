@@ -6,7 +6,12 @@ from threading import Barrier
 import psycopg
 import pytest
 from fastapi.testclient import TestClient
-from test_postgres_migrations import USER, _seed_course, database_url  # noqa: F401, F811
+from test_postgres_migrations import (  # noqa: F401, F811
+    USER,
+    _seed_course,
+    database_url,
+    sign_in_test_account,
+)
 
 from final_review.api import create_app
 from final_review.config import Settings
@@ -81,16 +86,14 @@ def test_real_note_api_owner_scope_confirm_history_and_snapshot(database_url):  
     )
     with TestClient(create_app(settings)) as owner, TestClient(create_app(settings)) as other:
         assert (
-            owner.post(
-                "/api/auth/sign-up",
-                json={"email": "note-owner@example.test", "password": "password1"},
+            sign_in_test_account(
+                owner, database_url, {"email": "note-owner@example.test", "password": "password1"},
             ).status_code
             == 200
         )
         assert (
-            other.post(
-                "/api/auth/sign-up",
-                json={"email": "note-other@example.test", "password": "password1"},
+            sign_in_test_account(
+                other, database_url, {"email": "note-other@example.test", "password": "password1"},
             ).status_code
             == 200
         )

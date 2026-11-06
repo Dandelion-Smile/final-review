@@ -8,7 +8,12 @@ import psycopg
 import pytest
 from conftest import ScriptedModel
 from fastapi.testclient import TestClient
-from test_postgres_migrations import USER, _seed_course, database_url  # noqa: F401
+from test_postgres_migrations import (  # noqa: F401
+    USER,
+    _seed_course,
+    database_url,
+    sign_in_test_account,
+)
 
 from final_review.api import create_app
 from final_review.config import ChatModelConfig, Settings
@@ -272,11 +277,11 @@ def test_quiz_http_isolates_two_authenticated_users_and_survives_restart(databas
         ],
     )
     with TestClient(create_app(settings)) as owner, TestClient(create_app(settings)) as other:
-        owner.post(
-            "/api/auth/sign-up", json={"email": "quiz-owner@example.test", "password": "password1"}
+        sign_in_test_account(
+            owner, database_url, {"email": "quiz-owner@example.test", "password": "password1"}
         )
-        other.post(
-            "/api/auth/sign-up", json={"email": "quiz-other@example.test", "password": "password1"}
+        sign_in_test_account(
+            other, database_url, {"email": "quiz-other@example.test", "password": "password1"}
         )
         user_id = owner.get("/api/auth/me").json()["id"]
         course = owner.post("/api/courses", json={"name": "Quiz course"}).json()

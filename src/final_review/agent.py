@@ -122,6 +122,7 @@ class ReviewState(TypedDict, total=False):
     plan: dict
     output: dict
     issues: list[str]
+    needs_more_evidence: bool
     attempts: int
     answers: dict
     assessment: dict
@@ -193,7 +194,9 @@ class FinalReviewAgent:
         )
         graph.add_edge("generate", "verify")
         graph.add_conditional_edges(
-            "verify", self._after_verify, ["retrieve", "refuse", "wait_answers", "finalize"]
+            "verify",
+            self._after_verify,
+            ["retrieve", "generate", "refuse", "wait_answers", "finalize"],
         )
         graph.add_edge("wait_answers", "evaluate")
         graph.add_edge("evaluate", "finalize")
@@ -1065,6 +1068,8 @@ class FinalReviewAgent:
             "weak_points": state.get("weak_points", []),
         }
         if state["intent"] == "ask":
+            if state["issues"]:
+                data["previous_answer"] = state["output"]
             output = GroundedAnswer.model_validate(self.model.answer(data)).model_dump(mode="json")
             return {"output": output}
         plan = KnowledgePlan.model_validate(self.model.plan(data)).model_dump(mode="json")
@@ -1081,6 +1086,7 @@ class FinalReviewAgent:
 
     def _verify(self, state):
         issues = citation_issues(state["output"], state["evidence"])
+        needs_more_evidence = False
         if state["intent"] == "quiz":
             issues += citation_issues(state["plan"], state["evidence"])
             points = state["plan"]["points"]
@@ -1102,6 +1108,7 @@ class FinalReviewAgent:
         if not issues:
             verdict = self.model.verify(
                 {
+                    "intent": state["intent"],
                     "request": state["request"],
                     "output": state["output"],
                     "evidence": state["evidence"],
@@ -1109,11 +1116,20 @@ class FinalReviewAgent:
             )
             if not verdict["supported"]:
                 issues.extend(verdict["issues"] or ["语义证据校验失败"])
-        return {"issues": issues, "attempts": state["attempts"] + 1}
+                needs_more_evidence = verdict.get("needs_more_evidence", False)
+        return {
+            "issues": issues,
+            "attempts": state["attempts"] + 1,
+            "needs_more_evidence": needs_more_evidence,
+        }
 
     def _after_verify(self, state):
         if state["issues"]:
-            return "retrieve" if state["attempts"] <= self.settings.max_repairs else "refuse"
+            if state["attempts"] > self.settings.max_repairs:
+                return "refuse"
+            if state["intent"] == "ask" and not state.get("needs_more_evidence"):
+                return "generate"
+            return "retrieve"
         return "wait_answers" if state["intent"] == "quiz" else "finalize"
 
     def _wait(self, state):
@@ -1193,11 +1209,17 @@ class FinalReviewAgent:
         return {"response": response.model_dump(mode="json")}
 
     def _refuse(self, state):
+        answer = "现有资料不足，或生成内容未通过证据校验。请补充相关课程资料后重试。"
+        if state["intent"] == "ask":
+            if not state["evidence"] or state.get("needs_more_evidence"):
+                answer = "当前课程范围内的资料不足以回答这个问题。请补充相关资料后重试。"
+            else:
+                answer = "已找到相关资料，但生成的回答未通过证据校验。请尝试把问题问得更具体。"
         return {
             "response": AgentResponse(
                 session_id=state["request"]["session_id"],
                 status="insufficient_evidence",
-                answer="现有资料不足，或生成内容未通过证据校验。请补充相关课程资料后重试。",
+                answer=answer,
                 weak_points=state.get("weak_points", []),
             ).model_dump(mode="json")
         }

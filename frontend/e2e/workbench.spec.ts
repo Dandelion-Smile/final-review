@@ -4,19 +4,16 @@ test.beforeEach(async ({ request }) => {
   await request.post("http://127.0.0.1:8081/test/reset");
 });
 
-test("AI navigation opens without a course and explains how to find existing courses", async ({ page }) => {
+test("course list hides course modules until a course is entered", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: "AI 对话", exact: true }).first().click();
-  await expect(page).toHaveURL(/#home$/);
-  await expect(page.getByRole("heading", { name: "今天想从哪里开始？" })).toBeVisible();
-  await expect(page.getByRole("textbox", { name: "输入你的问题" })).toBeDisabled();
+  await expect(page.getByRole("heading", { name: "我的课程", exact: true })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "课程导航" }).getByRole("button")).toHaveCount(3);
+  await expect(page.getByRole("button", { name: "AI 辅导", exact: true })).toHaveCount(0);
   await page.reload();
-  await expect(page.getByRole("heading", { name: "今天想从哪里开始？" })).toBeVisible();
-  await page.getByRole("link", { name: "到课程管理核对当前账户" }).click();
-  await expect(page.getByRole("heading", { name: "我的课程" })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "课程导航" }).getByRole("button")).toHaveCount(3);
 });
 
-test("current account is visible and switching accounts returns to sign in", async ({ page }) => {
+test("current account is visible and sign out opens the standalone login page", async ({ page }) => {
   let signedIn = true;
   await page.route("**/api/auth/me", route => route.fulfill({
     status: signedIn ? 200 : 401,
@@ -32,9 +29,12 @@ test("current account is visible and switching accounts returns to sign in", asy
     await route.fulfill({ json: { signed_out: true } });
   });
   await page.goto("/");
+  await page.getByLabel("账户菜单").click();
   await expect(page.getByRole("region", { name: "当前账户" })).toContainText("string");
-  await page.getByRole("button", { name: "切换账户", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "登录后管理课程" })).toBeVisible();
+  await page.getByRole("button", { name: "退出登录", exact: true }).click();
+  await expect(page).toHaveURL(/#\/login$/);
+  await expect(page.getByRole("heading", { name: "登录", exact: true })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "课程导航" })).toHaveCount(0);
   await expect(page.getByRole("region", { name: "当前账户" })).toHaveCount(0);
 });
 
@@ -44,6 +44,7 @@ test("one course holds two exams and can be deleted and restored", async ({ page
   await page.getByRole("dialog", { name: "新建课程" }).getByRole("textbox", { name: "课程名称" }).fill("高等数学");
   await page.getByRole("button", { name: "保存课程" }).click();
   await expect(page.getByRole("heading", { name: "高等数学" })).toBeVisible();
+  await page.getByRole("button", { name: "管理高等数学", exact: true }).click();
 
   for (const name of ["期中考试", "期末考试"]) {
     await page.getByRole("button", { name: "＋ 添加考试" }).click();
@@ -78,6 +79,8 @@ test("one course holds two exams and can be deleted and restored", async ({ page
   await expect(page.getByRole("button", { name: "恢复课程" })).toBeVisible();
 
   await page.reload();
+  await page.getByRole("button", { name: "回收期 1", exact: true }).click();
+  await page.getByRole("button", { name: "管理高等数学", exact: true }).click();
   await expect(page.getByRole("button", { name: "恢复课程" })).toBeVisible();
   await page.getByRole("button", { name: "恢复课程" }).click();
   await expect(page.getByRole("heading", { name: "关联考试 2 场" })).toBeVisible();

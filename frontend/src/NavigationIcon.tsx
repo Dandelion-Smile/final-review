@@ -1,8 +1,10 @@
-export type NavigationIconName = "chat" | "courses" | "materials" | "notes" | "quiz" | "mistakes" | "report";
+export type NavigationIconName = "chat" | "courses" | "materials" | "notes" | "quiz" | "mistakes" | "report" | "home" | "calendar";
 
 /** Navigation artwork traced from the approved reference, using the menu's color. */
 export default function NavigationIcon({ name }: { name: NavigationIconName }) {
   return <svg className="navigation-icon" viewBox="0 0 32 32" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+    {name === "home" && <path d="M3 14 16 3l13 11M6 12v16h7v-9h6v9h7V12" />}
+    {name === "calendar" && <path d="M6 6h20a3 3 0 0 1 3 3v17a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V9a3 3 0 0 1 3-3ZM10 3v6m12-6v6M3 13h26m-19 6h2m4 0h2m4 0h2m-14 5h2m4 0h2" />}
     {name === "chat" && <>
       <path d="M7.5 24.5C4.6 22.4 3 19.3 3 15.5V13C3 6.8 7.4 3 13 3h6c5.8 0 10 4.3 10 10v3c0 5.8-4.2 9.5-10 9.5h-4.5L7.5 30Z" />
       <g fill="currentColor" stroke="none"><circle cx="10" cy="14.5" r="1.6" /><circle cx="16" cy="14.5" r="1.6" /><circle cx="22" cy="14.5" r="1.6" /></g>
