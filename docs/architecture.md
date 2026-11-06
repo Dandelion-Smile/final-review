@@ -2,6 +2,8 @@
 
 将规则型 Skill 工程化为可运行、可测试的单 Agent 后端。输入为课程资料、考试信息和复习需求；结果为有证据的回答、模拟题和得分反馈。当前目标规模：单进程、可信环境、小型课程语料。
 
+当前产品能力、尚未实现项和新方案复用边界见 [代码与 API 评估](current-api-and-capability-audit-2026-10-26.md)；所有 96 个 HTTP 接口见 [完整清单](api-audit-2026-10-26/README.md)。
+
 ## Module 与 Interface
 
 `FinalReviewAgent` 是外部主要 module，interface 为 `invoke / resume_profile / evaluate / recover / read`。调用者处理课程、会话和公开响应，不操作图节点或检查点。
@@ -12,9 +14,11 @@ LangChain 负责模型、PromptTemplate、Tool、Retriever、结构化结果；L
 
 ## 数据流
 
-文件上传入库：API 校验并保存原文件，事务创建资料占位记录与 `material_jobs`，立即返回 `202`。独立 worker 用 PostgreSQL 行锁领取 Job，执行 MD/TXT 读取、MarkItDown 或 LibreOffice 转换、图片 OCR、Markdown 清洗、分块与 Embedding。PPT/PPTX 先保留原生文字，再转换为 PDF、逐页渲染并 OCR；合并去重后的文字以幻灯片为单位进入索引。完整资料、全部片段和 Job 成功状态在同一事务发布；失败记录阶段及原因，检索只读取 `ready` 资料。worker 中断后租约到期可重新领取，最多尝试 3 次。直接调用 `/knowledge/ingest` 仍同步入库。
+文件上传入库：API 校验并保存原文件，事务创建资料占位记录与 `material_jobs`，新任务返回 `202`。独立 worker 用 PostgreSQL 行锁领取 Job，执行 MD/TXT 读取、MarkItDown 或 LibreOffice 转换、图片 OCR、Markdown 清洗、分块与 Embedding。PPT/PPTX 保留原生文字并逐页渲染；开启 `MATERIAL_VISION_ENABLED` 时逐页整理知识块、核验原始证据，只有通过的块进入索引，OCR 作为辅助提示；关闭时使用旧提取流程并标记未视觉核验。完整资料、全部片段和 Job 成功状态在同一事务发布；失败记录阶段及原因，检索只读取 `ready` 资料。worker 中断后租约到期可重新领取，最多尝试 3 次。直接调用 `/knowledge/ingest` 仍同步入库。
 
-直接调用 `/knowledge/ingest` 的文档键由课程、标题、章节、题源、清洗内容哈希构成，可以复用已入库内容。文件上传使用独立的资料 ID，并保留上传文件及状态；重复上传同一文件会生成新的资料记录。
+直接调用 `/knowledge/ingest` 的默认文档键由课程、标题、章节、题源、清洗内容哈希构成，可以复用已入库内容。文件上传使用独立的资料 ID，并保留上传文件及状态；同课程、同文件名、同内容的重复上传复用已有有效资料，重复命中返回 `200`。幂等键重放复用原任务；相同键对应不同请求返回 `409`，失败资料须显式重试。
+
+笔记、试卷和笔记导出另有持久任务与独立 worker。笔记生成按所选资料分批取材、核验、合并后发布草稿；专用编辑接口创建新 revision，确认令牌绑定最新内容和覆盖状态。正式试卷保存卷面与题目 revision，经过复核和确认后才能创建正式 Attempt。Attempt 固定题目版本，保存答案、交卷后评分并投影错题，错题重练单独记录。笔记导出从曾确认版本建立正文快照，worker 负责格式转换。聊天内的笔记状态通过消息历史接口的 `active_note` 读取。
 
 检索：查询 Embedding → 数据库先过滤课程/章节 → 精确余弦排序召回 → 最低相关性阈值 → 题源 bonus → TopK。
 
@@ -37,12 +41,20 @@ priority: past_exam=4, teacher_ppt=3, homework=2, other_practice=1, crash_course
 | 表 | 内容 |
 | --- | --- |
 | app_users / auth_sessions | 邮箱、Argon2id 密码哈希；Session 哈希、过期与撤销状态 |
-| documents | 课程、来源、章节、原始/清洗 Markdown、哈希、分块数 |
+| courses / exams | 课程生命周期；考试日期、题型分值蓝图、重点及生成偏好 |
+| documents / material_jobs | 来源、章节、原始/清洗 Markdown、文件信息、解析阶段与失败重试 |
 | document_chunks | 文档 ID、文本、pgvector Embedding、课程/章节/题源元数据 |
-| knowledge_point | 会话最近已完成测评的知识点计划 |
-| review_session | 最近公开结果、薄弱点；保留一个 Embedding 配置记录 |
-| checkpoint | thread/namespace/checkpoint ID、父 ID、序列化图状态和元数据 |
-| pending_write | task ID、channel、索引与序列化值 |
+| conversations / messages | 课程聊天、消息、取材范围与生成任务关联 |
+| learning_assets / asset_revisions | 笔记/试卷资产、草稿和不可变正式版本 |
+| note_jobs / quiz_jobs / export_jobs | 笔记、出卷和笔记导出任务、进度与结果 |
+| quiz_revision_payloads / question_revisions | 正式试卷配置、题目、分值、答案、解析、来源及复核信息 |
+| attempts / attempt_answers / question_grades | 旧/正式作答记录；正式单题答案、评分与模型审计 |
+| mistakes / mastery_observations / mistake_practices | 错题快照、掌握标记事件、独立重练历史 |
+| material_versions / material_locators | 资料版本快照与位置 |
+| source_references / source_reference_snapshots | 资产引用及来源删除后的追溯快照 |
+| confirmation_requests / audit_events / learning_events | 一次性确认、领域审计及部分学习事件 |
+| knowledge_points / review_sessions | 旧 Agent 知识点计划、最近公开结果、薄弱点和 Embedding 配置记录 |
+| checkpoints / pending_writes | 图状态、父检查点、pending writes、元数据 |
 
 checkpoint 是恢复的事实来源；review_session 是业务快照，两者职责不同。检查点使用 LangGraph typed serializer，base64 后存储；包含 pending writes 和父子关系。只实现同步 Checkpointer interface。
 
@@ -56,7 +68,7 @@ checkpoint 是恢复的事实来源；review_session 是业务快照，两者职
 - 故障保留检查点，recover 从未完成节点继续。该节点内模型调用可能重跑并产生费用。
 - 等待作答时不返回参考答案、评分规则或证据正文。评分完成后才返回完整解析。
 - 笔记生成必须显式提供 `source_document_ids`；后端核验用户、课程和资料状态，只从已选资料取片段。可选的 `scope` 是写作要求，明确章节无匹配时提示用户修改；多文件候选片段按相关性排序并轮流选取，避免内部资料 ID 决定来源。
-- 笔记配置处于 `note_config` 中断状态时可取消。取消会标记对应 Agent 会话、清除对话的 `active_note`，并写入一条取消消息；再次恢复旧会话会被拒绝，新的笔记请求使用新会话 ID。
+- 笔记配置及排队/运行中的后台任务可取消；开始发布草稿后拒绝取消。取消标记对应任务/会话、清除对话的 `active_note`，丢弃在途生成结果并记录取消消息；新请求使用新会话 ID。第三方已发出的模型请求不会因此立即中断。
 
 ## Skill 映射
 

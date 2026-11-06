@@ -1,0 +1,84 @@
+{
+  "formal_attempt_report": {
+    "http_status": 200,
+    "formal_question_count": 1,
+    "grading_max_score": 10.0,
+    "report": {
+      "attempt_count": 1,
+      "question_count": 0,
+      "average_score": 0.0,
+      "topics": [],
+      "attempts": [
+        {
+          "attempt_id": "attempt-6576378b32fd491ca2c0bfe89fd31cbb",
+          "user_id": "local-user",
+          "course_id": "net",
+          "asset_id": "quiz-8842c83190dc05e2bfd1b1cc3578f33d",
+          "quiz_revision_id": "revision-33ea9aaa40697a602c9d6a10bdb8de94",
+          "legacy_session_id": null,
+          "status": "submitted",
+          "started_at": "2026-10-26T03:19:23.984265+00:00",
+          "deadline_at": null,
+          "duration_minutes": null,
+          "answers": {},
+          "question_revision_ids": [
+            "question-revision-b57113c3336831dbaae4cb92586df61c"
+          ],
+          "version": 1,
+          "submitted_at": "2026-10-26T03:19:23.984265+00:00",
+          "submission_reason": "manual",
+          "elapsed_seconds": 0,
+          "created_at": "2026-10-26T03:19:23.984265+00:00",
+          "updated_at": "2026-10-26T03:19:23.985264+00:00",
+          "grading_snapshot": {
+            "version": "formal-grading-v1",
+            "quiz_revision_id": "revision-33ea9aaa40697a602c9d6a10bdb8de94",
+            "answer_hash": "f2a17f9c43d2ca3675c023cc610d8f8c4c70576b5668f31a7c0b7d8950038a72",
+            "model_id": null,
+            "model_version": null,
+            "graded_at": "2026-10-26T03:19:23.985264+00:00",
+            "disclaimer": "仅供学习参考，以教师评分为准",
+            "total_score": 0.0,
+            "max_score": 10.0,
+            "items": [
+              {
+                "question_revision_id": "question-revision-b57113c3336831dbaae4cb92586df61c",
+                "question_id": "question-4a18465ce0906ba143c062ce0b455dd6",
+                "question_type": "short_answer",
+                "max_score": 10.0,
+                "student_answer": null,
+                "reference_answer": "同步初始序列号。",
+                "score": 0,
+                "correct": false,
+                "feedback": "未作答",
+                "missing_points": [
+                  "同步初始序列号"
+                ],
+                "improvement_advice": "先尝试按得分点完成文字作答。",
+                "rubric": []
+              }
+            ]
+          },
+          "model_version": null,
+          "grading_disclaimer_version": "formal-grading-v1",
+          "graded_at": "2026-10-26T03:19:23.985264+00:00"
+        }
+      ]
+    }
+  },
+  "duplicate_course_names": {
+    "statuses": [
+      200,
+      200
+    ],
+    "different_ids": true
+  },
+  "blank_manual_note": {
+    "http_status": 422
+  },
+  "cancel_quiz_is_configuration_only": {
+    "http_status": 200,
+    "pending_quiz": null,
+    "job_status_after_request": "queued"
+  }
+}

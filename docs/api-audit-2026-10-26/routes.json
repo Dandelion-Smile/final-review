@@ -1,0 +1,5028 @@
+[
+  {
+    "method": "GET",
+    "path": "/health",
+    "handler": "health",
+    "line": 399,
+    "signature": "",
+    "parameters": [],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/auth/sign-up",
+    "handler": "sign_up",
+    "line": 403,
+    "signature": "request: Credentials, response: Response",
+    "parameters": [],
+    "requestBody": {
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/Credentials"
+          }
+        }
+      },
+      "required": true
+    },
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/auth/sign-in",
+    "handler": "sign_in",
+    "line": 411,
+    "signature": "request: Credentials, response: Response, http_request: Request",
+    "parameters": [],
+    "requestBody": {
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/Credentials"
+          }
+        }
+      },
+      "required": true
+    },
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/auth/sign-out",
+    "handler": "sign_out",
+    "line": 420,
+    "signature": "request: Request, response: Response",
+    "parameters": [],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/auth/me",
+    "handler": "who_am_i",
+    "line": 427,
+    "signature": "user: CurrentUser=Depends(authorize)",
+    "parameters": [],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/chat/models",
+    "handler": "list_chat_models",
+    "line": 431,
+    "signature": "",
+    "parameters": [],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/chat",
+    "handler": "chat",
+    "line": 451,
+    "signature": "request: ChatRequest, user: CurrentUser=Depends(authorize)",
+    "parameters": [],
+    "requestBody": {
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/ChatRequest"
+          }
+        }
+      },
+      "required": true
+    },
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ChatResponse"
+            }
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/chat/recover",
+    "handler": "recover_chat",
+    "line": 829,
+    "signature": "course_id: Identifier, conversation_id: Identifier, model_id: Identifier | None=None, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "query",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "conversation_id",
+        "in": "query",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Conversation Id"
+        }
+      },
+      {
+        "name": "model_id",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100,
+              "pattern": "^[\\w.-]+$"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Model Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ChatResponse"
+            }
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/courses",
+    "handler": "list_courses",
+    "line": 853,
+    "signature": "user: CurrentUser=Depends(authorize)",
+    "parameters": [],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/courses",
+    "handler": "create_course",
+    "line": 864,
+    "signature": "request: CourseCreate, user: CurrentUser=Depends(authorize)",
+    "parameters": [],
+    "requestBody": {
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/CourseCreate"
+          }
+        }
+      },
+      "required": true
+    },
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/courses/{course_id}",
+    "handler": "update_course",
+    "line": 880,
+    "signature": "course_id: Identifier, request: CourseUpdate, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      }
+    ],
+    "requestBody": {
+      "required": true,
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/CourseUpdate"
+          }
+        }
+      }
+    },
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/courses/{course_id}/archive",
+    "handler": "archive_course",
+    "line": 890,
+    "signature": "course_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/courses/{course_id}/restore",
+    "handler": "restore_course",
+    "line": 894,
+    "signature": "course_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/courses/{course_id}/deletion-preview",
+    "handler": "course_deletion_preview",
+    "line": 898,
+    "signature": "course_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/courses/{course_id}/delete",
+    "handler": "delete_course",
+    "line": 902,
+    "signature": "course_id: Identifier, request: ConfirmationConsume, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      }
+    ],
+    "requestBody": {
+      "required": true,
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/ConfirmationConsume"
+          }
+        }
+      }
+    },
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/courses/{course_id}/exams",
+    "handler": "list_exams",
+    "line": 908,
+    "signature": "course_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/courses/{course_id}/exams",
+    "handler": "create_exam",
+    "line": 912,
+    "signature": "course_id: Identifier, request: ExamCreate, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      }
+    ],
+    "requestBody": {
+      "required": true,
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/ExamCreate"
+          }
+        }
+      }
+    },
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/exams/{exam_id}",
+    "handler": "read_exam",
+    "line": 918,
+    "signature": "exam_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "exam_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Exam Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/exams/{exam_id}",
+    "handler": "update_exam",
+    "line": 922,
+    "signature": "exam_id: Identifier, request: ExamUpdate, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "exam_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Exam Id"
+        }
+      }
+    ],
+    "requestBody": {
+      "required": true,
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/ExamUpdate"
+          }
+        }
+      }
+    },
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/exams/{exam_id}/archive",
+    "handler": "archive_exam",
+    "line": 932,
+    "signature": "exam_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "exam_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Exam Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/courses/{course_id}/assets",
+    "handler": "create_asset",
+    "line": 936,
+    "signature": "course_id: Identifier, request: AssetCreate, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      }
+    ],
+    "requestBody": {
+      "required": true,
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/AssetCreate"
+          }
+        }
+      }
+    },
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/assets/{asset_id}/revisions/{revision_id}",
+    "handler": "read_note_draft",
+    "line": 942,
+    "signature": "asset_id: Identifier, revision_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "asset_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Asset Id"
+        }
+      },
+      {
+        "name": "revision_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Revision Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/courses/{course_id}/notes",
+    "handler": "list_notes",
+    "line": 948,
+    "signature": "course_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/notes/{asset_id}/exports",
+    "handler": "queue_export",
+    "line": 952,
+    "signature": "asset_id: Identifier, request: NoteExportCreate, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "asset_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Asset Id"
+        }
+      }
+    ],
+    "requestBody": {
+      "required": true,
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/NoteExportCreate"
+          }
+        }
+      }
+    },
+    "responses": {
+      "202": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/exports/{export_id}",
+    "handler": "get_export",
+    "line": 976,
+    "signature": "export_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "export_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Export Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/exports/{export_id}/retry",
+    "handler": "retry_export",
+    "line": 981,
+    "signature": "export_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "export_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Export Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "202": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/exports/{export_id}/download",
+    "handler": "download_export",
+    "line": 1029,
+    "signature": "export_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "export_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Export Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/exports/{export_id}/preview",
+    "handler": "preview_export",
+    "line": 1033,
+    "signature": "export_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "export_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Export Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/notes/{asset_id}/revisions",
+    "handler": "edit_note",
+    "line": 1037,
+    "signature": "asset_id: Identifier, request: NoteRevisionEdit, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "asset_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Asset Id"
+        }
+      }
+    ],
+    "requestBody": {
+      "required": true,
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/NoteRevisionEdit"
+          }
+        }
+      }
+    },
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/notes/{asset_id}/confirm-preview",
+    "handler": "note_confirm_preview",
+    "line": 1043,
+    "signature": "asset_id: Identifier, request: NoteConfirmPreview, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "asset_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Asset Id"
+        }
+      }
+    ],
+    "requestBody": {
+      "required": true,
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/NoteConfirmPreview"
+          }
+        }
+      }
+    },
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/notes/{asset_id}/confirm",
+    "handler": "confirm_note",
+    "line": 1049,
+    "signature": "asset_id: Identifier, request: NoteConfirm, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "asset_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Asset Id"
+        }
+      }
+    ],
+    "requestBody": {
+      "required": true,
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/NoteConfirm"
+          }
+        }
+      }
+    },
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/assets/{asset_id}/revisions",
+    "handler": "create_asset_revision",
+    "line": 1055,
+    "signature": "asset_id: Identifier, request: AssetRevisionCreate, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "asset_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Asset Id"
+        }
+      }
+    ],
+    "requestBody": {
+      "required": true,
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/AssetRevisionCreate"
+          }
+        }
+      }
+    },
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/assets/{asset_id}/revisions/{revision_id}/confirm",
+    "handler": "confirm_asset_revision",
+    "line": 1063,
+    "signature": "asset_id: Identifier, revision_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "asset_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Asset Id"
+        }
+      },
+      {
+        "name": "revision_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Revision Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/assets/{asset_id}/archive",
+    "handler": "archive_asset",
+    "line": 1069,
+    "signature": "asset_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "asset_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Asset Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/courses/{course_id}/documents",
+    "handler": "list_documents",
+    "line": 1073,
+    "signature": "course_id: Identifier, chapter: str | None=None, source_type: SourceType | None=None, status: str | None=None, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "chapter",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Chapter"
+        }
+      },
+      {
+        "name": "source_type",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/SourceType"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Source Type"
+        }
+      },
+      {
+        "name": "status",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Status"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/courses/{course_id}/documents/{document_id}/chunks",
+    "handler": "list_document_chunks",
+    "line": 1135,
+    "signature": "course_id: Identifier, document_id: Identifier, user: CurrentUser=Depends(authorize), include_content: bool=False",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "document_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Document Id"
+        }
+      },
+      {
+        "name": "include_content",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "type": "boolean",
+          "default": false,
+          "title": "Include Content"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/courses/{course_id}/documents/{document_id}/pages/{page_number}",
+    "handler": "original_slide",
+    "line": 1157,
+    "signature": "course_id: Identifier, document_id: Identifier, page_number: int, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "document_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Document Id"
+        }
+      },
+      {
+        "name": "page_number",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "integer",
+          "title": "Page Number"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/courses/{course_id}/documents/{document_id}/chunks/{chunk_id}",
+    "handler": "get_document_chunk",
+    "line": 1181,
+    "signature": "course_id: Identifier, document_id: Identifier, chunk_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "document_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Document Id"
+        }
+      },
+      {
+        "name": "chunk_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Chunk Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/courses/{course_id}/documents/{document_id}/download",
+    "handler": "download_document",
+    "line": 1217,
+    "signature": "course_id: Identifier, document_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "document_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Document Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/courses/{course_id}/documents/{document_id}",
+    "handler": "update_document",
+    "line": 1236,
+    "signature": "course_id: Identifier, document_id: Identifier, request: MaterialUpdate, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "document_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Document Id"
+        }
+      }
+    ],
+    "requestBody": {
+      "required": true,
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/MaterialUpdate"
+          }
+        }
+      }
+    },
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/courses/{course_id}/conversations",
+    "handler": "list_conversations",
+    "line": 1246,
+    "signature": "course_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/courses/{course_id}/conversations",
+    "handler": "create_conversation",
+    "line": 1252,
+    "signature": "course_id: Identifier, request: ConversationCreate, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      }
+    ],
+    "requestBody": {
+      "required": true,
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/ConversationCreate"
+          }
+        }
+      }
+    },
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/courses/{course_id}/conversations/{conversation_id}",
+    "handler": "rename_conversation",
+    "line": 1274,
+    "signature": "course_id: Identifier, conversation_id: Identifier, request: ConversationRename, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "conversation_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Conversation Id"
+        }
+      }
+    ],
+    "requestBody": {
+      "required": true,
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/ConversationRename"
+          }
+        }
+      }
+    },
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/courses/{course_id}/conversations/{conversation_id}/messages",
+    "handler": "list_messages",
+    "line": 1297,
+    "signature": "course_id: Identifier, conversation_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "conversation_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Conversation Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/courses/{course_id}/conversations/{conversation_id}/cancel-quiz",
+    "handler": "cancel_chat_quiz",
+    "line": 1337,
+    "signature": "course_id: Identifier, conversation_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "conversation_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Conversation Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/knowledge/ingest",
+    "handler": "ingest",
+    "line": 1349,
+    "signature": "request: MaterialInput, user: CurrentUser=Depends(authorize)",
+    "parameters": [],
+    "requestBody": {
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/MaterialInput"
+          }
+        }
+      },
+      "required": true
+    },
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/knowledge/upload",
+    "handler": "upload",
+    "line": 1354,
+    "signature": "request: Request, course_id: Identifier=Form(), title: str=Form(), source_type: SourceType=Form(), chapter: str=Form(''), file: UploadFile=File(), user: CurrentUser=Depends(authorize)",
+    "parameters": [],
+    "requestBody": {
+      "content": {
+        "multipart/form-data": {
+          "schema": {
+            "$ref": "#/components/schemas/Body_upload_knowledge_upload_post"
+          }
+        }
+      },
+      "required": true
+    },
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/courses/{course_id}/material-jobs",
+    "handler": "list_material_jobs",
+    "line": 1484,
+    "signature": "course_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/courses/{course_id}/material-jobs/{job_id}",
+    "handler": "get_material_job",
+    "line": 1489,
+    "signature": "course_id: Identifier, job_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "job_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Job Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/courses/{course_id}/material-jobs/{job_id}/retry",
+    "handler": "retry_material_job",
+    "line": 1501,
+    "signature": "course_id: Identifier, job_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "job_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Job Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/quiz/generate",
+    "handler": "generate_fast_quiz",
+    "line": 1515,
+    "signature": "request: FastQuizRequest, user: CurrentUser=Depends(authorize)",
+    "parameters": [],
+    "requestBody": {
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/FastQuizRequest"
+          }
+        }
+      },
+      "required": true
+    },
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/courses/{course_id}/chat-quizzes/{session_id}",
+    "handler": "read_chat_quiz",
+    "line": 1599,
+    "signature": "course_id: Identifier, session_id: Identifier, include_answers: bool=False, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "session_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Session Id"
+        }
+      },
+      {
+        "name": "include_answers",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "type": "boolean",
+          "default": false,
+          "title": "Include Answers"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/quiz/{session_id}/submit",
+    "handler": "submit_fast_quiz",
+    "line": 1629,
+    "signature": "session_id: Identifier, request: FastQuizSubmission, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "session_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Session Id"
+        }
+      }
+    ],
+    "requestBody": {
+      "required": true,
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/FastQuizSubmission"
+          }
+        }
+      }
+    },
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/courses/{course_id}/documents/{document_id}/deletion-preview",
+    "handler": "document_deletion_preview",
+    "line": 1703,
+    "signature": "course_id: Identifier, document_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "document_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Document Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/courses/{course_id}/documents/{document_id}/delete",
+    "handler": "delete_document",
+    "line": 1712,
+    "signature": "course_id: Identifier, document_id: Identifier, request: MaterialDelete, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "document_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Document Id"
+        }
+      }
+    ],
+    "requestBody": {
+      "required": true,
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/MaterialDelete"
+          }
+        }
+      }
+    },
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/agent/invoke",
+    "handler": "invoke",
+    "line": 1734,
+    "signature": "request: AgentRequest, conversation_id: Identifier | None=None, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "conversation_id",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100,
+              "pattern": "^[\\w.-]+$"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Conversation Id"
+        }
+      }
+    ],
+    "requestBody": {
+      "required": true,
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/AgentRequest"
+          }
+        }
+      }
+    },
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/AgentResponse"
+            }
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/chat/dispatch",
+    "handler": "dispatch_chat",
+    "line": 1797,
+    "signature": "request: ChatRequest, user: CurrentUser=Depends(authorize), idempotency_key: str | None=Header(default=None, max_length=200)",
+    "parameters": [
+      {
+        "name": "idempotency-key",
+        "in": "header",
+        "required": false,
+        "schema": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 200
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Idempotency-Key"
+        }
+      }
+    ],
+    "requestBody": {
+      "required": true,
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/ChatRequest"
+          }
+        }
+      }
+    },
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/courses/{course_id}/quiz-config/resolve",
+    "handler": "resolve_quiz",
+    "line": 2056,
+    "signature": "course_id: Identifier, request: QuizConfigRequest, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      }
+    ],
+    "requestBody": {
+      "required": true,
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/QuizConfigRequest"
+          }
+        }
+      }
+    },
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/courses/{course_id}/quiz-jobs",
+    "handler": "create_quiz_job",
+    "line": 2079,
+    "signature": "course_id: Identifier, request: QuizJobRequest, user: CurrentUser=Depends(authorize), idempotency_key: str | None=Header(default=None, max_length=200)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "idempotency-key",
+        "in": "header",
+        "required": false,
+        "schema": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 200
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Idempotency-Key"
+        }
+      }
+    ],
+    "requestBody": {
+      "required": true,
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/QuizJobRequest"
+          }
+        }
+      }
+    },
+    "responses": {
+      "202": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/courses/{course_id}/quiz-jobs/{job_id}",
+    "handler": "get_quiz_job",
+    "line": 2106,
+    "signature": "course_id: Identifier, job_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "job_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Job Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/courses/{course_id}/quiz-jobs/{job_id}/retry",
+    "handler": "retry_quiz_job",
+    "line": 2117,
+    "signature": "course_id: Identifier, job_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "job_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Job Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "202": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/courses/{course_id}/quizzes",
+    "handler": "list_quizzes",
+    "line": 2124,
+    "signature": "course_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/courses/{course_id}/quizzes/{asset_id}/revisions",
+    "handler": "edit_quiz_revision",
+    "line": 2144,
+    "signature": "course_id: Identifier, asset_id: Identifier, request: QuizRevisionEdit, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "asset_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Asset Id"
+        }
+      }
+    ],
+    "requestBody": {
+      "required": true,
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/QuizRevisionEdit"
+          }
+        }
+      }
+    },
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/courses/{course_id}/quizzes/{asset_id}/revisions/{revision_id}/review",
+    "handler": "review_edited_quiz",
+    "line": 2157,
+    "signature": "course_id: Identifier, asset_id: Identifier, revision_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "asset_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Asset Id"
+        }
+      },
+      {
+        "name": "revision_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Revision Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/courses/{course_id}/quizzes/{asset_id}/revisions/{revision_id}/confirm-preview",
+    "handler": "preview_quiz_confirmation",
+    "line": 2176,
+    "signature": "course_id: Identifier, asset_id: Identifier, revision_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "asset_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Asset Id"
+        }
+      },
+      {
+        "name": "revision_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Revision Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/courses/{course_id}/quizzes/{asset_id}/revisions/{revision_id}/confirm",
+    "handler": "confirm_edited_quiz",
+    "line": 2189,
+    "signature": "course_id: Identifier, asset_id: Identifier, revision_id: Identifier, request: QuizConfirm, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "asset_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Asset Id"
+        }
+      },
+      {
+        "name": "revision_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Revision Id"
+        }
+      }
+    ],
+    "requestBody": {
+      "required": true,
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/QuizConfirm"
+          }
+        }
+      }
+    },
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/courses/{course_id}/quizzes/{asset_id}/revisions/{revision_id}",
+    "handler": "get_quiz_revision",
+    "line": 2210,
+    "signature": "course_id: Identifier, asset_id: Identifier, revision_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "asset_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Asset Id"
+        }
+      },
+      {
+        "name": "revision_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Revision Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/courses/{course_id}/quizzes/{asset_id}/revisions/{revision_id}/print",
+    "handler": "get_quiz_print",
+    "line": 2223,
+    "signature": "course_id: Identifier, asset_id: Identifier, revision_id: Identifier, variant: Literal['questions', 'answers'], user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "asset_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Asset Id"
+        }
+      },
+      {
+        "name": "revision_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Revision Id"
+        }
+      },
+      {
+        "name": "variant",
+        "in": "query",
+        "required": true,
+        "schema": {
+          "enum": [
+            "questions",
+            "answers"
+          ],
+          "type": "string",
+          "title": "Variant"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/courses/{course_id}/quizzes/{asset_id}/attempts",
+    "handler": "start_quiz_attempt",
+    "line": 2239,
+    "signature": "course_id: Identifier, asset_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "asset_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Asset Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/courses/{course_id}/formal-attempts",
+    "handler": "list_quiz_attempts",
+    "line": 2249,
+    "signature": "course_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/courses/{course_id}/formal-attempts/{attempt_id}",
+    "handler": "get_quiz_attempt",
+    "line": 2257,
+    "signature": "course_id: Identifier, attempt_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "attempt_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Attempt Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "PUT",
+    "path": "/api/courses/{course_id}/formal-attempts/{attempt_id}/answers",
+    "handler": "save_quiz_answer",
+    "line": 2267,
+    "signature": "course_id: Identifier, attempt_id: Identifier, request: FormalAnswerSave, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "attempt_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Attempt Id"
+        }
+      }
+    ],
+    "requestBody": {
+      "required": true,
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/FormalAnswerSave"
+          }
+        }
+      }
+    },
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/courses/{course_id}/formal-attempts/{attempt_id}/submit",
+    "handler": "submit_quiz_attempt",
+    "line": 2288,
+    "signature": "course_id: Identifier, attempt_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "attempt_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Attempt Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/courses/{course_id}/formal-attempts/{attempt_id}/grade",
+    "handler": "grade_quiz_attempt",
+    "line": 2324,
+    "signature": "course_id: Identifier, attempt_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "attempt_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Attempt Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/courses/{course_id}/formal-attempts/{attempt_id}/result",
+    "handler": "get_quiz_result",
+    "line": 2334,
+    "signature": "course_id: Identifier, attempt_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "attempt_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Attempt Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/mistakes",
+    "handler": "get_mistakes",
+    "line": 2341,
+    "signature": "course_id: str | None=None, exam_id: str | None=None, chapter: str | None=None, knowledge_point: str | None=None, question_type: str | None=None, mastery_status: str | None=None, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "exam_id",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Exam Id"
+        }
+      },
+      {
+        "name": "chapter",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Chapter"
+        }
+      },
+      {
+        "name": "knowledge_point",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Knowledge Point"
+        }
+      },
+      {
+        "name": "question_type",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Question Type"
+        }
+      },
+      {
+        "name": "mastery_status",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Mastery Status"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/courses/{course_id}/mistakes/{mistake_id}",
+    "handler": "get_mistake",
+    "line": 2364,
+    "signature": "course_id: Identifier, mistake_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "mistake_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Mistake Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "PUT",
+    "path": "/api/courses/{course_id}/mistakes/{mistake_id}/mastery",
+    "handler": "put_mastery",
+    "line": 2373,
+    "signature": "course_id: Identifier, mistake_id: Identifier, request: MasteryMark, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "mistake_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Mistake Id"
+        }
+      }
+    ],
+    "requestBody": {
+      "required": true,
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/MasteryMark"
+          }
+        }
+      }
+    },
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/courses/{course_id}/mistakes/{mistake_id}/practices",
+    "handler": "create_mistake_practice",
+    "line": 2386,
+    "signature": "course_id: Identifier, mistake_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "mistake_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Mistake Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/courses/{course_id}/mistakes/{mistake_id}/practices",
+    "handler": "get_mistake_practices",
+    "line": 2396,
+    "signature": "course_id: Identifier, mistake_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "mistake_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Mistake Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/courses/{course_id}/mistake-practices/{practice_id}",
+    "handler": "get_mistake_practice",
+    "line": 2406,
+    "signature": "course_id: Identifier, practice_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "practice_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Practice Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/courses/{course_id}/mistake-practices/{practice_id}/submit",
+    "handler": "submit_mistake_practice",
+    "line": 2416,
+    "signature": "course_id: Identifier, practice_id: Identifier, request: MistakePracticeAnswer, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "practice_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Practice Id"
+        }
+      }
+    ],
+    "requestBody": {
+      "required": true,
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/MistakePracticeAnswer"
+          }
+        }
+      }
+    },
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/courses/{course_id}/formal-attempts/{attempt_id}/result/questions/{question_revision_id}/follow-up",
+    "handler": "follow_up_quiz_result",
+    "line": 2432,
+    "signature": "course_id: Identifier, attempt_id: Identifier, question_revision_id: Identifier, request: QuizFollowUpRequest, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "attempt_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Attempt Id"
+        }
+      },
+      {
+        "name": "question_revision_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Question Revision Id"
+        }
+      }
+    ],
+    "requestBody": {
+      "required": true,
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/QuizFollowUpRequest"
+          }
+        }
+      }
+    },
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/agent/resume",
+    "handler": "resume",
+    "line": 2475,
+    "signature": "request: ResumeRequest, user: CurrentUser=Depends(authorize)",
+    "parameters": [],
+    "requestBody": {
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/ResumeRequest"
+          }
+        }
+      },
+      "required": true
+    },
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/AgentResponse"
+            }
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/agent/resume-quiz",
+    "handler": "resume_quiz",
+    "line": 2480,
+    "signature": "request: ResumeQuizRequest, user: CurrentUser=Depends(authorize)",
+    "parameters": [],
+    "requestBody": {
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/ResumeQuizRequest"
+          }
+        }
+      },
+      "required": true
+    },
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/AgentResponse"
+            }
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/agent/resume-note",
+    "handler": "resume_note",
+    "line": 2485,
+    "signature": "request: ResumeNoteRequest, conversation_id: Identifier | None=None, event_id: Identifier | None=None, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "conversation_id",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100,
+              "pattern": "^[\\w.-]+$"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Conversation Id"
+        }
+      },
+      {
+        "name": "event_id",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100,
+              "pattern": "^[\\w.-]+$"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Event Id"
+        }
+      }
+    ],
+    "requestBody": {
+      "required": true,
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/ResumeNoteRequest"
+          }
+        }
+      }
+    },
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/AgentResponse"
+            }
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/agent/queue-note",
+    "handler": "queue_note",
+    "line": 2560,
+    "signature": "request: ResumeNoteRequest, conversation_id: Identifier, event_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "conversation_id",
+        "in": "query",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Conversation Id"
+        }
+      },
+      {
+        "name": "event_id",
+        "in": "query",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Event Id"
+        }
+      }
+    ],
+    "requestBody": {
+      "required": true,
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/ResumeNoteRequest"
+          }
+        }
+      }
+    },
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/agent/retry-note",
+    "handler": "retry_note",
+    "line": 2644,
+    "signature": "course_id: Identifier, conversation_id: Identifier, job_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "query",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "conversation_id",
+        "in": "query",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Conversation Id"
+        }
+      },
+      {
+        "name": "job_id",
+        "in": "query",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Job Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/agent/cancel-note",
+    "handler": "cancel_note",
+    "line": 2691,
+    "signature": "request: CancelNoteRequest, conversation_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "conversation_id",
+        "in": "query",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Conversation Id"
+        }
+      }
+    ],
+    "requestBody": {
+      "required": true,
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/CancelNoteRequest"
+          }
+        }
+      }
+    },
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/assessment/evaluate",
+    "handler": "evaluate",
+    "line": 2774,
+    "signature": "request: Submission, user: CurrentUser=Depends(authorize)",
+    "parameters": [],
+    "requestBody": {
+      "content": {
+        "application/json": {
+          "schema": {
+            "$ref": "#/components/schemas/Submission"
+          }
+        }
+      },
+      "required": true
+    },
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/AgentResponse"
+            }
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/courses/{course_id}/attempts",
+    "handler": "list_attempts",
+    "line": 2810,
+    "signature": "course_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/courses/{course_id}/attempts/{session_id}",
+    "handler": "read_attempt",
+    "line": 2833,
+    "signature": "course_id: Identifier, session_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "session_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Session Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/courses/{course_id}/report",
+    "handler": "report",
+    "line": 2843,
+    "signature": "course_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/agent/recover",
+    "handler": "recover",
+    "line": 2874,
+    "signature": "course_id: Identifier, session_id: Identifier, conversation_id: Identifier | None=None, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "query",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "session_id",
+        "in": "query",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Session Id"
+        }
+      },
+      {
+        "name": "conversation_id",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100,
+              "pattern": "^[\\w.-]+$"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Conversation Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/AgentResponse"
+            }
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/agent/session",
+    "handler": "session",
+    "line": 2924,
+    "signature": "course_id: Identifier, session_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "query",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "session_id",
+        "in": "query",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Session Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/AgentResponse"
+            }
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/agent/export",
+    "handler": "export",
+    "line": 2931,
+    "signature": "course_id: Identifier, session_id: Identifier, user: CurrentUser=Depends(authorize)",
+    "parameters": [
+      {
+        "name": "course_id",
+        "in": "query",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Course Id"
+        }
+      },
+      {
+        "name": "session_id",
+        "in": "query",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[\\w.-]+$",
+          "title": "Session Id"
+        }
+      }
+    ],
+    "requestBody": null,
+    "responses": {
+      "200": {
+        "description": "Successful Response",
+        "content": {
+          "application/json": {
+            "schema": {}
+          }
+        }
+      },
+      "422": {
+        "description": "Validation Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HTTPValidationError"
+            }
+          }
+        }
+      }
+    }
+  }
+]

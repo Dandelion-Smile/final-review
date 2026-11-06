@@ -1,5 +1,7 @@
 # Final Review Agent
 
+> Historical English overview: the SurrealDB architecture and startup commands below describe an earlier version. The current application uses PostgreSQL/pgvector. Use the [Chinese setup guide](README.md) and [current API and capability audit (2026-10-26)](docs/current-api-and-capability-audit-2026-10-26.md) for the current implementation.
+
 An exam-oriented review Agent backend built with **LangChain, LangGraph, and SurrealDB**. It can run independently or be extracted as one Agent module from a larger learning system.
 
 The backend ingests course materials, retrieves grounded evidence, answers exam-focused questions, generates mock exams, evaluates submissions, and feeds weak knowledge points into the next review round. The original [SKILL.md](SKILL.md) remains the domain protocol; executable rules live in `src/final_review/policy.py` and the graph nodes.
