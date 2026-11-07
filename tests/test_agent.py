@@ -158,6 +158,33 @@ def test_no_evidence_does_not_generate(system):
     assert "资料不足以回答" in result.answer
 
 
+@pytest.mark.parametrize("missing_evidence", [False, True])
+def test_ask_uncited_abstention_is_verified_and_bounded(system, monkeypatch, missing_evidence):
+    original_answer = system.model.answer
+    answers = []
+
+    def answer(data):
+        answers.append(data)
+        if missing_evidence or len(answers) == 1:
+            return {"answer": "材料未提供这项信息。", "answerable": False, "citations": []}
+        return original_answer(data)
+
+    monkeypatch.setattr(system.model, "answer", answer)
+    monkeypatch.setattr(
+        system.model,
+        "verify",
+        lambda data: {
+            "supported": True,
+            "issues": [],
+            "needs_more_evidence": missing_evidence,
+        },
+    )
+    result = system.invoke(request(intent="ask"))
+    assert len(answers) == 2
+    assert system.model.retrieval_calls == (2 if missing_evidence else 1)
+    assert result.status == ("insufficient_evidence" if missing_evidence else "completed")
+
+
 def test_ask_has_grounded_citation(system):
     result = system.invoke(request(intent="ask"))
     assert result.status == "completed"

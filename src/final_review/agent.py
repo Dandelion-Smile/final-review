@@ -1085,7 +1085,8 @@ class FinalReviewAgent:
         return {"plan": plan, "output": output}
 
     def _verify(self, state):
-        issues = citation_issues(state["output"], state["evidence"])
+        unanswerable = state["intent"] == "ask" and not state["output"].get("answerable", True)
+        issues = [] if unanswerable else citation_issues(state["output"], state["evidence"])
         needs_more_evidence = False
         if state["intent"] == "quiz":
             issues += citation_issues(state["plan"], state["evidence"])
@@ -1114,7 +1115,7 @@ class FinalReviewAgent:
                     "evidence": state["evidence"],
                 }
             )
-            if not verdict["supported"]:
+            if not verdict["supported"] or unanswerable:
                 issues.extend(verdict["issues"] or ["语义证据校验失败"])
                 needs_more_evidence = verdict.get("needs_more_evidence", False)
         return {

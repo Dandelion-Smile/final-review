@@ -341,6 +341,8 @@ class ReviewModel:
         return self.structured(
             GroundedAnswer,
             "给出能回答问题的最短完整答案，实质结论都要由引用支撑。"
+            "资料缺少回答问题所必需的信息时，返回 answerable=false，"
+            "在 answer 说明缺少的信息，citations 可为空。能回答时返回 answerable=true。"
             "修订时，结合 previous_answer 和 issues_to_fix 核对证据，"
             "保留有据且相关的内容，删掉无依据的扩写，修正错误引用。",
             data,
@@ -353,6 +355,8 @@ class ReviewModel:
                 AnswerVerification,
                 "逐条核对 output.answer 的实质结论是否由引用的 evidence 支持，"
                 "并检查回答是否覆盖问题。引用存在不等于支持全部结论。"
+                "若 output.answerable=false，核对现有资料是否确实缺少必要信息，"
+                "确实缺少时令 needs_more_evidence=true；资料可以回答时令其为 false。"
                 "任何无依据的考法、评分或事实扩写都应列入 issues，令 supported=false。"
                 "仅当现有证据缺少回答问题所必需的信息时，令 needs_more_evidence=true。"
                 "若现有证据能回答问题，但草稿写错或写多了，令 needs_more_evidence=false。",

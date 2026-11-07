@@ -469,7 +469,14 @@ class Citation(Model):
 
 class GroundedAnswer(Model):
     answer: Text
-    citations: list[Citation] = Field(min_length=1, max_length=10)
+    answerable: bool = True
+    citations: list[Citation] = Field(max_length=10)
+
+    @model_validator(mode="after")
+    def require_answer_evidence(self):
+        if self.answerable and not self.citations:
+            raise ValueError("可回答的实质结论必须提供引用")
+        return self
 
 
 class KnowledgePoint(Model):
