@@ -7,9 +7,14 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
+    "test:material-note": "node --test tests/material-note-contract.test.mjs",
     "test:e2e": "playwright test"
   },
   "dependencies": {
+    "@tiptap/core": "3.34.0",
+    "@tiptap/pm": "3.34.0",
+    "@tiptap/react": "3.34.0",
+    "@tiptap/starter-kit": "3.34.0",
     "@vitejs/plugin-react": "^5.0.4",
     "antd": "^6.6.5",
     "react": "^19.1.1",

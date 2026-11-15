@@ -88,6 +88,38 @@ def app():
             self.chat = SimpleNamespace(completions=TestCompletions())
 
     class WorkbenchModel(ScriptedModel):
+        def quiz_draft(self, context, plan):
+            draft = super().quiz_draft(context, plan)
+            for question in draft["questions"]:
+                if question["question_type"] == "fill_blank":
+                    question.update(
+                        stem=f"{question['stem']} 按顺序填空：协议____，握手次数____。",
+                        accepted_answers=[],
+                        blank_answers=[["TCP"], ["3", "三"]],
+                        reference_answer="第 1 空 TCP；第 2 空 3",
+                    )
+            return draft
+
+        def generate_quiz_variant(self, question):
+            return {
+                "id": "variant",
+                "order": 1,
+                "stem": "收到 SYN-ACK 后，客户端完成建立连接还需要哪些操作？",
+                "knowledge_point": question["knowledge_point"],
+                "question_type": "multiple_choice",
+                "options": ["发送 ACK", "确认服务器序列号", "发送 FIN"],
+                "correct_options": [0, 1],
+                "score": question["score"],
+                "reference_answer": "A、B",
+                "explanation": "客户端确认服务器序列号。",
+                "core_point": "序列号同步",
+                "must_include": ["确认序列号"],
+                "common_mistakes": ["发送 FIN"],
+                "scoring_tips": "选出两项确认操作。",
+                "provenance": "ai_supplement",
+                "citations": [],
+            }
+
         def note_request(self, request):
             config = super().note_request(request)
             if request["message"] == COMPLETE_NOTE_REQUEST:

@@ -27,6 +27,15 @@ def test_generate_edit_confirm_attempt_grade_result_and_followup(quiz_system):
             f"/api/courses/net/quizzes/{card['asset_id']}/revisions/{card['revision_id']}"
         )
         paper = client.get(revision_root).json()
+        assert paper["revision"]["state"] == "confirmed"
+        first_print = client.get(revision_root + "/print?variant=questions")
+        assert first_print.status_code == 200
+        assert "答案与解析" not in first_print.json()["markdown"]
+        attempts_root = f"/api/courses/net/quizzes/{card['asset_id']}/attempts"
+        first_attempt = client.post(attempts_root)
+        assert first_attempt.status_code == 200
+        first_attempt_id = first_attempt.json()["attempt"]["attempt_id"]
+        assert first_attempt.json()["attempt"]["quiz_revision_id"] == card["revision_id"]
         edited = client.post(
             f"/api/courses/net/quizzes/{card['asset_id']}/revisions",
             json=request_for(paper, stem="编辑后的 TCP 试题").model_dump(mode="json"),
@@ -50,8 +59,11 @@ def test_generate_edit_confirm_attempt_grade_result_and_followup(quiz_system):
             not in client.get(draft_root + "/print?variant=questions").json()["markdown"]
         )
 
-        started = client.post(f"/api/courses/net/quizzes/{card['asset_id']}/attempts")
+        historical = client.get(f"/api/courses/net/formal-attempts/{first_attempt_id}").json()
+        assert historical["attempt"]["quiz_revision_id"] == card["revision_id"]
+        started = client.post(attempts_root)
         assert started.status_code == 200
+        assert started.json()["attempt"]["quiz_revision_id"] == draft_id
         attempt_id = started.json()["attempt"]["attempt_id"]
         question_id = started.json()["questions"][0]["question_revision_id"]
         attempt_root = f"/api/courses/net/formal-attempts/{attempt_id}"

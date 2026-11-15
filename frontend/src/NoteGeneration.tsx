@@ -7,6 +7,7 @@ import NoteMaterialPicker, { type NoteMaterial } from "./NoteMaterialPicker";
 type NoteInput = { note_type: string; duration_minutes: number; scope: string; source_document_ids: string[] };
 type Task = { conversation: string; session: string; event: string; input: NoteInput };
 type Progress = { status: "queued" | "running" | "failed" | "needs_input"; job_id?: string; stage?: string; error?: string;
+  prompt?: { message?: string };
   coverage?: { selected_files: number; readable_chunks: number; read_chunks: number; partial: boolean } };
 type History = { items: { draft?: { asset_id: string } }[]; active_note?: Progress | null };
 
@@ -37,6 +38,7 @@ export default function NoteGeneration({ courseId, progressTarget, onStarted, on
   const [model, setModel] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [connectionError, setConnectionError] = useState("");
   const trigger = useRef<HTMLButtonElement>(null);
   const mounted = useRef(true);
@@ -156,9 +158,16 @@ export default function NoteGeneration({ courseId, progressTarget, onStarted, on
     if (!pending || !courseId || busy) return;
     setBusy(true);
     try {
-      await api(`/agent/cancel-note?conversation_id=${encodeURIComponent(pending.conversation)}`, "POST",
+      const cancelled = await api<{ excerpts?: { index: string; reason: string }[] }>(`/agent/cancel-note?conversation_id=${encodeURIComponent(pending.conversation)}`, "POST",
         { course_id: courseId, session_id: pending.session });
-      if (mounted.current) clearTask();
+      if (mounted.current) {
+        clearTask();
+        const excerptText = (cancelled.excerpts ?? []).flatMap(item => {
+          const index = Number(item.index);
+          return Number.isInteger(index) ? [`第 ${index + 1} 部分：这一部分是原文摘录（${item.reason}）。`] : [];
+        }).join("");
+        if (excerptText) setNotice(`已取消笔记生成。${excerptText}`);
+      }
     } catch (reason) {
       if (mounted.current) setError(reason instanceof Error ? reason.message : "取消生成失败，请重试");
     } finally { setBusy(false); }
@@ -173,29 +182,60 @@ export default function NoteGeneration({ courseId, progressTarget, onStarted, on
         await api(`/agent/retry-note?course_id=${encodeURIComponent(courseId)}&conversation_id=${encodeURIComponent(pending.conversation)}&job_id=${encodeURIComponent(progress.job_id)}`, "POST");
       } else {
         // A completed job may ask for additional input; it needs a fresh queue event.
-        const next = { ...pending, event: crypto.randomUUID() };
+        const next = {
+          ...pending,
+          event: crypto.randomUUID(),
+          input: progress.status === "needs_input" ? {
+            note_type: noteType,
+            duration_minutes: Number(duration),
+            scope: requirements.trim(),
+            source_document_ids: materials.map(item => item.document_id),
+          } : pending.input,
+        };
         localStorage.setItem(storageKey, JSON.stringify(next));
         task.current = next;
         await api(`/agent/queue-note?conversation_id=${encodeURIComponent(next.conversation)}&event_id=${next.event}`, "POST",
           { course_id: courseId, session_id: next.session, note_input: next.input });
         if (mounted.current) setPending(next);
       }
-      if (mounted.current) setProgress({ status: "queued" });
+      if (mounted.current) {
+        setProgress({ status: "queued" });
+        close();
+      }
     } catch (reason) {
       if (mounted.current) setError(reason instanceof Error ? reason.message : "重试失败，请重试");
     } finally { setBusy(false); }
   }
 
-  const failed = ["failed", "needs_input"].includes(progress.status);
+  const failed = progress.status === "failed";
+  const needsInput = progress.status === "needs_input";
   const coverage = progress.coverage;
+
+  async function openSupplement() {
+    if (!pending || !courseId) return;
+    setNoteType(pending.input.note_type);
+    setDuration(String(pending.input.duration_minutes));
+    setRequirements(pending.input.scope);
+    setError("");
+    try {
+      const data = await api<{ items: NoteMaterial[] }>(`/api/courses/${encodeURIComponent(courseId)}/documents`);
+      const ids = new Set(pending.input.source_document_ids);
+      setMaterials(data.items.filter(item => ids.has(item.document_id)));
+    } catch {
+      setMaterials([]);
+    }
+    setOpen(true);
+  }
 
   return <>
     <button ref={trigger} type="button" className="note-primary notes-generate" disabled={!courseId || Boolean(pending) || busy}
-      onClick={() => { setError(""); setOpen(true); }}>生成笔记</button>
+      onClick={() => { setError(""); setNotice(""); setOpen(true); }}>生成笔记</button>
+    {notice && <p role="status" className="notes-generation-error">{notice}</p>}
     {open && !pickerOpen && <NoteConfigDialog noteType={noteType} onNoteType={setNoteType}
       duration={duration} onDuration={setDuration} materials={materials}
       onChooseMaterials={() => setPickerOpen(true)} requirements={requirements} onRequirements={setRequirements}
-      onGenerate={() => void generate()} onCancel={close} busy={busy} error={error}
+      onGenerate={() => void (needsInput ? retry() : generate())} onCancel={close} busy={busy} error={error}
+      promptMessage={needsInput ? progress.prompt?.message : undefined}
       generationModel={model} contextLabel="我的笔记" />}
     {open && pickerOpen && courseId && <NoteMaterialPicker courseId={courseId} selected={materials}
       onUploaded={item => setMaterials(current => [...current.filter(existing => existing.document_id !== item.document_id), item])}
@@ -204,13 +244,16 @@ export default function NoteGeneration({ courseId, progressTarget, onStarted, on
       <small>AI 生成 · {({ chapter: "章节笔记", key_points: "考点清单", qa_cards: "问答卡片", mnemonic: "口诀" } as Record<string, string>)[pending.input.note_type]}</small>
       <div className="note-job-status">
         <div className="note-job-copy" role="status" aria-live="polite">
-          <span>{!failed && <i className="notes-generation-spinner" aria-hidden="true" />}{failed
-            ? `笔记生成失败：${progress.error || "任务尚未提交成功，请重试"}`
+          <span>{!failed && !needsInput && <i className="notes-generation-spinner" aria-hidden="true" />}{needsInput
+            ? (progress.prompt?.message || "请补充笔记要求后再生成。")
+            : failed
+            ? `笔记生成失败：${progress.error || "请重试"}`
             : progress.status === "queued" ? "笔记任务已排队，正在等待生成。"
             : `正在生成笔记${progress.stage ? ` · ${progress.stage}` : "…"}`}</span>
           {coverage && <small>已选 {coverage.selected_files} 份资料；共有 {coverage.readable_chunks} 个可读片段；本次读取 {coverage.read_chunks} 个，{coverage.partial ? "部分覆盖" : "已读取范围内全部片段"}。</small>}
         </div>
         <div className="note-job-actions">
+          {needsInput && <button type="button" className="note-job-retry" disabled={busy} onClick={() => void openSupplement()}>补充要求</button>}
           {failed && <button type="button" className="note-job-retry" disabled={busy} onClick={() => void retry()}>重试生成</button>}
           <button type="button" className="note-job-cancel" disabled={busy} onClick={() => void cancel()}>{busy ? "正在处理…" : failed ? "结束任务" : "取消生成"}</button>
         </div>

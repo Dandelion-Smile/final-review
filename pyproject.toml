@@ -26,6 +26,8 @@ dependencies = [
   "pypandoc-binary>=1.15,<2",
   "playwright>=1.50,<2",
   "python-docx>=1.1,<2",
+  "langfuse>=5.1,<6",
+  "python-dotenv>=1,<2",
 ]
 
 [dependency-groups]

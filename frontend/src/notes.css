@@ -347,6 +347,11 @@
   font-size: 12px;
   color: #637a87;
 }
+.note-point-excerpt {
+  margin: 6px 0 0;
+  color: #8a5a12;
+  font-size: 13px;
+}
 .note-point-body h2 {
   font-size: 22px;
   line-height: 1.5;

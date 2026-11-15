@@ -112,7 +112,12 @@ class MemoryStore:
                 return "completed"
             if job.get("publish_started"):
                 return "publishing"
-            job.update(status="cancelled", lease_until=None, error=None, partial_batches={})
+            kept = {
+                key: value
+                for key, value in (job.get("partial_batches") or {}).items()
+                if isinstance(value, dict) and value.get("fallback_reason")
+            }
+            job.update(status="cancelled", lease_until=None, error=None, partial_batches=kept)
             return "cancelled"
 
     def begin_note_publish(self, job_id, attempt):
@@ -247,6 +252,10 @@ class MemoryStore:
                 "status": "queued",
                 "stage": None,
                 "attempts": 0,
+                "phase": job.get("phase", "parse"),
+                "phase_attempts": 0,
+                "lease_token": None,
+                "metrics": {},
                 "max_attempts": 3,
                 "error_code": None,
                 "error_message": None,
@@ -290,12 +299,21 @@ class MemoryStore:
     def list_material_jobs(self, course_id):
         return self.scan("material_job", {"course_id": course_id})
 
-    def claim_material_job(self):
+    def claim_material_job(self, phase="parse"):
+        from uuid import uuid4
+
         with self.lock:
             for job in self.tables.get("material_job", {}).values():
-                if job["status"] == "queued":
-                    job.update(status="running", stage="parse", attempts=job["attempts"] + 1)
-                    self.tables["document"][job["document_id"]]["parse_status"] = "running"
+                if job["status"] == "queued" and job.get("phase", "parse") == phase:
+                    job.update(
+                        status="running",
+                        stage=phase,
+                        attempts=job["attempts"] + 1,
+                        phase_attempts=job.get("phase_attempts", 0) + 1,
+                        lease_token=uuid4().hex,
+                    )
+                    if phase != "images":
+                        self.tables["document"][job["document_id"]]["parse_status"] = "running"
                     return deepcopy(job)
         return None
 
@@ -304,8 +322,10 @@ class MemoryStore:
             job = self.tables["material_job"][job_id]
             if job["status"] == "running" and job["attempts"] == attempt and stage:
                 job["stage"] = stage
+                return True
+            return False
 
-    def fail_material_job(self, job_id, attempt, *, code, message, retry):
+    def fail_material_job(self, job_id, attempt, *, code, message, retry, **kwargs):
         with self.lock:
             job = self.tables["material_job"][job_id]
             if job["status"] != "running" or job["attempts"] != attempt:
@@ -314,11 +334,13 @@ class MemoryStore:
                 status="queued" if retry else "failed", error_code=code, error_message=message
             )
             document = self.tables["document"].get(job["document_id"])
-            if document and document.get("parse_status") != "deleted":
+            if document and document.get("parse_status") != "deleted" and job["phase"] != "images":
                 document.update(parse_status=job["status"], parse_error=message)
+                if job["phase"] == "preview":
+                    document.update(preview_status=job["status"], preview_error=message)
             return True
 
-    def publish_material_job(self, job_id, attempt, document, chunks):
+    def publish_material_job(self, job_id, attempt, document, chunks, **kwargs):
         with self.lock:
             job = self.tables["material_job"][job_id]
             if job["status"] != "running" or job["attempts"] != attempt:
@@ -329,6 +351,80 @@ class MemoryStore:
             self.ingest(document, chunks)
             self.ensure_material_source(document)
             job.update(status="succeeded", stage="index")
+            if document.get("images_status") == "queued":
+                job.update(
+                    status="queued",
+                    phase="images",
+                    phase_attempts=0,
+                    attempts=job["attempts"] + 1,
+                    lease_token=None,
+                )
+            return True
+
+    def _material_lease(self, claimed):
+        job = self.tables["material_job"][claimed["job_id"]]
+        document = self.tables["document"][claimed["document_id"]]
+        return (
+            job["status"] == "running"
+            and job["attempts"] == claimed["attempts"]
+            and job["lease_token"] == claimed["lease_token"]
+            and job["phase"] == claimed["phase"]
+            and document.get("parse_status") != "deleted"
+        )
+
+    def handoff_material_preview(self, job, pages, preview, metrics):
+        with self.lock:
+            if not self._material_lease(job):
+                return False
+            document = self.tables["document"][job["document_id"]]
+            document.update(preview)
+            for page in pages:
+                self.put("material_page", f"{job['document_id']}:{page['position']}", page)
+            self.tables["material_job"][job["job_id"]].update(
+                phase="parse",
+                phase_attempts=0,
+                status="queued",
+                lease_token=None,
+                attempts=job["attempts"] + 1,
+            )
+            return True
+
+    def material_pages(self, document):
+        prefix = document["document_id"] + ":"
+        return sorted(
+            [
+                deepcopy(page)
+                for key, page in self.tables.get("material_page", {}).items()
+                if key.startswith(prefix)
+            ],
+            key=lambda p: p["position"],
+        )
+
+    def checkpoint_material_page(self, job, page):
+        with self.lock:
+            if not self._material_lease(job):
+                return False
+            self.put("material_page", f"{job['document_id']}:{page['position']}", page)
+            return True
+
+    def save_material_metrics(self, job, metrics):
+        with self.lock:
+            if not self._material_lease(job):
+                return False
+            self.tables["material_job"][job["job_id"]]["metrics"][
+                f"{job['phase']}:{job['attempts']}"
+            ] = deepcopy(metrics)
+            return True
+
+    def finish_material_images(self, job):
+        with self.lock:
+            if not self._material_lease(job):
+                return False
+            document = self.tables["document"][job["document_id"]]
+            document["images_status"] = "ready"
+            for page in document["analysis_pages"]:
+                page["image_available"] = True
+            self.tables["material_job"][job["job_id"]].update(status="succeeded")
             return True
 
     def list_material_chunks(self, document_id):
@@ -354,10 +450,19 @@ class MemoryStore:
                 return None
             if self.tables["document"][job["document_id"]].get("parse_status") == "deleted":
                 return None
-            job.update(status="queued", attempts=0, stage=None, error_code=None, error_message=None)
+            job.update(
+                status="queued",
+                attempts=job["attempts"] + 1,
+                phase_attempts=0,
+                lease_token=None,
+                stage=None,
+                error_code=None,
+                error_message=None,
+            )
             document = self.tables["document"][job["document_id"]]
-            document["parse_status"] = "queued"
-            document.pop("parse_error", None)
+            if job["phase"] != "images":
+                document["parse_status"] = "queued"
+                document.pop("parse_error", None)
             return deepcopy(job)
 
 
@@ -552,7 +657,19 @@ class ScriptedModel:
 
 @pytest.fixture
 def settings():
-    return Settings(_env_file=None, embedding_dimensions=3, material_vision_enabled=False)
+    return Settings(
+        _env_file=None,
+        embedding_dimensions=3,
+        material_vision_enabled=False,
+        material_hybrid_enabled=False,
+    )
+
+
+@pytest.fixture(autouse=True)
+def offline_observability(monkeypatch):
+    # Deterministic tests never export private fixtures or require a live trace service.
+    # eval/material_pipeline.py exercises the actual SDK separately.
+    monkeypatch.setattr("final_review.observe._client", lambda: None)
 
 
 @pytest.fixture

@@ -106,6 +106,11 @@ def test_empty_database_runner_is_versioned_and_repeatable(database_url):
         "012_calendar_entries.sql",
         "013_account_profile.sql",
         "014_account_lifecycle.sql",
+        "015_course_knowledge.sql",
+        "016_knowledge_pipeline_reliability.sql",
+        "017_material_hybrid_pipeline.sql",
+        "018_material_notes.sql",
+        "019_material_text_image_jobs.sql",
     ]
     assert apply_migrations(database_url) == []
     with psycopg.connect(database_url) as connection, connection.cursor() as cursor:
@@ -125,14 +130,23 @@ def test_empty_database_runner_is_versioned_and_repeatable(database_url):
             "012_calendar_entries.sql",
             "013_account_profile.sql",
             "014_account_lifecycle.sql",
+            "015_course_knowledge.sql",
+            "016_knowledge_pipeline_reliability.sql",
+            "017_material_hybrid_pipeline.sql",
+            "018_material_notes.sql",
+            "019_material_text_image_jobs.sql",
         ]
 
 
 def test_calendar_persists_per_account_and_feeds_home(database_url):
     apply_migrations(database_url)
     settings = Settings(
-        _env_file=None, database_url=database_url, auth_cookie_secure=False,
-        llm_api_key="", embedding_api_key="", api_token="",
+        _env_file=None,
+        database_url=database_url,
+        auth_cookie_secure=False,
+        llm_api_key="",
+        embedding_api_key="",
+        api_token="",
     )
     app = create_app(settings)
     credentials = {"email": "calendar-owner@example.test", "password": "test-password-123"}
@@ -142,21 +156,41 @@ def test_calendar_persists_per_account_and_feeds_home(database_url):
     with TestClient(app) as owner:
         other = TestClient(app)
         assert sign_in_test_account(owner, database_url, credentials).status_code == 200
-        assert sign_in_test_account(other, database_url, {
-            **credentials, "email": "calendar-other@example.test",
-        }).status_code == 200
+        assert (
+            sign_in_test_account(
+                other,
+                database_url,
+                {
+                    **credentials,
+                    "email": "calendar-other@example.test",
+                },
+            ).status_code
+            == 200
+        )
         course = owner.post("/api/courses", json={"name": "课程 A"}).json()
-        note = owner.post(f"/api/courses/{course['course_id']}/assets", json={
-            "asset_type": "note", "title": "账号 A 的笔记", "markdown": "复习重点",
-        })
+        note = owner.post(
+            f"/api/courses/{course['course_id']}/assets",
+            json={
+                "asset_type": "note",
+                "title": "账号 A 的笔记",
+                "markdown": "复习重点",
+            },
+        )
         assert note.status_code == 200, note.text
         exam = {
-            "kind": "exam", "title": "真实考试", "course_id": course["course_id"],
-            "scheduled_on": "2028-02-29", "all_day": False,
-            "start_time": "11:00", "end_time": "12:00",
+            "kind": "exam",
+            "title": "真实考试",
+            "course_id": course["course_id"],
+            "scheduled_on": "2028-02-29",
+            "all_day": False,
+            "start_time": "11:00",
+            "end_time": "12:00",
         }
         assert other.post("/api/calendar/entries", json=exam).status_code == 404
-        assert owner.post("/api/calendar/entries", json={**exam, "end_time": "10:00"}).status_code == 422
+        assert (
+            owner.post("/api/calendar/entries", json={**exam, "end_time": "10:00"}).status_code
+            == 422
+        )
         result = owner.post("/api/calendar/entries", json=exam)
         assert result.status_code == 201, result.text
         todo = owner.post("/api/calendar/entries", json={"kind": "todo", "title": "无日期待办"})
@@ -181,7 +215,9 @@ def test_calendar_persists_per_account_and_feeds_home(database_url):
         data = reopened.get("/api/calendar/entries", params=period).json()
         assert [item["title"] for item in data["items"]] == ["真实考试"]
         assert data["next_exam"]["course_name"] == "课程 A"
-        assert reopened.get("/api/home", params={**clock, "at": "12:00"}).json()["next_exam"] is None
+        assert (
+            reopened.get("/api/home", params={**clock, "at": "12:00"}).json()["next_exam"] is None
+        )
         assert reopened.get("/api/home", params=clock).json()["pending_todos"] == []
         assert reopened.patch(completion, json={"completed": False}).json()["completed_at"] is None
         assert len(reopened.get("/api/home", params=clock).json()["pending_todos"]) == 1
@@ -661,13 +697,17 @@ def test_conversation_history_and_rename_are_scoped_to_owner_and_course(database
         other = TestClient(app)
         assert (
             sign_in_test_account(
-                owner, database_url, {"email": "owner@example.test", "password": "test-password-123"},
+                owner,
+                database_url,
+                {"email": "owner@example.test", "password": "test-password-123"},
             ).status_code
             == 200
         )
         assert (
             sign_in_test_account(
-                other, database_url, {"email": "other@example.test", "password": "test-password-123"},
+                other,
+                database_url,
+                {"email": "other@example.test", "password": "test-password-123"},
             ).status_code
             == 200
         )
@@ -956,10 +996,15 @@ def test_material_job_failure_and_retry_are_persistent(database_url):
         assert store.get("document", "material-2")["parse_status"] == "failed"
         assert store.search([1.0, 0.0, 0.0], "course-1", "", 5) == []
         assert store.retry_material_job("job-2")["status"] == "queued"
-        assert store.claim_material_job()["job_id"] == "job-2"
+        retried = store.claim_material_job()
+        assert retried["job_id"] == "job-2"
+        assert retried["attempts"] > reclaimed["attempts"]
         assert store.get("document", "material-2")["parse_status"] == "running"
         store.put("document", "material-2", {**document, "parse_status": "deleted"})
         assert not store.publish_material_job("job-2", 1, {**document, "parse_status": "ready"}, [])
+        assert not store.publish_material_job(
+            "job-2", retried["attempts"], {**document, "parse_status": "ready"}, []
+        )
         assert store.get_material_job("job-2")["status"] == "failed"
         assert store.get("document", "material-2")["parse_status"] == "deleted"
     finally:
@@ -1033,6 +1078,11 @@ def test_existing_001_002_with_legacy_attempt_upgrades(database_url):
         "012_calendar_entries.sql",
         "013_account_profile.sql",
         "014_account_lifecycle.sql",
+        "015_course_knowledge.sql",
+        "016_knowledge_pipeline_reliability.sql",
+        "017_material_hybrid_pipeline.sql",
+        "018_material_notes.sql",
+        "019_material_text_image_jobs.sql",
     ]
     with psycopg.connect(database_url) as connection, connection.cursor() as cursor:
         cursor.execute("SELECT legacy_session_id FROM attempts WHERE record_key='attempt-key'")
@@ -1212,7 +1262,9 @@ def test_database_api_returns_404_for_another_users_course(database_url, tmp_pat
     with TestClient(create_app(settings)) as owner, TestClient(create_app(settings)) as other:
         assert (
             sign_in_test_account(
-                owner, database_url, {"email": "owner-api@example.test", "password": "password1"},
+                owner,
+                database_url,
+                {"email": "owner-api@example.test", "password": "password1"},
             ).status_code
             == 200
         )
@@ -1265,7 +1317,9 @@ def test_database_api_returns_404_for_another_users_course(database_url, tmp_pat
         assert owner.get(material_base + "/download").content == b"private excerpt"
         assert (
             sign_in_test_account(
-                other, database_url, {"email": "other-api@example.test", "password": "password1"},
+                other,
+                database_url,
+                {"email": "other-api@example.test", "password": "password1"},
             ).status_code
             == 200
         )
@@ -1291,7 +1345,9 @@ def test_course_and_exams_work_without_model_keys(database_url):
     with TestClient(create_app(settings)) as client:
         assert (
             sign_in_test_account(
-                client, database_url, {"email": "no-models@example.test", "password": "password1"},
+                client,
+                database_url,
+                {"email": "no-models@example.test", "password": "password1"},
             ).status_code
             == 200
         )

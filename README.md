@@ -10,7 +10,7 @@
 
 | 能力 | 实现 |
 | --- | --- |
-| 资料处理 | PDF/DOCX 用 MarkItDown；PPT/PPTX 保留原生文字并逐页转 PDF、渲染图片补充中英文 OCR；旧版 DOC 经 LibreOffice 转换；PNG/JPG/WebP 经 OCR；随后清洗、分块、Embedding、事务入库 |
+| 资料处理 | 新上传 PPT/PPTX 先提供基础文字预览，普通文字页直接检查原文，复杂页按需渲染、OCR、视觉理解与核验；PDF/DOCX 用 MarkItDown，旧版 DOC 经 LibreOffice 转换；随后分块、Embedding、事务发布 |
 | RAG | 课程/章节过滤 → PostgreSQL/pgvector 召回 → 相关性阈值 → 题源加权重排 |
 | 认证与隔离 | FastAPI 自管 Argon2id 密码、HttpOnly Session Cookie；所有业务查询绑定 Session 的 user_id |
 | Tool Calling | 模型调用 search_course_material，实际执行 LangChain Retriever，并接收 ToolMessage；最多两轮 |
@@ -29,7 +29,7 @@ M3 的实际验证结果见 [完整验收记录](docs/m3-acceptance-2026-10-12.m
 
 ```mermaid
 flowchart TD
-    A[资料上传] --> B[MarkItDown / 清洗 / 分块]
+    A[资料上传] --> B[原生提取或 MarkItDown / 按页解析 / 清洗分块]
     B --> C[Embedding → PostgreSQL / pgvector]
     D[用户请求] --> E[意图路由]
     E -->|出题| F[考试信息确认 / interrupt]
@@ -54,7 +54,11 @@ flowchart TD
 
 本机处理 PPT/PPTX/DOC 需安装 LibreOffice；PPT 页面渲染需安装 Poppler 的 `pdftoppm`；图片 OCR 需安装 Tesseract 及 `chi_sim`、`eng` 语言包。使用 Docker Compose 启动 Agent 时，这些依赖由镜像安装。缺少工具或语言包时，上传会显示明确失败原因。PPT 最多处理 80 页，检索结果保留幻灯片位置。
 
-PPT/PPTX 的视觉理解由 `MATERIAL_VISION_ENABLED=true` 开启。`MATERIAL_VISION_MODEL_ID` 选择现有 `CHAT_MODELS` 中的提供商 ID；`MATERIAL_VISION_MODEL` 指定该账号可用的视觉模型，例如 [Qwen3-VL](https://help.aliyun.com/zh/model-studio/qwen3-vl-plus)。这组设置只影响资料处理，不改变聊天模型。worker 将原生文字、教学备注与原页图片分别编号，逐页整理知识块并绑定来源摘录，再逐块对照证据核验；本地 OCR 仅提供辅助提示，不能作为原始事实或直接入库。只有核验通过的块建立索引；一块待核对时保留同页其他已通过内容，页面标记“部分通过”，预览列出每个块的状态、来源类型和问题。整理阶段的疑点必须由核验阶段明确消除，目录页另经导航核验且不参与检索。最终片段是纯文本，保留代码的有效符号。关闭该设置会使用旧版提取流程，预览会明确标示尚未视觉核验。
+本机新增 PPT/PPTX 已启用 `MATERIAL_PPTX_PARSE_MODE=text_images`：提取原生文字、标题和备注，生成独立的连续资料笔记；复杂页后台配图，不调用视觉模型或 OCR。资料页单文件上传后自动进入阅读编辑页，支持目录、编辑保存、备注、原文对照、图片显隐和下载。可靠的初始文字独立进入索引与知识构建，截图不阻塞正文。已有正式资料不自动重建，其他格式保留原流程。详见 [第四步实现与本机启用](docs/material-note-reader-step4.md)。
+
+`MATERIAL_NOTE_EDIT_ENABLED=true` 已在本机开放显式保存，服务端维护不可变笔记版本和多标签页冲突保护。编辑后保存仅更新资料笔记，检索/知识库仍使用上传时 V1；自动索引更新和旧证据失效属于后续步骤，页面会明确显示各自版本。018、019 迁移已在本机备份后应用，远端未发布。前三步历史验收见 [版本与任务基础](docs/material-text-images.md)。
+
+旧的 `hybrid_visual` 策略保留供历史任务和显式回退使用；该策略复杂页的视觉理解由 `MATERIAL_VISION_ENABLED=true` 开启。`MATERIAL_VISION_MODEL_ID` 选择现有 `CHAT_MODELS` 中的提供商 ID；`MATERIAL_VISION_MODEL` 指定该账号可用的视觉模型，例如 [Qwen3-VL](https://help.aliyun.com/zh/model-studio/qwen3-vl-plus)。worker 将原生文字、教学备注与原页图片分别编号，逐块对照证据核验；本地 OCR 仅提供辅助提示。仅通过核验的视觉知识块与检查完整的原生文本进入正式索引；部分待核对时保留其他已通过内容。启用混合解析但关闭视觉模型时，纯文字页仍可完成，含复杂页的资料会明确提示需启用视觉解析；关闭混合解析后，新上传恢复原全页处理路径。
 
 模型单次请求超时由 `MATERIAL_VISION_TIMEOUT` 控制，修复次数由 `MATERIAL_VISION_REPAIRS` 控制，每份资料最多同时处理 `MATERIAL_VISION_CONCURRENCY` 页（1–4）。页级缓存位于原始上传文件同名的 `.analysis` 目录，模型/提示词/来源变化会使缓存失效。已核验的页可在失败重试时复用；模型欠费或通道不可用会明确失败，不会回退到原始 OCR 入库。
 

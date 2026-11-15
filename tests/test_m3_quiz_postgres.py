@@ -8,6 +8,7 @@ import psycopg
 import pytest
 from conftest import ScriptedModel
 from fastapi.testclient import TestClient
+from test_m3_quiz_edit import request_for
 from test_postgres_migrations import (  # noqa: F401
     USER,
     _seed_course,
@@ -18,9 +19,11 @@ from test_postgres_migrations import (  # noqa: F401
 from final_review.api import create_app
 from final_review.config import ChatModelConfig, Settings
 from final_review.domain import DomainConflict, DomainService
+from final_review.formal_attempt import start_formal_attempt
 from final_review.migrations import apply_migrations
 from final_review.postgres import PostgresStore
 from final_review.quiz_config import resolve_quiz_config
+from final_review.quiz_edit import save_quiz_revision
 from final_review.quiz_generation import read_quiz
 from final_review.quiz_jobs import enqueue_quiz, process_quiz_job, retry_quiz
 from final_review.schemas import QuizInput
@@ -143,14 +146,19 @@ def test_quiz_atomic_publish_relations_immutability_and_draft_attempt_block(data
         paper = read_quiz(store, str(USER), "course-1", result["asset_id"], result["revision_id"])
         question = paper["revision"]["questions"][0]
         assert question["references"][0]["available"]
-        assert paper["asset"]["current_revision_id"] is None
+        assert paper["asset"]["current_revision_id"] == result["revision_id"]
+        started = start_formal_attempt(store, str(USER), "course-1", result["asset_id"])
+        assert started["attempt"]["quiz_revision_id"] == result["revision_id"]
+        draft = save_quiz_revision(
+            store, str(USER), "course-1", result["asset_id"], request_for(paper, score=12)
+        )
         with pytest.raises(StorageError):
             store.put(
                 "attempt",
                 "draft-attempt",
                 {
                     "course_id": "course-1",
-                    "quiz_revision_id": result["revision_id"],
+                    "quiz_revision_id": draft["revision"]["quiz_revision_id"],
                     "legacy_session_id": None,
                 },
             )

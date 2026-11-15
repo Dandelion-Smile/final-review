@@ -2,12 +2,12 @@
 
 from datetime import UTC, datetime
 from decimal import Decimal
-from unicodedata import normalize
 
 from pydantic import Field, ValidationError
 
 from .domain import DomainConflict
 from .formal_attempt import _owned_attempt, _public
+from .quiz_answers import OBJECTIVE_TYPES, objective_fraction, objective_score
 from .quiz_generation import paper_hash
 from .schemas import Identifier, Model, Text
 from .storage import stable_key
@@ -33,22 +33,9 @@ class SubjectiveReview(Model):
     items: list[SubjectiveVerdict] = Field(min_length=1, max_length=100)
 
 
-def _text_key(value: str) -> str:
-    return " ".join(normalize("NFKC", value).split()).casefold()
-
-
 def objective_correct(question: dict, answer) -> bool:
     """Compare structured answers without a model or locale-dependent fuzzy matching."""
-    kind = question["question_type"]
-    if kind == "choice":
-        return type(answer) is int and answer == question["correct_option"]
-    if kind == "true_false":
-        return type(answer) is bool and answer is question["boolean_answer"]
-    if kind == "fill_blank":
-        return isinstance(answer, str) and _text_key(answer) in {
-            _text_key(item) for item in question["accepted_answers"]
-        }
-    raise ValueError("主观题不能用客观题规则评分")
+    return objective_fraction(question, answer) == 1
 
 
 def _questions(domain, attempt):
@@ -78,7 +65,7 @@ def _subjective_input(questions, answers):
             "max_score": question["score"],
         }
         for question in questions
-        if question["question_type"] not in {"choice", "true_false", "fill_blank"}
+        if question["question_type"] not in OBJECTIVE_TYPES
         and question["question_revision_id"] in answers
     ]
 
@@ -113,24 +100,8 @@ def _subjective_grade(question, verdict):
     }
 
 
-def grade_formal_attempt(store, user_id, course_id, attempt_id, model, model_id, model_version):
-    """Freeze one grading snapshot; retry only when no successful snapshot exists."""
-    with store.transaction():
-        domain, attempt = _owned_attempt(store, user_id, course_id, attempt_id, lock=True)
-        if attempt["status"] != "submitted":
-            raise DomainConflict("请先交卷，再评分")
-        if attempt.get("grading_snapshot"):
-            from .mistakes import sync_mistakes_for_attempt
-
-            sync_mistakes_for_attempt(store, user_id, course_id, attempt_id)
-            return _public(domain, attempt)
-        questions, payload = _questions(domain, attempt)
-        answers = attempt["answers"]
-        fingerprint = paper_hash(
-            {"quiz_revision_id": attempt["quiz_revision_id"], "answers": answers}
-        )
-        subjective = _subjective_input(questions, answers)
-
+def _grade_questions(questions, answers, model, revision_id):
+    subjective = _subjective_input(questions, answers)
     verdicts = {}
     if subjective:
         if model is None:
@@ -138,7 +109,7 @@ def grade_formal_attempt(store, user_id, course_id, attempt_id, model, model_id,
         try:
             review = SubjectiveReview.model_validate(
                 model.grade_formal_subjective(
-                    {"quiz_revision_id": attempt["quiz_revision_id"], "questions": subjective}
+                    {"quiz_revision_id": revision_id, "questions": subjective}
                 )
             ).model_dump(mode="json")
         except ValidationError as exc:
@@ -154,12 +125,21 @@ def grade_formal_attempt(store, user_id, course_id, attempt_id, model, model_id,
         question_id = question["question_revision_id"]
         answer = answers.get(question_id, {}).get("answer")
         maximum = question["score"]
-        if question["question_type"] in {"choice", "true_false", "fill_blank"}:
-            correct = objective_correct(question, answer)
+        if question["question_type"] in OBJECTIVE_TYPES:
+            fraction = objective_fraction(question, answer)
+            correct = fraction == 1
+            if answer is None:
+                feedback = "未作答"
+            elif correct:
+                feedback = "答案正确"
+            elif fraction > 0:
+                feedback = "部分正确"
+            else:
+                feedback = "答案不正确"
             grade = {
-                "score": maximum if correct else 0,
+                "score": objective_score(question, fraction),
                 "correct": correct,
-                "feedback": "答案正确" if correct else "答案不正确或未作答",
+                "feedback": feedback,
                 "missing_points": [] if correct else [question["reference_answer"]],
                 "improvement_advice": "" if correct else "对照参考答案和解析复习。",
                 "rubric": [],
@@ -186,20 +166,79 @@ def grade_formal_attempt(store, user_id, course_id, attempt_id, model, model_id,
                 **grade,
             }
         )
-    total = sum((Decimal(str(item["score"])) for item in grades), Decimal(0))
+    return grades
+
+
+def grade_practice_question(store, user_id, course_id, attempt_id, question_id, model):
+    domain, attempt = _owned_attempt(store, user_id, course_id, attempt_id)
+    if question_id not in attempt.get("submitted_questions", {}):
+        raise DomainConflict("请先提交本题")
+    if question_id in attempt.get("partial_grades", {}) or attempt.get("grading_snapshot"):
+        return _public(domain, attempt)
+    questions, _ = _questions(domain, attempt)
+    question = next(item for item in questions if item["question_revision_id"] == question_id)
+    grade = _grade_questions([question], attempt["answers"], model, attempt["quiz_revision_id"])[0]
+    return _save_partial_grades(store, user_id, course_id, attempt_id, [grade])
+
+
+def _save_partial_grades(store, user_id, course_id, attempt_id, grades):
+    with store.transaction():
+        domain, attempt = _owned_attempt(store, user_id, course_id, attempt_id, lock=True)
+        if not attempt.get("grading_snapshot"):
+            stored = attempt.setdefault("partial_grades", {})
+            for grade in grades:
+                stored.setdefault(grade["question_revision_id"], grade)
+            store.put("attempt", attempt_id, attempt)
+        return _public(domain, attempt)
+
+
+def grade_formal_attempt(store, user_id, course_id, attempt_id, model, model_id, model_version):
+    """Freeze one grading snapshot; retry only when no successful snapshot exists."""
+    with store.transaction():
+        domain, attempt = _owned_attempt(store, user_id, course_id, attempt_id, lock=True)
+        if attempt["status"] != "submitted":
+            raise DomainConflict("请先交卷，再评分")
+        if attempt.get("grading_snapshot"):
+            from .mistakes import sync_mistakes_for_attempt
+
+            sync_mistakes_for_attempt(store, user_id, course_id, attempt_id)
+            return _public(domain, attempt)
+        questions, payload = _questions(domain, attempt)
+        answers = attempt["answers"]
+        fingerprint = paper_hash(
+            {"quiz_revision_id": attempt["quiz_revision_id"], "answers": answers}
+        )
+        cached = attempt.get("partial_grades", {})
+
+    missing = [q for q in questions if q["question_revision_id"] not in cached]
+    objective = [
+        q
+        for q in missing
+        if q["question_type"] in OBJECTIVE_TYPES or q["question_revision_id"] not in answers
+    ]
+    subjective = [q for q in missing if q not in objective]
+    objective_grades = _grade_questions(objective, answers, None, attempt["quiz_revision_id"])
+    if objective_grades and subjective and attempt.get("mode"):
+        _save_partial_grades(store, user_id, course_id, attempt_id, objective_grades)
+    remaining_grades = _grade_questions(subjective, answers, model, attempt["quiz_revision_id"])
+    by_id = {
+        **cached,
+        **{g["question_revision_id"]: g for g in objective_grades + remaining_grades},
+    }
+    grades = [by_id[q["question_revision_id"]] for q in questions]
+    used_model = bool(_subjective_input(questions, answers))
+
     snapshot = {
         "version": GRADING_VERSION,
         "quiz_revision_id": attempt["quiz_revision_id"],
         "answer_hash": fingerprint,
-        "model_id": model_id if subjective else None,
-        "model_version": model_version if subjective else None,
+        "model_id": model_id if used_model else None,
+        "model_version": model_version if used_model else None,
         "graded_at": datetime.now(UTC).isoformat(),
         "disclaimer": DISCLAIMER
-        if any(q["question_type"] not in {"choice", "true_false", "fill_blank"} for q in questions)
+        if any(q["question_type"] not in OBJECTIVE_TYPES for q in questions)
         else None,
-        "total_score": float(total),
         "max_score": payload["total_score"],
-        "items": grades,
     }
     with store.transaction():
         domain, current = _owned_attempt(store, user_id, course_id, attempt_id, lock=True)
@@ -216,9 +255,13 @@ def grade_formal_attempt(store, user_id, course_id, attempt_id, model, model_id,
             != fingerprint
         ):
             raise DomainConflict("评分期间作答内容发生变化，请重试")
+        cached = current.get("partial_grades", {})
+        grades = [cached.get(grade["question_revision_id"], grade) for grade in grades]
+        snapshot["items"] = grades
+        snapshot["total_score"] = float(sum(Decimal(str(item["score"])) for item in grades))
         current.update(
             grading_snapshot=snapshot,
-            model_version=model_version if subjective else None,
+            model_version=model_version if used_model else None,
             grading_disclaimer_version=GRADING_VERSION if snapshot["disclaimer"] else None,
             graded_at=snapshot["graded_at"],
             updated_at=snapshot["graded_at"],

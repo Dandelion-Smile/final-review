@@ -11,19 +11,21 @@ from contextvars import ContextVar, Token
 from hashlib import md5, sha256
 from pathlib import Path
 from threading import Lock, local
+from uuid import uuid4
 from weakref import WeakSet
 
 import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from .material_note_store import MaterialNoteStore
 from .source_locators import chunk_locator, material_version
 from .storage import StorageError, stable_key
 
 _user_id: ContextVar[str | None] = ContextVar("final_review_user_id", default=None)
 
 
-class PostgresStore:
+class PostgresStore(MaterialNoteStore):
     TABLES = {
         "course": "courses",
         "document": "documents",
@@ -141,6 +143,20 @@ class PostgresStore:
                 cursor.execute("SELECT to_regclass('public.material_jobs') AS table_name")
                 if cursor.fetchone()["table_name"] is None:
                     raise StorageError("缺少资料 Job 表；请先运行数据库迁移")
+                cursor.execute("SELECT to_regclass('public.material_page_results') AS table_name")
+                if cursor.fetchone()["table_name"] is None:
+                    raise StorageError("缺少资料页面检查点表；请先运行数据库迁移")
+                cursor.execute("SELECT to_regclass('public.material_note_heads') AS table_name")
+                if cursor.fetchone()["table_name"] is None:
+                    raise StorageError("缺少资料笔记版本表；请先运行数据库迁移")
+                cursor.execute("SELECT to_regclass('public.knowledge_build_jobs') AS table_name")
+                if cursor.fetchone()["table_name"] is None:
+                    raise StorageError("缺少课程知识库表；请先运行数据库迁移")
+                cursor.execute(
+                    "SELECT to_regclass('public.knowledge_match_decisions') AS table_name"
+                )
+                if cursor.fetchone()["table_name"] is None:
+                    raise StorageError("缺少知识库比较记录表；请先运行数据库迁移")
                 cursor.execute("SELECT to_regclass('public.note_jobs') AS table_name")
                 if cursor.fetchone()["table_name"] is None:
                     raise StorageError("缺少笔记 Job 表；请先运行数据库迁移")
@@ -196,8 +212,17 @@ class PostgresStore:
             )
         if table == "calendar_entry":
             names.extend(
-                ["kind", "title", "description", "scheduled_on", "all_day",
-                 "start_time", "end_time", "completed_at", "updated_at"]
+                [
+                    "kind",
+                    "title",
+                    "description",
+                    "scheduled_on",
+                    "all_day",
+                    "start_time",
+                    "end_time",
+                    "completed_at",
+                    "updated_at",
+                ]
             )
         if table == "attempt":
             names.extend(
@@ -474,6 +499,9 @@ class PostgresStore:
                             ),
                         )
                     self._persist_material_source(cursor, document, chunks)
+                    from .knowledge_store import enqueue
+
+                    enqueue(cursor, document, getattr(self, "knowledge_settings", None))
         except psycopg.Error as exc:
             raise StorageError("PostgreSQL 资料入库失败") from exc
 
@@ -505,8 +533,9 @@ class PostgresStore:
                         )
                         cursor.execute(
                             "INSERT INTO material_jobs(job_id,user_id,course_id,document_id,"
-                            "idempotency_key,fingerprint,status,stage) "
-                            "VALUES (%s,%s,%s,%s,%s,%s,'queued',NULL)",
+                            "idempotency_key,fingerprint,status,stage,phase,parse_strategy,"
+                            "source_hash,purpose) "
+                            "VALUES (%s,%s,%s,%s,%s,%s,'queued',NULL,%s,%s,%s,%s)",
                             (
                                 job["job_id"],
                                 user_id,
@@ -514,6 +543,10 @@ class PostgresStore:
                                 job["document_id"],
                                 job["idempotency_key"],
                                 job["fingerprint"],
+                                job.get("phase", "parse"),
+                                document.get("parse_strategy"),
+                                document.get("content_sha256"),
+                                "preview" if document.get("parse_strategy") else None,
                             ),
                         )
             return self._job(existing) if existing else self.get_material_job(job["job_id"])
@@ -577,7 +610,7 @@ class PostgresStore:
         return {
             key: value.isoformat() if hasattr(value, "isoformat") else value
             for key, value in row.items()
-            if key != "user_id"
+            if key not in {"user_id", "lease_token"}
         }
 
     def find_material_job(self, course_id: str, key: str) -> dict | None:
@@ -606,6 +639,120 @@ class PostgresStore:
                 (self._user(), course_id),
             )
             return [self._job(row) for row in cursor.fetchall()]
+
+    def _lock_material_lease(self, cursor, job):
+        cursor.execute(
+            "SELECT document_id FROM material_jobs WHERE job_id=%s AND user_id=%s "
+            "AND status='running' AND attempts=%s AND lease_token=%s "
+            "AND phase=%s AND lease_until>now() FOR UPDATE",
+            (job["job_id"], self._user(), job["attempts"], job["lease_token"], job["phase"]),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        cursor.execute(
+            "SELECT data FROM documents WHERE document_id=%s AND user_id=%s FOR UPDATE",
+            (row["document_id"], self._user()),
+        )
+        row = cursor.fetchone()
+        if not row or row["data"].get("parse_status") == "deleted":
+            return None
+        return row["data"]
+
+    def _save_material_page(self, cursor, document, page):
+        from .material_structure import STRATEGY_VERSION
+
+        cursor.execute(
+            "INSERT INTO material_page_results(user_id,course_id,document_id,source_hash,"
+            "page_number,strategy_version,data) VALUES (%s,%s,%s,%s,%s,%s,%s) "
+            "ON CONFLICT(user_id,document_id,source_hash,page_number,strategy_version) "
+            "DO UPDATE SET data=EXCLUDED.data,updated_at=now()",
+            (
+                self._user(),
+                document["course_id"],
+                document["document_id"],
+                document["content_sha256"],
+                page["position"],
+                document.get("preview_strategy", STRATEGY_VERSION),
+                Jsonb(page),
+            ),
+        )
+
+    def material_pages(self, document):
+        from .material_structure import STRATEGY_VERSION
+
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT data FROM material_page_results WHERE user_id=%s AND document_id=%s "
+                "AND source_hash=%s AND strategy_version=%s ORDER BY page_number",
+                (
+                    self._user(),
+                    document["document_id"],
+                    document["content_sha256"],
+                    document.get("preview_strategy", STRATEGY_VERSION),
+                ),
+            )
+            return [row["data"] for row in cursor.fetchall()]
+
+    def handoff_material_preview(self, job, pages, preview, metrics):
+        """Preview + classifications + lease rotation commit together, without indexing."""
+        with self.transaction(), self.connection.cursor() as cursor:
+            document = self._lock_material_lease(cursor, job)
+            if not document or job["phase"] != "preview":
+                return False
+            for page in pages:
+                self._save_material_page(cursor, document, page)
+            cursor.execute(
+                "UPDATE documents SET data=data || %s WHERE document_id=%s AND user_id=%s",
+                (Jsonb(preview), job["document_id"], self._user()),
+            )
+            cursor.execute(
+                "UPDATE material_jobs SET phase='parse',phase_attempts=0,status='queued',"
+                "attempts=attempts+1,lease_token=%s,lease_until=NULL,available_at=now(),"
+                "stage='preview_ready',metrics=metrics || %s WHERE job_id=%s",
+                (uuid4().hex, Jsonb({f"preview:{job['attempts']}": metrics}), job["job_id"]),
+            )
+            return True
+
+    def checkpoint_material_page(self, job, page):
+        with self.transaction(), self.connection.cursor() as cursor:
+            document = self._lock_material_lease(cursor, job)
+            if not document:
+                return False
+            self._save_material_page(cursor, document, page)
+            return True
+
+    def save_material_metrics(self, job, metrics):
+        with self.transaction(), self.connection.cursor() as cursor:
+            if not self._lock_material_lease(cursor, job):
+                return False
+            cursor.execute(
+                "UPDATE material_jobs SET metrics=metrics || %s WHERE job_id=%s",
+                (Jsonb({f"{job['phase']}:{job['attempts']}": metrics}), job["job_id"]),
+            )
+            return True
+
+    def finish_material_images(self, job):
+        with self.transaction(), self.connection.cursor() as cursor:
+            document = self._lock_material_lease(cursor, job)
+            if not document or job["phase"] != "images":
+                return False
+            for page in document.get("analysis_pages", []):
+                page["image_available"] = True
+            cursor.execute(
+                "UPDATE documents SET data=data || %s WHERE document_id=%s AND user_id=%s",
+                (
+                    Jsonb(dict(images_status="ready", analysis_pages=document["analysis_pages"])),
+                    job["document_id"],
+                    self._user(),
+                ),
+            )
+            cursor.execute(
+                "UPDATE material_jobs SET status='succeeded',stage='images',"
+                "lease_until=NULL,finished_at=now() WHERE job_id=%s",
+                (job["job_id"],),
+            )
+            return True
 
     def claim_export_job(self) -> dict | None:
         """Claim across owners; every subsequent operation binds the returned owner."""
@@ -661,6 +808,27 @@ class PostgresStore:
         if not self._transaction_depth:
             raise StorageError("任务锁必须在事务中执行")
         self.connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", (key,))
+
+    def expire_quiz_attempts(self):
+        from .formal_attempt import _finish, _now
+
+        with self.transaction(), self.connection.cursor() as cursor:
+            now = _now()
+            cursor.execute(
+                "SELECT a.record_key, a.user_id, a.data FROM attempts a "
+                "WHERE a.quiz_revision_id IS NOT NULL AND a.data->>'status' = 'in_progress' "
+                "AND a.data->>'mode' = 'exam' "
+                "AND (a.data->>'deadline_at')::timestamptz <= %s "
+                "ORDER BY (a.data->>'deadline_at')::timestamptz "
+                "LIMIT 100 FOR UPDATE OF a SKIP LOCKED",
+                (now,),
+            )
+            for row in cursor.fetchall():
+                data = _finish(row["data"], now, "timeout")
+                cursor.execute(
+                    "UPDATE attempts SET data = %s WHERE record_key = %s AND user_id = %s",
+                    (Jsonb(data), row["record_key"], row["user_id"]),
+                )
 
     def claim_quiz_job(self) -> dict | None:
         from datetime import UTC, datetime, timedelta
@@ -788,12 +956,17 @@ class PostgresStore:
                     return "completed"
                 if job.get("publish_started"):
                     return "publishing"
+                kept_batches = {
+                    key: value
+                    for key, value in (job.get("partial_batches") or {}).items()
+                    if isinstance(value, dict) and value.get("fallback_reason")
+                }
                 job = {
                     **job,
                     "status": "cancelled",
                     "lease_until": None,
                     "error": None,
-                    "partial_batches": {},
+                    "partial_batches": kept_batches,
                 }
                 cursor.execute(
                     "UPDATE note_jobs SET data=%s WHERE record_key=%s", (Jsonb(job), job_id)
@@ -884,7 +1057,7 @@ class PostgresStore:
                 )
         return True
 
-    def claim_material_job(self) -> dict | None:
+    def claim_material_job(self, phase: str = "parse") -> dict | None:
         """One worker claims one due job; expired leases can be claimed again."""
         with self.transaction():
             with self.connection.cursor() as cursor:
@@ -900,9 +1073,18 @@ class PostgresStore:
                     "UPDATE material_jobs SET status='failed',error_code='lease_expired',"
                     "error_message='资料处理多次中断，请手动重试',finished_at=now(),"
                     "lease_until=NULL WHERE status='running' AND lease_until<now() "
-                    "AND attempts>=max_attempts RETURNING user_id,document_id,error_message"
+                    "AND phase_attempts>=max_attempts "
+                    "RETURNING user_id,document_id,error_message,phase"
                 )
                 for expired in cursor.fetchall():
+                    if expired["phase"] == "images":
+                        cursor.execute(
+                            "UPDATE documents SET data=data || "
+                            "jsonb_build_object('images_status','failed') "
+                            "WHERE record_key=%s AND user_id=%s",
+                            (expired["document_id"], expired["user_id"]),
+                        )
+                        continue
                     cursor.execute(
                         "UPDATE documents SET data=jsonb_set(jsonb_set(data,"
                         "'{parse_status}',to_jsonb('failed'::text)),'{parse_error}',"
@@ -910,50 +1092,88 @@ class PostgresStore:
                         "AND data->>'parse_status' <> 'deleted'",
                         (expired["error_message"], expired["document_id"], expired["user_id"]),
                     )
+                    if expired["phase"] == "preview":
+                        cursor.execute(
+                            "UPDATE documents SET data=data || "
+                            "jsonb_build_object('preview_status','failed',"
+                            "'preview_error',%s::text) "
+                            "WHERE document_id=%s AND user_id=%s "
+                            "AND data->>'parse_status'<>'deleted'",
+                            (expired["error_message"], expired["document_id"], expired["user_id"]),
+                        )
                 cursor.execute(
                     "SELECT * FROM material_jobs j WHERE "
                     "((status='queued' AND available_at<=now()) OR "
-                    "(status='running' AND lease_until<now() AND attempts<max_attempts)) "
+                    "(status='running' AND lease_until<now() AND phase_attempts<max_attempts)) "
+                    "AND phase=%s "
                     "AND EXISTS (SELECT 1 FROM app_users u WHERE u.id=j.user_id "
                     "AND u.deletion_due_at IS NULL) "
-                    "ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1"
+                    "ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1",
+                    (phase,),
                 )
                 row = cursor.fetchone()
                 claimed = None
                 if row:
                     cursor.execute(
                         "UPDATE material_jobs SET status='running', attempts=attempts+1, "
-                        "stage='parse', started_at=now(), "
+                        "phase_attempts=phase_attempts+1,lease_token=%s, "
+                        "stage=phase, started_at=now(),finished_at=NULL, "
                         "lease_until=now()+interval '15 minutes', "
                         "error_code=NULL,error_message=NULL WHERE job_id=%s RETURNING *",
-                        (row["job_id"],),
+                        (uuid4().hex, row["job_id"]),
                     )
-                    claimed = {**self._job(cursor.fetchone()), "user_id": str(row["user_id"])}
+                    claimed_row = cursor.fetchone()
+                    claimed = {
+                        **self._job(claimed_row),
+                        "user_id": str(row["user_id"]),
+                        "lease_token": claimed_row["lease_token"],
+                    }
                     cursor.execute(
-                        "UPDATE documents SET data=(data - 'parse_error') || "
-                        "jsonb_build_object('parse_status','running') "
+                        "UPDATE documents SET data=CASE WHEN %s='images' THEN data ELSE "
+                        "(data - 'parse_error') || "
+                        "jsonb_build_object('parse_status','running') END "
                         "WHERE record_key=%s AND user_id=%s",
-                        (row["document_id"], row["user_id"]),
+                        (phase, row["document_id"], row["user_id"]),
                     )
+                    if phase in {"preview", "images"}:
+                        key = "preview_status" if phase == "preview" else "images_status"
+                        cursor.execute(
+                            "UPDATE documents SET data=data || %s WHERE document_id=%s "
+                            "AND user_id=%s",
+                            (Jsonb({key: "running"}), row["document_id"], row["user_id"]),
+                        )
         return claimed
 
-    def update_material_job(self, job_id: str, attempt: int, *, stage: str):
+    def update_material_job(self, job_id: str, attempt: int, *, stage: str, lease_token=None):
         with self.connection.cursor() as cursor:
             cursor.execute(
                 "UPDATE material_jobs SET stage=%s, lease_until=now()+interval '15 minutes' "
-                "WHERE job_id=%s AND user_id=%s AND status='running' AND attempts=%s",
-                (stage, job_id, self._user(), attempt),
+                "WHERE job_id=%s AND user_id=%s AND status='running' AND attempts=%s "
+                "AND lease_until>now() AND (%s::text IS NULL OR lease_token=%s) RETURNING job_id",
+                (stage, job_id, self._user(), attempt, lease_token, lease_token),
             )
+            return cursor.fetchone() is not None
+
+    def renew_material_job(self, job_id: str, attempt: int, lease_token=None):
+        return bool(
+            self.connection.execute(
+                "UPDATE material_jobs SET lease_until=now()+interval '15 minutes' "
+                "WHERE job_id=%s AND user_id=%s AND attempts=%s AND status='running' "
+                "AND lease_until>now() AND (%s::text IS NULL OR lease_token=%s) RETURNING job_id",
+                (job_id, self._user(), attempt, lease_token, lease_token),
+            ).fetchone()
+        )
 
     def fail_material_job(
-        self, job_id: str, attempt: int, *, code: str, message: str, retry: bool
+        self, job_id: str, attempt: int, *, code: str, message: str, retry: bool, lease_token=None
     ) -> bool:
         with self.transaction():
             with self.connection.cursor() as cursor:
                 cursor.execute(
-                    "SELECT document_id FROM material_jobs WHERE job_id=%s "
-                    "AND user_id=%s AND status='running' AND attempts=%s FOR UPDATE",
-                    (job_id, self._user(), attempt),
+                    "SELECT document_id,phase FROM material_jobs WHERE job_id=%s "
+                    "AND user_id=%s AND status='running' AND attempts=%s "
+                    "AND lease_until>now() AND (%s::text IS NULL OR lease_token=%s) FOR UPDATE",
+                    (job_id, self._user(), attempt, lease_token, lease_token),
                 )
                 row = cursor.fetchone()
                 if row:
@@ -967,6 +1187,15 @@ class PostgresStore:
                         "WHERE job_id=%s",
                         (status, code, message, retry, retry, job_id),
                     )
+                    if row["phase"] == "images":
+                        cursor.execute(
+                            "UPDATE documents SET data=data || "
+                            "jsonb_build_object('images_status',%s::text) "
+                            "WHERE record_key=%s AND user_id=%s "
+                            "AND data->>'parse_status'<>'deleted'",
+                            (status, row["document_id"], self._user()),
+                        )
+                        return True
                     cursor.execute(
                         "UPDATE documents SET data=jsonb_set(jsonb_set(data,"
                         "'{parse_status}',to_jsonb(%s::text)),'{parse_error}',"
@@ -974,21 +1203,37 @@ class PostgresStore:
                         "AND data->>'parse_status' <> 'deleted'",
                         (status, message, row["document_id"], self._user()),
                     )
+                    if row["phase"] == "preview":
+                        cursor.execute(
+                            "UPDATE documents SET data=data || jsonb_build_object("
+                            "'preview_status',%s::text,'preview_error',%s::text) "
+                            "WHERE record_key=%s AND user_id=%s "
+                            "AND data->>'parse_status'<>'deleted'",
+                            (status, message, row["document_id"], self._user()),
+                        )
         return row is not None
 
     def publish_material_job(
-        self, job_id: str, attempt: int, document: dict, chunks: list[dict]
+        self, job_id: str, attempt: int, document: dict, chunks: list[dict], *, lease_token=None
     ) -> bool:
         """Publish chunks, ready document, and Job success in one transaction."""
         with self.transaction():
             with self.connection.cursor() as cursor:
                 cursor.execute(
-                    "SELECT status,attempts FROM material_jobs WHERE job_id=%s "
+                    "SELECT status,attempts,lease_token,phase,lease_until>now() AS lease_valid "
+                    "FROM material_jobs WHERE job_id=%s "
                     "AND user_id=%s FOR UPDATE",
                     (job_id, self._user()),
                 )
                 row = cursor.fetchone()
-                valid = bool(row and row["status"] == "running" and row["attempts"] == attempt)
+                valid = bool(
+                    row
+                    and row["status"] == "running"
+                    and row["attempts"] == attempt
+                    and row["lease_valid"]
+                    and row["phase"] == "parse"
+                    and (lease_token is None or row["lease_token"] == lease_token)
+                )
                 if valid:
                     cursor.execute(
                         "SELECT data->>'parse_status' AS status FROM documents "
@@ -1029,10 +1274,25 @@ class PostgresStore:
                             ),
                         )
                     self._persist_material_source(cursor, document, chunks)
+                    from .knowledge_store import enqueue
+
+                    enqueue(cursor, document, getattr(self, "knowledge_settings", None))
                     cursor.execute(
-                        "UPDATE material_jobs SET status='succeeded',stage='index',"
-                        "lease_until=NULL,finished_at=now() WHERE job_id=%s",
-                        (job_id,),
+                        "UPDATE material_jobs SET status=%s,stage='index',phase=%s,"
+                        "phase_attempts=0,attempts=attempts+1,lease_token=%s,"
+                        "lease_until=NULL,available_at=now(),finished_at=now() WHERE job_id=%s",
+                        (
+                            "queued"
+                            if document.get("images_status") == "queued"
+                            and document.get("parse_strategy") != "text-images-v1"
+                            else "succeeded",
+                            "images"
+                            if document.get("images_status") == "queued"
+                            and document.get("parse_strategy") != "text-images-v1"
+                            else "parse",
+                            uuid4().hex,
+                            job_id,
+                        ),
                     )
         return valid
 
@@ -1117,18 +1377,26 @@ class PostgresStore:
                     and document["status"] != "deleted"
                 ):
                     cursor.execute(
-                        "UPDATE material_jobs SET status='queued',stage=NULL,attempts=0,"
+                        "UPDATE material_jobs SET status='queued',stage=NULL,phase_attempts=0,"
+                        "attempts=attempts+1,lease_token=%s,lease_until=NULL,"
                         "error_code=NULL,error_message=NULL,available_at=now(),"
                         "started_at=NULL,finished_at=NULL WHERE job_id=%s RETURNING *",
-                        (job_id,),
+                        (uuid4().hex, job_id),
                     )
                     result = self._job(cursor.fetchone())
                     cursor.execute(
-                        "UPDATE documents SET data=(data - 'parse_error') || "
-                        "jsonb_build_object('parse_status','queued') "
+                        "UPDATE documents SET data=CASE WHEN %s='images' THEN data ELSE "
+                        "(data - 'parse_error') || jsonb_build_object('parse_status','queued') END "
                         "WHERE record_key=%s AND user_id=%s",
-                        (row["document_id"], self._user()),
+                        (row["phase"], row["document_id"], self._user()),
                     )
+                    if row["phase"] in {"preview", "images"}:
+                        key = "preview_status" if row["phase"] == "preview" else "images_status"
+                        cursor.execute(
+                            "UPDATE documents SET data=data || %s WHERE document_id=%s "
+                            "AND user_id=%s",
+                            (Jsonb({key: "queued"}), row["document_id"], self._user()),
+                        )
         return result
 
     @staticmethod

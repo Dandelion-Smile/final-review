@@ -4,7 +4,7 @@ import { api } from "./workbench-api";
 import NoteMaterialPicker, { materialLabel, type NoteMaterial } from "./NoteMaterialPicker";
 
 const questionTypes = [
-  ["choice", "选择题"], ["true_false", "判断题"], ["fill_blank", "填空题"],
+  ["choice", "单选题"], ["multiple_choice", "多选题"], ["true_false", "判断题"], ["fill_blank", "填空题"],
   ["short_answer", "简答题"], ["calculation", "计算题"], ["proof", "证明题"],
 ] as const;
 type QuestionType = typeof questionTypes[number][0];
@@ -50,7 +50,7 @@ const lines = (value: string) => [...new Set(value.split(/[\n、，,]/).map(item
 const sourceNames: Record<string, string> = { past_exam: "历年真题", teacher_ppt: "老师 PPT", homework: "平时作业", other_practice: "其他练习", crash_course: "速成课", external_upload: "外部上传" };
 
 export default function QuizConfigDialog({
-  courseId, pending, busy, error, pickerOpen, onPickerOpenChange, onConfirm, onCancel,
+  courseId, pending, busy, error, pickerOpen, onPickerOpenChange, onConfirm, onCancel, standalone = false,
 }: {
   courseId: string;
   pending: PendingQuiz;
@@ -60,6 +60,7 @@ export default function QuizConfigDialog({
   onPickerOpenChange: (open: boolean) => void;
   onConfirm: (input: QuizInput) => void;
   onCancel: () => void;
+  standalone?: boolean;
 }) {
   const [step, setStep] = useState<1 | 2>(1);
   const [input, setInput] = useState<QuizInput>(pending.quiz_input);
@@ -147,8 +148,8 @@ export default function QuizConfigDialog({
       <header className="note-dialog-head">
         <span className="note-question-mark" aria-hidden="true">✦</span>
         <div>
-          <small>助手追问 · 生成试题</small>
-          <h2 id={`${id}-title`}>补充试题要求</h2>
+          <small>{standalone ? "从课程资料出题" : "助手追问 · 生成试题"}</small>
+          <h2 id={`${id}-title`}>{standalone ? "生成测试" : "补充试题要求"}</h2>
           <p id={`${id}-step`} ref={stepTitle} tabIndex={-1}>第 {step} / 2 步 · {step === 1 ? "考什么" : "怎么考"}</p>
         </div>
       </header>
@@ -226,7 +227,7 @@ export default function QuizConfigDialog({
       </div>
       {(error || (step === 1 && materialError)) && <p className="note-dialog-error quiz-config-error" role="alert">{error || materialError}</p>}
       <footer className="note-dialog-footer">
-        <p>{step === 1 ? "确认范围和资料后继续。" : "确认后提交后台出卷任务。"}</p>
+        <p>{step === 1 ? "选好范围和资料后继续。" : "提交后将在后台生成试卷。"}</p>
         <div>
           <button type="button" className="note-dialog-cancel" disabled={busy} onClick={onCancel}>取消</button>
           {step === 1
@@ -234,7 +235,7 @@ export default function QuizConfigDialog({
             : <>
               <button type="button" className="note-dialog-cancel" disabled={busy} onClick={() => setStep(1)}>上一步</button>
               <button type="button" className="note-dialog-submit" disabled={busy || !scopeValid || !quizValid}
-                onClick={submit}>{busy ? "正在提交…" : "确认并生成"}</button>
+                onClick={submit}>{busy ? "正在提交…" : "生成试卷"}</button>
             </>}
         </div>
       </footer>

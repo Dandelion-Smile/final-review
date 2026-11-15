@@ -45,22 +45,9 @@ def located_sections(content: bytes, filename: str) -> list[dict] | None:
 
 
 def _slide_sections(presentation) -> list[dict]:
-    sections = []
-    for number, slide in enumerate(presentation.slides, 1):
-        text = []
-        for shape in slide.shapes:
-            if shape.has_text_frame:
-                text.extend(paragraph.text for paragraph in shape.text_frame.paragraphs)
-            if shape.has_table:
-                text.extend(cell.text for row in shape.table.rows for cell in row.cells)
-        sections.append(
-            {
-                "position_kind": "slide",
-                "position": number,
-                "text": "\n".join(part for part in text if part.strip()),
-            }
-        )
-    return sections
+    from .material_structure import presentation_pages
+
+    return [{**page, "text": page["native_text"]} for page in presentation_pages(presentation)]
 
 
 def material_version(document: dict) -> dict:
@@ -80,6 +67,9 @@ def material_version(document: dict) -> dict:
         "source_type": document["source_type"],
         "source_origin": document.get("source_origin", "legacy_upload"),
         "content_hash": sha256(document.get("cleaned_markdown", "").encode()).hexdigest(),
+        **{
+            key: document[key] for key in ("note_revision_id", "text_input_hash") if key in document
+        },
         "created_at": document.get("uploaded_at") or document.get("created_at"),
     }
 
@@ -99,5 +89,10 @@ def chunk_locator(version: dict, chunk: dict, ordinal: int) -> dict:
             "text_start": chunk.get("text_start"),
             "text_end": chunk.get("text_end"),
             "content": chunk.get("content", ""),
+            **{
+                key: chunk[key]
+                for key in ("block_id", "content_origin", "note_revision_id")
+                if key in chunk
+            },
         },
     }

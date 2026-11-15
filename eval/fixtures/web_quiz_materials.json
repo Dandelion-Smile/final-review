@@ -1,0 +1,98 @@
+{
+  "source_folder": "Web服务端技术原理及应用",
+  "compiled_from": "web_final_review_source.md",
+  "note": "每份材料是对应课件的复习摘录，标题使用原文件名。评测直接入库这些摘录，不在出卷时重新解析 PPT 或 PDF。",
+  "materials": [
+    {
+      "key": "html-css",
+      "source_file": "1.HTML与CSS主要知识回顾.pptx",
+      "chapter": "第1章",
+      "title": "1.HTML与CSS主要知识回顾.pptx",
+      "markdown": "# 第1章 HTML与CSS主要知识回顾\n\nHTML是超文本标记语言，不是编程语言。基本结构包括 `<!DOCTYPE html>`、`html`、`head`、`title`、`body`。双标签如 `p`，单标签如 `br`、`img`。`div` 是块级标签，通常单独占一行；`span` 是行内标签。表单 `form` 用于收集数据，重点属性是 `action`、`method`、`name`。\n\nCSS语法核心是 `选择器 { 属性: 值; }`。三种引入方式是内联样式、内部样式、外部样式。选择器优先级是 id选择器高于类选择器，类选择器高于元素选择器。盒模型从内到外依次是 content、padding、border、margin。"
+    },
+    {
+      "key": "js-jquery",
+      "source_file": "2.Web前端-JS、jQuery和Bootstrap知识.pptx",
+      "chapter": "第2章",
+      "title": "2.Web前端-JS、jQuery和Bootstrap知识.pptx",
+      "markdown": "# 第2章 JavaScript、jQuery和Bootstrap\n\nJavaScript是运行在浏览器端的脚本语言，由 ECMAScript、DOM、BOM 三部分组成。基本数据类型常考 number、string、boolean、null、undefined。`typeof null` 的结果是 object。\n\nDOM常用 `document.getElementById()` 获取元素。jQuery入口函数是 `$(function(){})`，含义是页面DOM加载完成后执行。Bootstrap考试重点是栅格系统：把一行划分为12列，通过列组合实现页面布局。"
+    },
+    {
+      "key": "http",
+      "source_file": "3.HTTP协议与Web服务端开发环境搭建.pptx",
+      "chapter": "第3章",
+      "title": "3.HTTP协议与Web服务端开发环境搭建.pptx",
+      "markdown": "# 第3章 HTTP协议与Web服务端开发环境\n\nTCP三次握手：客户端发SYN，服务器回SYN+ACK，客户端回ACK。HTTP特点是基于TCP、请求/响应模式、无状态。无状态是指多次请求之间默认不能共享数据，因此后面才需要Cookie和Session。\n\nHTTP请求由请求行、请求头、请求体组成。GET的参数跟在URL后，长度有限，适合查询，不适合敏感数据。POST的参数在请求体中，适合提交敏感或大量数据。HTTP响应由状态行、响应头、响应体组成。状态码中 200 表示成功，302 表示重定向，404 表示客户端未找到资源，500 表示服务器错误。Tomcat是Web服务器和Servlet容器，常用配置文件包括 server.xml、context.xml、web.xml。"
+    },
+    {
+      "key": "servlet",
+      "source_file": "4.Web服务端（2-Servlet开发技术-1）.pptx",
+      "chapter": "第4章",
+      "title": "4.Web服务端（2-Servlet开发技术-1）.pptx",
+      "markdown": "# 第4章 Servlet开发技术\n\nServlet是运行在Web服务器中的Java程序，是浏览器与业务逻辑或数据库之间的中间层。Servlet需要依赖Servlet容器才能运行，常见容器是Tomcat。\n\n接口体系是 Servlet、GenericServlet、HttpServlet。开发时通常直接继承 HttpServlet。HttpServlet 通过 service() 再分发到 doGet() 和 doPost()。工作过程是：浏览器发请求，容器创建请求和响应对象，调用Servlet处理，再返回响应。手动开发步骤是创建类继承 HttpServlet，重写 doGet 或 doPost，配置访问路径，部署到服务器。"
+    },
+    {
+      "key": "servlet-lifecycle",
+      "source_file": "5.Web服务端（2-Servlet开发技术-2).pptx",
+      "chapter": "第5章",
+      "title": "5.Web服务端（2-Servlet开发技术-2).pptx",
+      "markdown": "# 第5章 Servlet注解、映射与生命周期\n\n`@WebServlet` 用来声明Servlet的访问路径。`loadOnStartup` 大于等于0时，容器启动阶段就会创建该Servlet并调用 init；小于0或未配置时，等到第一次请求才创建。\n\nServlet生命周期按顺序是：构造实例、init 初始化、service 处理请求、destroy 销毁。init 和 destroy 各执行一次，service 在每次请求时执行。一个Servlet实例通常以多线程方式处理多个请求，因此实例变量不是线程安全的。"
+    },
+    {
+      "key": "request-response",
+      "source_file": "6.Web服务端（2-Servlet开发技术-3）.pptx",
+      "chapter": "第6章",
+      "title": "6.Web服务端（2-Servlet开发技术-3）.pptx",
+      "markdown": "# 第6章 请求、响应与转发重定向\n\nHttpServletRequest 封装客户端请求，常用方法包括 getParameter、getParameterValues、setAttribute、getAttribute。HttpServletResponse 用来生成响应，常用方法包括 getWriter 和 sendRedirect。\n\n请求转发 forward 在服务器内部完成，浏览器地址栏不变，只产生一次请求，可以共享同一个 request 里的数据。重定向 sendRedirect 会让浏览器再发一次新请求，地址栏改变，原来 request 中的数据不能直接带到下一次请求。"
+    },
+    {
+      "key": "jdbc",
+      "source_file": "8.Web服务端（2-Servlet开发技术-5）.pptx",
+      "chapter": "第8章",
+      "title": "8.Web服务端（2-Servlet开发技术-5）.pptx",
+      "markdown": "# 第8章 JDBC、连接池与SQL注入\n\nStatement 直接拼接SQL，用户输入可能改变SQL结构，因此存在SQL注入风险。PreparedStatement 使用预编译和占位符，参数按值绑定，是防止SQL注入的基本做法。\n\n数据库连接池事先创建并复用连接，避免每次请求都新建物理连接。Druid是常用的数据库连接池。DBUtils帮助把查询结果封装成对象。Maven生命周期里常见阶段包括 compile、test、package。"
+    },
+    {
+      "key": "jsp",
+      "source_file": "9.Web服务端（JSP技术基础-JSP原理基本语法).pptx",
+      "chapter": "第9章",
+      "title": "9.Web服务端（JSP技术基础-JSP原理基本语法).pptx",
+      "markdown": "# 第9章 JSP原理与基本语法\n\nJSP在服务器端先被翻译成Servlet，再编译执行。脚本元素包括声明 `<%! %>`、脚本 `<% %>` 和表达式 `<%= %>`。\n\n三大指令是 page、include、taglib。静态包含在翻译期把文件合并，只生成一个Servlet。动态包含在运行期通过 jsp:include 引入，被包含页面单独翻译。page指令常用 contentType、pageEncoding 和 errorPage。"
+    },
+    {
+      "key": "jsp-objects",
+      "source_file": "10.Web服务端（JSP技术基础-JSP应用、内置对象）.pptx",
+      "chapter": "第10章",
+      "title": "10.Web服务端（JSP技术基础-JSP应用、内置对象）.pptx",
+      "markdown": "# 第10章 JSP内置对象\n\nJSP九大内置对象包括 request、response、session、application、out、pageContext、page、config、exception。out 先写入缓冲区，缓冲区满或页面结束时再送到响应。\n\npageContext 可以按 page、request、session、application 四个范围存取数据。session 常用方法包括 setAttribute、getAttribute、removeAttribute 和 invalidate。invalidate 会使当前会话失效。"
+    },
+    {
+      "key": "ajax",
+      "source_file": "12.Web服务端（Ajax请求方式与JSON数据格式）.pptx",
+      "chapter": "第12章",
+      "title": "12.Web服务端（Ajax请求方式与JSON数据格式）.pptx",
+      "markdown": "# 第12章 Ajax与JSON\n\nAjax可以在不刷新整个页面的情况下与服务器交换数据。核心对象是 XMLHttpRequest。就绪状态从0到4：0未初始化，1已打开，2已发送，3接收中，4完成。通常在 readyState 等于4且状态码为200时读取响应。\n\nJSON是一种文本数据格式，对象用花括号，数组用方括号，字符串必须使用双引号。jQuery中可以用 $.ajax 或 $.get、$.post 发起Ajax请求。"
+    },
+    {
+      "key": "filter",
+      "source_file": "13.Web服务端常用技术-过滤器.pptx",
+      "chapter": "第13章",
+      "title": "13.Web服务端常用技术-过滤器.pptx",
+      "markdown": "# 第13章 过滤器\n\nFilter在请求到达Servlet之前和响应离开Servlet之后执行，适合做编码、登录检查和敏感词处理。生命周期是构造、init、doFilter、destroy。\n\n创建步骤是实现 Filter 接口，重写 doFilter，并用 @WebFilter 或 web.xml 配置拦截路径。过滤器链按配置顺序依次调用 chain.doFilter。某个过滤器若不调用 chain.doFilter，后面的过滤器和目标资源都不会执行。"
+    },
+    {
+      "key": "session",
+      "source_file": "15.Web服务端常用技术-会话技术.pptx",
+      "chapter": "第15章",
+      "title": "15.Web服务端常用技术-会话技术.pptx",
+      "markdown": "# 第15章 会话技术\n\nHTTP无状态，会话技术用来在多次请求之间保持用户状态。Cookie保存在浏览器，Session保存在服务器，服务器通常通过名为 JSESSIONID 的Cookie找回对应Session。\n\nCookie常用方法包括 setMaxAge、setPath 和 getValue。setMaxAge 小于0表示浏览器关闭即失效，等于0表示删除Cookie。Session常用方法包括 getId、setAttribute、getAttribute 和 invalidate。Cookie随请求发送，不适合存放密码等敏感数据；Session中的数据留在服务器。"
+    },
+    {
+      "key": "upload",
+      "source_file": "16.Web服务端常用技术-日志文件上传下载.pptx",
+      "chapter": "第16章",
+      "title": "16.Web服务端常用技术-日志文件上传下载.pptx",
+      "markdown": "# 第16章 日志、文件上传与下载\n\n日志框架负责具体输出，日志门面负责统一调用接口，应用代码应依赖日志门面而不是绑定某一种实现。\n\n文件上传的表单必须使用 post，并且 enctype 设为 multipart/form-data。服务端通过 Part 接口读取上传部件，常用 getSubmittedFileName 和 write。文件下载要设置响应头 Content-Disposition 为 attachment，再把文件字节写到响应输出流。这一份资料的专用核对短语是日志门面与Part接口。"
+    }
+  ]
+}

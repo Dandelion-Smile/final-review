@@ -15,7 +15,7 @@ type Feed = { items: Item[]; unread: number; next_before: number | null };
 const feedPath = "/api/account/notifications";
 const changeEvent = "final-review-notifications-read";
 const kindLabels: Record<Kind, string> = {
-  quiz_ready: "试卷待确认", quiz_failed: "生成任务", grading_ready: "评分结果", calendar: "日程提醒",
+  quiz_ready: "试卷已生成", quiz_failed: "生成任务", grading_ready: "评分结果", calendar: "日程提醒",
 };
 const dateFormat = new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short" });
 

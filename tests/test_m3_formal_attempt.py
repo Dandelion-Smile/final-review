@@ -27,23 +27,16 @@ from final_review.quiz_review import (
 
 def confirmed_case(case):
     system, card = generated_quiz(case)
-    token = quiz_confirm_preview(
-        system.store, "local-user", "net", card["asset_id"], card["revision_id"]
-    )
-    confirm_quiz_revision(
-        system.store,
-        "local-user",
-        "net",
-        card["asset_id"],
-        card["revision_id"],
-        token["confirmation_id"],
-    )
+    assert card["state"] == "confirmed"
     return system, card
 
 
-def test_draft_cannot_start_formal_attempt(draft_case):
-    system, card = generated_quiz(draft_case)
-    with pytest.raises(DomainConflict, match="已确认"):
+def test_legacy_draft_cannot_start_formal_attempt(draft_case, monkeypatch):
+    with monkeypatch.context() as legacy:
+        legacy.setattr("final_review.quiz_generation.publish_quiz_revision", lambda *_: None)
+        system, card = generated_quiz(draft_case)
+    assert card["state"] == "draft"
+    with pytest.raises(DomainConflict, match="正式试卷"):
         start_formal_attempt(system.store, "local-user", "net", card["asset_id"])
     assert not system.store.scan("attempt", {"course_id": "net"})
 
@@ -114,6 +107,8 @@ def test_old_attempt_remains_bound_after_quiz_is_reedited(draft_case):
         request_for(read(system, card), stem="第二版试卷题干"),
     )
     revision_id = saved["revision"]["quiz_revision_id"]
+    while_editing = start_formal_attempt(system.store, "local-user", "net", card["asset_id"])
+    assert while_editing["attempt"]["quiz_revision_id"] == card["revision_id"]
 
     class Reviewer:
         def review_quiz_edit(self, context, draft):

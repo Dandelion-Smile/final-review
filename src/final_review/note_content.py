@@ -8,7 +8,10 @@ def note_body(revision: dict) -> str:
     if revision.get("points"):
         lines = [f"# {revision['title']}"]
         for point in revision["points"]:
-            lines.extend(["", f"## {point['heading']}", "", point["content"]])
+            lines.extend(["", f"## {point['heading']}", ""])
+            if point.get("excerpt"):
+                lines.extend(["这一部分是原文摘录", ""])
+            lines.append(point["content"])
         return "\n".join(lines)
     return split_source_appendix(revision["markdown"])[0]
 

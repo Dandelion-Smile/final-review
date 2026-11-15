@@ -61,15 +61,16 @@ def queue_case(case, *, conversation=False):
     return system, context, model_for(plan, payload), system.store.claim_quiz_job(), queued
 
 
-def test_generation_publishes_complete_draft_in_original_conversation(draft_case):
+def test_generation_publishes_formal_quiz_in_original_conversation(draft_case):
     system, _, model, job, queued = queue_case(draft_case, conversation=True)
     process_quiz_job(system.store, model, system.settings, job)
     saved = system.store.get("quiz_job", queued["job_id"])
     assert saved["status"] == "succeeded"
     result = saved["result"]
     paper = read_quiz(system.store, "local-user", "net", result["asset_id"], result["revision_id"])
-    assert paper["asset"]["current_revision_id"] is None
-    assert paper["revision"]["state"] == "draft"
+    assert paper["asset"]["current_revision_id"] == result["revision_id"]
+    assert result["state"] == paper["asset"]["status"] == paper["revision"]["state"] == "confirmed"
+    assert system.store.get("asset_revision", result["revision_id"])["confirmed_at"]
     question = paper["revision"]["questions"][0]
     assert question["order"] == 1 and question["score"] == 10
     assert question["reference_answer"] and question["must_include"]
@@ -82,6 +83,7 @@ def test_generation_publishes_complete_draft_in_original_conversation(draft_case
     with TestClient(create_app(system.settings, system)) as client:
         history = client.get("/api/courses/net/conversations/original/messages").json()
         assert history["items"][-1]["quiz_draft"] == result
+        assert "现在可以开始测试" in history["items"][-1]["content"]
         assert (
             client.get("/api/courses/net/quizzes").json()["items"][0]["asset_id"]
             == result["asset_id"]
@@ -280,7 +282,10 @@ def test_removed_source_keeps_question_reference_excerpt(draft_case):
     result = system.store.get("quiz_job", job["job_id"])["result"]
     domain = DomainService(system.store, "local-user")
     preview = domain.material_deletion_preview("m3-ppt", "net")
-    domain.delete_material("m3-ppt", preview["confirmation_id"], "normal")
+    with pytest.raises(DomainConflict, match="资料仍被正式资产引用"):
+        domain.delete_material("m3-ppt", preview["confirmation_id"], "normal")
+    deleted = domain.delete_material("m3-ppt", preview["confirmation_id"], "retain_source_snapshot")
+    assert deleted["retained_source_snapshot"]
     paper = read_quiz(system.store, "local-user", "net", result["asset_id"], result["revision_id"])
     ref = paper["revision"]["questions"][0]["references"][0]
     assert ref["quote"] == "同步双方初始序列号" and not ref["available"]

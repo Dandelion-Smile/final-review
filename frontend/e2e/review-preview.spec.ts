@@ -20,8 +20,8 @@ test("home resumes real notes and courses, and calendar entries persist across p
   const newCourse = await (await request.post(`${base}/api/courses`, { data: { name: "另一个窗口新建的课程" } })).json();
   await navigation.getByRole("button", { name: "主页", exact: true }).click();
   await page.locator(".review-recent-courses").getByRole("link", { name: /另一个窗口新建的课程/ }).click();
-  await expect(page).toHaveURL(new RegExp(`/courses/${newCourse.course_id}/materials$`));
-  await expect(page.getByRole("heading", { name: "我的复习资料" })).toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`/courses/${newCourse.course_id}/overview$`));
+  await expect(page.getByRole("heading", { name: "知识目录", exact: true })).toBeVisible();
   await navigation.getByRole("button", { name: "日历", exact: true }).click();
 
   const calendar = page.getByRole("region", { name: "日历", exact: true });

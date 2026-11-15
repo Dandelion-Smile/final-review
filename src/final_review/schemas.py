@@ -23,6 +23,22 @@ class SourceType(StrEnum):
 
 
 QuestionType = Literal["choice", "fill_blank", "true_false", "short_answer", "calculation", "proof"]
+FormalQuestionType = Literal[
+    "choice", "multiple_choice", "fill_blank", "true_false", "short_answer", "calculation", "proof"
+]
+FormalAnswer = int | bool | str | list[int] | list[str]
+
+
+def validate_formal_answer_type(value):
+    if type(value) in {int, bool, str}:
+        return value
+    if (
+        isinstance(value, list)
+        and len(value) <= 30
+        and (all(type(item) is int for item in value) or all(type(item) is str for item in value))
+    ):
+        return value
+    raise ValueError("答案类型无效")
 
 
 class MaterialInput(Model):
@@ -32,6 +48,12 @@ class MaterialInput(Model):
     source_type: SourceType
     chapter: Annotated[str, Field(max_length=200)] = ""
     markdown: Annotated[str, Field(min_length=1, max_length=500000)]
+
+
+class MaterialNoteSave(Model):
+    base_revision_id: Identifier
+    idempotency_key: str = Field(min_length=1, max_length=200)
+    body: dict
 
 
 class CourseCreate(Model):
@@ -87,8 +109,10 @@ class CalendarEntryCreate(Model):
             if self.start_time is not None or self.end_time is not None:
                 raise ValueError("全天安排无需填写起止时间")
         elif (
-            self.start_time is None or self.end_time is None
-            or self.start_time.tzinfo is not None or self.end_time.tzinfo is not None
+            self.start_time is None
+            or self.end_time is None
+            or self.start_time.tzinfo is not None
+            or self.end_time.tzinfo is not None
             or self.end_time <= self.start_time
         ):
             raise ValueError("请填写同一天的起止时间，结束时间须晚于开始时间")
@@ -124,6 +148,7 @@ class NotePointEdit(Model):
     heading: Annotated[str, Field(min_length=1, max_length=200)]
     content: Annotated[str, Field(min_length=1, max_length=50000)]
     provenance: Literal["source", "synthesis", "ai_supplement"]
+    excerpt: bool = False
     # Generation merges references/content from up to twelve reading batches.
     references: list[NoteReferenceEdit] = Field(default_factory=list, max_length=128)
 
@@ -153,15 +178,22 @@ class QuizConfirm(Model):
 
 class FormalAnswerSave(Model):
     question_revision_id: Identifier
-    answer: int | bool | str | None = None
+    answer: FormalAnswer | None = None
     expected_version: int = Field(ge=0, strict=True)
 
     @field_validator("answer", mode="before")
     @classmethod
     def strict_answer_kind(cls, value):
-        if value is not None and type(value) not in {int, bool, str}:
-            raise ValueError("答案类型无效")
-        return value
+        return None if value is None else validate_formal_answer_type(value)
+
+
+class FormalAttemptStart(Model):
+    mode: Literal["practice", "exam"]
+    duration_minutes: int | None = Field(default=None, ge=1, le=240, strict=True)
+
+
+class FormalQuestionSubmit(Model):
+    expected_version: int = Field(ge=0, strict=True)
 
 
 class QuizFollowUpRequest(Model):
@@ -173,14 +205,12 @@ class MasteryMark(Model):
 
 
 class MistakePracticeAnswer(Model):
-    answer: int | bool | str
+    answer: FormalAnswer
 
     @field_validator("answer", mode="before")
     @classmethod
     def strict_answer_kind(cls, value):
-        if type(value) not in {int, bool, str}:
-            raise ValueError("答案类型无效")
-        return value
+        return validate_formal_answer_type(value)
 
 
 class ConfirmationConsume(Model):
@@ -219,7 +249,7 @@ class ExamProfile(Model):
 
 
 class QuizBlueprintItem(Model):
-    question_type: QuestionType
+    question_type: FormalQuestionType
     question_count: int = Field(ge=1, le=100, strict=True)
 
 
@@ -232,7 +262,7 @@ class QuizInput(Model):
     knowledge_points: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(
         default_factory=list, max_length=100
     )
-    blueprint: list[QuizBlueprintItem] | None = Field(default=None, min_length=1, max_length=6)
+    blueprint: list[QuizBlueprintItem] | None = Field(default=None, min_length=1, max_length=7)
     duration_mode: Literal["timed", "untimed"] | None = None
     duration_minutes: int | None = Field(default=None, ge=1, le=240, strict=True)
     difficulty: Literal["basic", "standard", "advanced", "mixed"] | None = None
@@ -265,7 +295,7 @@ class QuizInput(Model):
 
 class ResolvedQuizConfig(QuizInput):
     scope_mode: Literal["course", "chapter", "knowledge_points"]
-    blueprint: list[QuizBlueprintItem] = Field(min_length=1, max_length=6)
+    blueprint: list[QuizBlueprintItem] = Field(min_length=1, max_length=7)
     duration_mode: Literal["timed", "untimed"]
     difficulty: Literal["basic", "standard", "advanced", "mixed"]
     include_imported_questions: Literal[False]

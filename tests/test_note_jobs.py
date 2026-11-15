@@ -607,3 +607,26 @@ def test_cancel_rejected_after_draft_publication_begins(system):
         )
         assert response.status_code == 409
         assert store.get("note_job", job["job_id"])["status"] == "running"
+
+
+def test_cancel_keeps_excerpt_batch(system):
+    system.store.put(
+        "note_job",
+        "cancel-excerpt",
+        {
+            "job_id": "cancel-excerpt",
+            "status": "running",
+            "attempts": 1,
+            "error": "旧错误",
+            "partial_batches": {
+                "0": {"fallback_reason": "生成内容未通过来源核对", "title": "复习资料摘录"},
+                "1": {"title": "已生成"},
+            },
+        },
+    )
+    assert system.store.cancel_note_job("cancel-excerpt") == "cancelled"
+    job = system.store.get("note_job", "cancel-excerpt")
+    assert job["status"] == "cancelled"
+    assert job["error"] is None
+    assert set(job["partial_batches"]) == {"0"}
+    assert job["partial_batches"]["0"]["fallback_reason"] == "生成内容未通过来源核对"

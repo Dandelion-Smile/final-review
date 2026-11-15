@@ -45,6 +45,24 @@ def test_invalid_explicit_conversion_tool_path_is_reported(monkeypatch):
         material_conversion._find_executable(("pdftoppm",), "")
 
 
+def test_windows_conversion_subprocess_uses_python_writable_temp(tmp_path, monkeypatch):
+    from final_review import material_conversion
+
+    captured = {}
+
+    def run(_command, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(material_conversion.sys, "platform", "win32")
+    monkeypatch.setattr(material_conversion.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setenv("TEMP", "Z:/missing-temp")
+    monkeypatch.setattr(material_conversion.subprocess, "run", run)
+    material_conversion._run(["soffice", "--headless"], "转换")
+    assert captured["env"]["TEMP"] == str(tmp_path.resolve())
+    assert captured["env"]["TMPDIR"] == str(tmp_path.resolve())
+
+
 def _image(format_name: str) -> bytes:
     output = BytesIO()
     Image.new("RGB", (80, 40), "white").save(output, format=format_name)

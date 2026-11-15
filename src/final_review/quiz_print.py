@@ -6,6 +6,7 @@ from .domain import DomainConflict, DomainNotFound, DomainService
 
 _TYPE_LABELS = {
     "choice": "选择题",
+    "multiple_choice": "多选题",
     "true_false": "判断题",
     "fill_blank": "填空题",
     "short_answer": "简答题",
@@ -78,7 +79,7 @@ def print_quiz_revision(store, user_id, course_id, asset_id, revision_id, varian
     if revision.get("state") not in {"confirmed", "superseded", "archived"} or payload.get(
         "state"
     ) != revision.get("state"):
-        raise DomainConflict("请先确认试卷，再打印正式版本")
+        raise DomainConflict("请先发布试卷，再打印正式版本")
     markdown = revision["markdown"]
     question_length = payload.get("print_question_length")
     if not isinstance(question_length, int) or not 0 < question_length < len(markdown):

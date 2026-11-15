@@ -605,14 +605,10 @@ class DomainService:
             now, revision_id = _now(), _id("revision")
             lines = [f"# {payload['title']}"]
             for point in points:
-                lines.extend(
-                    [
-                        "",
-                        f"## {point['heading']}",
-                        "",
-                        point["content"],
-                    ]
-                )
+                lines.extend(["", f"## {point['heading']}", ""])
+                if point.get("excerpt"):
+                    lines.extend(["这一部分是原文摘录", ""])
+                lines.append(point["content"])
             revision = {
                 "revision_id": revision_id,
                 "asset_id": asset_id,

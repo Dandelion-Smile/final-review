@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -65,6 +67,24 @@ class Settings(BaseSettings):
     material_vision_timeout: float = Field(default=90, gt=0, le=300)
     material_vision_repairs: int = Field(default=1, ge=0, le=2)
     material_vision_concurrency: int = Field(default=4, ge=1, le=4)
+    material_file_concurrency: int = Field(default=5, ge=1, le=5)
+    material_hybrid_enabled: bool = True
+    material_pptx_parse_mode: Literal["hybrid_visual", "text_images"] = "hybrid_visual"
+    material_note_edit_enabled: bool = False
+    material_preview_concurrency: int = Field(default=2, ge=1, le=4)
+    material_image_concurrency: int = Field(default=1, ge=1, le=2)
+    material_conversion_concurrency: int = Field(default=2, ge=1, le=5)
+    material_vision_global_concurrency: int = Field(default=4, ge=1, le=16)
+    embedding_request_concurrency: int = Field(default=2, ge=1, le=8)
+    knowledge_task_concurrency: int = Field(default=2, ge=1, le=4)
+    knowledge_model_id: str = "default"
+    knowledge_model_timeout: float = Field(default=180, gt=0, le=600)
+    knowledge_max_output_tokens: int = Field(default=8192, ge=2048, le=32768)
+    knowledge_extractor_version: str = "course-knowledge-v1"
+    knowledge_block_chars: int = Field(default=10000, ge=2000, le=30000)
+    knowledge_block_pages: int = Field(default=4, ge=1, le=20)
+    knowledge_top_k: int = Field(default=5, ge=1, le=20)
+    knowledge_min_similarity: float = Field(default=0.65, ge=-1, le=1)
     max_upload_mb: int = Field(default=10, ge=1, le=50)
     top_k: int = Field(default=5, ge=1, le=20)
     retrieval_candidates: int = Field(default=20, ge=1, le=100)
@@ -79,6 +99,8 @@ class Settings(BaseSettings):
     quiz_choice_batch_size: int = Field(default=5, ge=1, le=6)
     quiz_written_batch_size: int = Field(default=2, ge=1, le=3)
     quiz_max_repairs: int = Field(default=2, ge=0, le=2)
+    quiz_max_plan_changes: int = Field(default=3, ge=0, le=3)
+    quiz_max_question_retries: int = Field(default=3, ge=0, le=3)
 
     @model_validator(mode="after")
     def check_candidates(self):

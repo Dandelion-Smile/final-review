@@ -10,6 +10,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pydantic import ConfigDict
 
 from .config import Settings
+from .pipeline_runtime import embedding_batches
 from .plain_material_text import plain_material_text
 from .policy import SOURCE_PRIORITY
 from .schemas import Evidence, MaterialInput
@@ -132,6 +133,11 @@ class KnowledgeBase:
                             section["position"],
                             start if start >= 0 else None,
                             start + len(text) if start >= 0 else None,
+                            {
+                                key: section[key]
+                                for key in ("block_id", "content_origin")
+                                if key in section
+                            },
                         )
                     )
                     cursor = start + max(1, len(text) - 150) if start >= 0 else 0
@@ -148,6 +154,7 @@ class KnowledgeBase:
                         None,
                         start if start >= 0 else None,
                         start + len(text) if start >= 0 else None,
+                        {},
                     )
                 )
                 cursor = start + max(1, len(text) - 150) if start >= 0 else 0
@@ -155,10 +162,14 @@ class KnowledgeBase:
         if stage_callback:
             stage_callback("index")
         vectors = []
-        for start in range(0, len(texts), EMBEDDING_BATCH_SIZE):
-            batch = texts[start : start + EMBEDDING_BATCH_SIZE]
-            result = self.embeddings.embed_documents(batch)
-            validate_vectors(result, len(batch), self.settings.embedding_dimensions)
+        for start, result in embedding_batches(
+            self.embeddings, texts, batch_size=EMBEDDING_BATCH_SIZE, settings=self.settings
+        ):
+            validate_vectors(
+                result,
+                len(texts[start : start + EMBEDDING_BATCH_SIZE]),
+                self.settings.embedding_dimensions,
+            )
             vectors.extend(result)
         metadata = material.model_dump(mode="json", exclude={"markdown"})
         chunks = [
@@ -172,6 +183,7 @@ class KnowledgeBase:
                 "position": units[i][2],
                 "text_start": units[i][3],
                 "text_end": units[i][4],
+                **units[i][5],
                 "embedding": vectors[i],
             }
             for i, content in enumerate(texts)

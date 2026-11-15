@@ -56,7 +56,7 @@ def test_real_database_preserves_old_revision_questions_sources_and_current_poin
         new_id = saved["revision"]["quiz_revision_id"]
         new_question = saved["revision"]["questions"][0]
         assert new_id != card["revision_id"]
-        assert saved["asset"]["current_revision_id"] is None
+        assert saved["asset"]["current_revision_id"] == card["revision_id"]
         assert saved["asset"]["latest_revision_id"] == new_id
         assert new_question["source_review_status"] == "pending"
         assert new_question["references"] == []
@@ -161,16 +161,6 @@ def test_real_database_edit_from_confirmed_keeps_formal_revision_current(databas
     store, config = prepared(database_url)
     try:
         card = generated(store, config)
-        with store.transaction():
-            revision = store.get("asset_revision", card["revision_id"])
-            payload = store.get("quiz_revision_payload", card["revision_id"])
-            asset = store.get("learning_asset", card["asset_id"])
-            revision.update(state="confirmed", confirmed_at="2026-10-11T00:00:00+00:00")
-            payload["state"] = "confirmed"
-            asset.update(status="confirmed", current_revision_id=card["revision_id"])
-            store.put("asset_revision", card["revision_id"], revision)
-            store.put("quiz_revision_payload", card["revision_id"], payload)
-            store.put("learning_asset", card["asset_id"], asset)
         before = read_quiz(store, str(USER), "course-1", card["asset_id"], card["revision_id"])
         saved = save_quiz_revision(
             store,
@@ -194,10 +184,6 @@ def test_real_database_reviews_confirms_and_preserves_printable_history(database
         card = generated(store, config)
         asset_id = card["asset_id"]
         first_id = card["revision_id"]
-        first_token = quiz_confirm_preview(store, str(USER), "course-1", asset_id, first_id)
-        confirm_quiz_revision(
-            store, str(USER), "course-1", asset_id, first_id, first_token["confirmation_id"]
-        )
         first_print = print_quiz_revision(
             store, str(USER), "course-1", asset_id, first_id, "questions"
         )["markdown"]

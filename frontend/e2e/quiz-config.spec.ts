@@ -20,13 +20,13 @@ test("quiz card prefills both steps and submits only after final confirmation", 
   await page.getByRole("button", { name: "发送消息" }).click();
   const dialog = page.getByRole("dialog", { name: "补充试题要求" });
   await expect(dialog).toBeVisible();
-  await expect(page.getByText("请在输入框上方分步确认试题要求和生成依据。")).toBeVisible();
+  await expect(page.getByText("请在输入框上方设置试题要求和生成依据。")).toBeVisible();
   await expect(dialog).not.toHaveAttribute("aria-modal", "true");
   await expect(page.locator(".note-dialog-backdrop")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "历史对话" })).toBeEnabled();
   await expect(dialog.getByText("第 1 / 2 步 · 考什么")).toBeVisible();
   await expect(dialog.getByRole("button", { name: "下一步" })).toBeDisabled();
-  await expect(dialog.getByRole("button", { name: "确认并生成" })).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: "生成试卷" })).toHaveCount(0);
 
   const assertComposerAlignment = async () => {
     const cardBox = (await dialog.boundingBox())!;
@@ -61,10 +61,10 @@ test("quiz card prefills both steps and submits only after final confirmation", 
   await page.screenshot({ path: "test-results/quiz-config-desktop.png" });
   await dialog.getByRole("button", { name: "下一步" }).click();
   await expect(dialog.getByText("第 2 / 2 步 · 怎么考")).toBeFocused();
-  await expect(dialog.getByRole("spinbutton", { name: "选择题", exact: true })).toHaveValue("8");
+  await expect(dialog.getByRole("spinbutton", { name: "单选题", exact: true })).toHaveValue("8");
   await expect(dialog.getByRole("spinbutton", { name: "简答题", exact: true })).toHaveValue("2");
   await expect(dialog.getByRole("button", { name: "难度", exact: true })).toContainText("基础");
-  await expect(dialog.getByRole("button", { name: "确认并生成" })).toBeDisabled();
+  await expect(dialog.getByRole("button", { name: "生成试卷" })).toBeDisabled();
   await dialog.getByRole("button", { name: "难度", exact: true }).click();
   await expect(dialog.getByRole("listbox", { name: "难度" })).toBeVisible();
   await page.keyboard.press("Escape");
@@ -74,18 +74,18 @@ test("quiz card prefills both steps and submits only after final confirmation", 
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
   await page.screenshot({ path: "test-results/quiz-config-mobile.png" });
   await select("计时方式", "不限时");
-  await dialog.getByRole("spinbutton", { name: "选择题", exact: true }).fill("101");
-  await expect(dialog.getByRole("button", { name: "确认并生成" })).toBeDisabled();
-  await dialog.getByRole("spinbutton", { name: "选择题", exact: true }).fill("7");
+  await dialog.getByRole("spinbutton", { name: "单选题", exact: true }).fill("101");
+  await expect(dialog.getByRole("button", { name: "生成试卷" })).toBeDisabled();
+  await dialog.getByRole("spinbutton", { name: "单选题", exact: true }).fill("7");
   await dialog.getByRole("button", { name: "上一步" }).click();
   await expect(dialog.locator(".note-config-files")).toContainText("TCP 讲义");
   await dialog.getByRole("button", { name: "下一步" }).click();
-  await expect(dialog.getByRole("spinbutton", { name: "选择题", exact: true })).toHaveValue("7");
+  await expect(dialog.getByRole("spinbutton", { name: "单选题", exact: true })).toHaveValue("7");
   await expect(dialog.getByRole("button", { name: "计时方式", exact: true })).toContainText("不限时");
   expect(submissions).toHaveLength(0);
   await dialog.getByRole("textbox", { name: "重点 · 可选" }).fill("握手");
   await dialog.getByRole("textbox", { name: "排除内容 · 可选" }).fill("握手");
-  await dialog.getByRole("button", { name: "确认并生成" }).click();
+  await dialog.getByRole("button", { name: "生成试卷" }).click();
   await expect(dialog.getByRole("alert")).toContainText("冲突");
   expect(submissions).toHaveLength(1);
   expect(submissions[0]).toMatchObject({
@@ -93,7 +93,7 @@ test("quiz card prefills both steps and submits only after final confirmation", 
     blueprint: [{ question_type: "choice", question_count: 7 }, { question_type: "short_answer", question_count: 2 }],
   });
   await dialog.getByRole("textbox", { name: "排除内容 · 可选" }).fill("");
-  await dialog.getByRole("button", { name: "确认并生成" }).click();
+  await dialog.getByRole("button", { name: "生成试卷" }).click();
   await expect(dialog).toHaveCount(0);
   await expect(page.getByText(/试卷配置已就绪/)).toBeVisible();
   await expect(composer).toBeFocused();

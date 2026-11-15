@@ -26,7 +26,6 @@ from final_review.llm import ReviewModel
 from final_review.quiz_config import resolve_quiz_config
 from final_review.quiz_contract import QuizDraftPlan, build_quiz_context, validate_quiz_draft
 from final_review.quiz_generation import publish_quiz
-from final_review.quiz_review import confirm_quiz_revision, quiz_confirm_preview
 
 
 class Grader:
@@ -67,6 +66,57 @@ def test_objective_rules_are_deterministic_and_type_strict():
         assert not objective_correct(judgment, 0)
         assert objective_correct(blank, " tcp ")
         assert not objective_correct(blank, "UDP")
+
+
+def test_practice_retries_grading_without_unlocking_the_answer(draft_case, monkeypatch):
+    system, card = confirmed_case(draft_case)
+    grader = Grader()
+
+    def unavailable(_):
+        from final_review.llm import ModelError
+
+        raise ModelError("临时不可用")
+
+    monkeypatch.setattr(system.model, "grade_formal_subjective", unavailable)
+    with TestClient(create_app(system.settings, system)) as client:
+        course = "/api/courses/net"
+        started = client.post(
+            f"{course}/quizzes/{card['asset_id']}/attempts", json={"mode": "practice"}
+        ).json()
+        attempt_id = started["attempt"]["attempt_id"]
+        question_id = started["questions"][0]["question_revision_id"]
+        root = f"{course}/formal-attempts/{attempt_id}"
+        saved = client.put(
+            root + "/answers",
+            json={
+                "question_revision_id": question_id,
+                "answer": "同步序列号",
+                "expected_version": 0,
+            },
+        )
+        assert saved.status_code == 200
+        submit_url = f"{root}/questions/{question_id}/submit"
+        failed = client.post(submit_url, json={"expected_version": 1}).json()
+        assert failed["grading_error"]
+        assert question_id in failed["attempt"]["submitted_questions"]
+        assert failed["attempt"].get("grading_snapshot") is None
+        assert (
+            client.put(
+                root + "/answers",
+                json={
+                    "question_revision_id": question_id,
+                    "answer": "改答案",
+                    "expected_version": 2,
+                },
+            ).status_code
+            == 409
+        )
+        monkeypatch.setattr(system.model, "grade_formal_subjective", grader.grade_formal_subjective)
+        retried = client.post(submit_url, json={"expected_version": 2}).json()
+        assert retried["attempt"]["grading_snapshot"]["total_score"] == 10
+        assert retried["attempt"]["answers"][question_id]["answer"] == "同步序列号"
+        assert client.post(root + "/grade").status_code == 200
+        assert grader.calls == 1
 
 
 def test_model_adapter_uses_structured_criterion_verdict():
@@ -114,17 +164,6 @@ def test_objective_only_paper_grades_without_model(quiz_system):
         },
         "objective-only",
         "fixture",
-    )
-    token = quiz_confirm_preview(
-        system.store, "local-user", "net", card["asset_id"], card["revision_id"]
-    )
-    confirm_quiz_revision(
-        system.store,
-        "local-user",
-        "net",
-        card["asset_id"],
-        card["revision_id"],
-        token["confirmation_id"],
     )
     started = start_formal_attempt(system.store, "local-user", "net", card["asset_id"])
     attempt_id = started["attempt"]["attempt_id"]

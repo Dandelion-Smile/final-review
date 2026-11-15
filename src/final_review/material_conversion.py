@@ -9,6 +9,7 @@ import tempfile
 import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from hashlib import sha256
@@ -21,6 +22,8 @@ from markitdown import MarkItDown
 from PIL import Image, UnidentifiedImageError
 
 from .config import Settings
+from .observe import observation
+from .pipeline_runtime import resource_slot
 
 SUPPORTED_SUFFIXES = {
     ".md",
@@ -101,8 +104,20 @@ def _check_office_archive(content: bytes, max_bytes: int) -> None:
 
 
 def _run(command: list[str], label: str, timeout_seconds: int = CONVERSION_TIMEOUT_SECONDS) -> None:
+    environment = os.environ.copy()
+    if sys.platform == "win32":
+        # Python can fall back from an unusable Windows TEMP to a writable directory.
+        # LibreOffice otherwise keeps the unusable value and fails its PDF export.
+        scratch = str(Path(tempfile.gettempdir()).resolve())
+        environment.update(TEMP=scratch, TMP=scratch, TMPDIR=scratch)
     try:
-        result = subprocess.run(command, capture_output=True, timeout=timeout_seconds, check=False)
+        with (
+            resource_slot("conversion"),
+            observation("conversion.subprocess", {"operation": label}),
+        ):
+            result = subprocess.run(
+                command, capture_output=True, timeout=timeout_seconds, check=False, env=environment
+            )
     except subprocess.TimeoutExpired as exc:
         raise ValueError(f"{label}超时，请上传较小或更清晰的文件") from exc
     except OSError as exc:
@@ -161,15 +176,16 @@ def _ocr_image(
     if sparse_text:
         command.extend(["--psm", "11"])
     try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=CONVERSION_TIMEOUT_SECONDS,
-            check=False,
-        )
+        with resource_slot("conversion"), observation("material.ocr"):
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=CONVERSION_TIMEOUT_SECONDS,
+                check=False,
+            )
     except subprocess.TimeoutExpired as exc:
         raise ValueError("图片 OCR 超时，请上传较小或更清晰的图片") from exc
     except OSError as exc:
@@ -390,7 +406,7 @@ def _understand_rendered_slides(
     ]
     records = {}
     with ThreadPoolExecutor(max_workers=getattr(interpreter, "concurrency", 1)) as pool:
-        futures = {pool.submit(read_page, index): index for index in positions}
+        futures = {pool.submit(copy_context().run, read_page, index): index for index in positions}
         for future in as_completed(futures):
             index = futures[future]
             records[index] = future.result()

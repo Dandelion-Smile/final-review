@@ -1,5 +1,7 @@
 """Version-bound Attempt survives a later quiz confirmation in real PostgreSQL."""
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from conftest import ScriptedModel
 from test_m3_quiz_edit import request_for
@@ -28,15 +30,42 @@ from final_review.storage import StorageError, stable_key
 pytestmark = pytest.mark.integration
 
 
+def test_deadline_sweep_persists_saved_answers_without_open_client(database_url):  # noqa: F811
+    store, config = prepared(database_url)
+    try:
+        card = generated(store, config)
+        course = "course-1"
+        owner = str(USER)
+        asset = card["asset_id"]
+        started = start_formal_attempt(store, owner, course, asset, "exam", 1)
+        attempt_id = started["attempt"]["attempt_id"]
+        question_id = started["questions"][0]["question_revision_id"]
+        attempt = save_formal_answer(
+            store, owner, course, attempt_id, question_id, "同步序列号", 0
+        )["attempt"]
+        started_at = datetime.now(UTC) - timedelta(minutes=2)
+        attempt.update(
+            started_at=started_at.isoformat(),
+            deadline_at=(started_at + timedelta(minutes=1)).isoformat(),
+        )
+        store.put("attempt", attempt_id, attempt)
+        store.expire_quiz_attempts()
+        submitted = store.get("attempt", attempt_id)
+        assert submitted["status"] == "submitted"
+        assert submitted["submission_reason"] == "timeout"
+        assert submitted["elapsed_seconds"] == 60
+        assert submitted["answers"] == attempt["answers"]
+        store.expire_quiz_attempts()
+        assert store.get("attempt", attempt_id) == submitted
+    finally:
+        store.close()
+
+
 def test_formal_attempt_can_finish_after_parent_is_superseded(database_url, tmp_path):  # noqa: F811
     store, config = prepared(database_url)
     try:
         card = generated(store, config)
         asset_id, first_id = card["asset_id"], card["revision_id"]
-        token = quiz_confirm_preview(store, str(USER), "course-1", asset_id, first_id)
-        confirm_quiz_revision(
-            store, str(USER), "course-1", asset_id, first_id, token["confirmation_id"]
-        )
         attempt = start_formal_attempt(store, str(USER), "course-1", asset_id)
         attempt_id = attempt["attempt"]["attempt_id"]
         question_id = attempt["questions"][0]["question_revision_id"]
@@ -94,9 +123,12 @@ def test_formal_attempt_can_finish_after_parent_is_superseded(database_url, tmp_
             read_formal_attempt(store, str(USER), "course-1", attempt_id)["questions"][0]["stem"]
             != "新版 TCP 题目"
         )
-        assert store.connection.execute(
-            "SELECT kind FROM user_notifications WHERE event_key=%s", (f"grade:{attempt_id}",)
-        ).fetchone()["kind"] == "grading_ready"
+        assert (
+            store.connection.execute(
+                "SELECT kind FROM user_notifications WHERE event_key=%s", (f"grade:{attempt_id}",)
+            ).fetchone()["kind"]
+            == "grading_ready"
+        )
         uploads, exports = tmp_path / "uploads", tmp_path / "exports"
         directory = uploads / str(USER) / "course-1"
         directory.mkdir(parents=True)
@@ -121,8 +153,11 @@ def test_formal_attempt_can_finish_after_parent_is_superseded(database_url, tmp_
         assert purge_expired_accounts(store, settings) == 1
         assert not directory.exists() and not export_file.exists() and unrelated_file.exists()
         for table in ("app_users", "asset_revisions", "question_grades", "user_notifications"):
-            assert store.connection.execute(f"SELECT count(*) AS total FROM {table}").fetchone()[
-                "total"
-            ] == 0
+            assert (
+                store.connection.execute(f"SELECT count(*) AS total FROM {table}").fetchone()[
+                    "total"
+                ]
+                == 0
+            )
     finally:
         store.close()

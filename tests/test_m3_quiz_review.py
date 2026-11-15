@@ -84,7 +84,8 @@ def test_changed_question_requires_review_before_confirmation(draft_case):
     )
     assert confirmed["revision"]["state"] == "confirmed"
     assert confirmed["asset"]["current_revision_id"] == revision_id
-    assert read(system, card)["revision"] == original["revision"]
+    assert read(system, card)["revision"]["state"] == "superseded"
+    assert read(system, card)["revision"]["questions"] == original["revision"]["questions"]
     questions_only = print_quiz_revision(
         system.store, "local-user", "net", card["asset_id"], revision_id, "questions"
     )["markdown"]
@@ -162,7 +163,7 @@ def test_review_does_not_publish_when_sources_change_during_model_call(draft_cas
 
 def test_confirmation_blocks_total_mismatch_and_wrong_owner(draft_case):
     system, card = generated_quiz(draft_case)
-    with pytest.raises(DomainConflict, match="确认问题"):
+    with pytest.raises(DomainConflict, match="发布问题"):
         changed = save_quiz_revision(
             system.store,
             "local-user",
@@ -205,14 +206,14 @@ def test_review_and_confirmation_api(draft_case, monkeypatch):
 
 
 def test_print_requires_confirmed_revision_and_uses_ordered_questions(draft_case):
-    system, card = generated_quiz(draft_case)
-    with pytest.raises(DomainConflict, match="请先确认"):
+    system, card, _, changed = changed_draft(draft_case)
+    with pytest.raises(DomainConflict, match="请先发布"):
         print_quiz_revision(
             system.store,
             "local-user",
             "net",
             card["asset_id"],
-            card["revision_id"],
+            changed["revision"]["quiz_revision_id"],
             "questions",
         )
     paper = build_quiz_markdown(

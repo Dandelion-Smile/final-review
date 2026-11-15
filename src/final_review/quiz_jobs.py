@@ -118,6 +118,8 @@ def retry_quiz(store, user_id, course_id, job_id):
         DomainService(store, user_id).course(course_id, writable=True)
         if job["status"] != "failed":
             raise DomainConflict("仅失败的试卷任务可以重试")
+        if job.get("checkpoint") and job["checkpoint"].get("version") != 2:
+            raise DomainConflict("旧版生成检查点不兼容新的重试规则，请重新创建试卷任务")
         # Revalidate the frozen configuration. Changed versions require a new request.
         from .quiz_generation import quiz_context
 
@@ -223,6 +225,8 @@ def process_quiz_job(store, model, settings, job):
             model,
             ResolvedQuizConfig.model_validate(job["config"]),
             max_repairs=settings.quiz_max_repairs,
+            max_plan_changes=settings.quiz_max_plan_changes,
+            max_question_retries=settings.quiz_max_question_retries,
             progress=progress,
             checkpoint=job.get("checkpoint"),
             save_checkpoint=save_checkpoint,
@@ -260,8 +264,8 @@ def process_quiz_job(store, model, settings, job):
                             "conversation_id": job["conversation_id"],
                             "role": "assistant",
                             "content": (
-                                f"试卷草稿已生成：{result['question_count']} 题，"
-                                f"共 {result['total_score']:g} 分。请查看题目、答案和来源。"
+                                f"试卷已生成，共 {result['question_count']} 题，"
+                                f"满分 {result['total_score']:g} 分。现在可以开始测试。"
                             ),
                             "quiz_draft": result,
                             "created_at": now(),

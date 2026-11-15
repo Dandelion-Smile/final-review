@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ConfigProvider } from "antd";
 import zhCN from "antd/locale/zh_CN";
@@ -19,9 +19,12 @@ import NavigationIcon, { type NavigationIconName } from "./NavigationIcon";
 import LearningReport from "./LearningReport";
 import ReviewDashboard from "./ReviewDashboard";
 import ReviewCalendar from "./ReviewCalendar";
-import { courseHref, legacyHash, readRoute, type CoursePage } from "./course-routes";
+import CourseOverview from "./CourseOverview";
+import { courseHref, legacyHash, materialNoteDocument, readRoute, type CoursePage } from "./course-routes";
 import "./course-navigation.css";
 import "./review-preview.css";
+
+const MaterialNoteReader = lazy(() => import("./MaterialNoteReader"));
 
 const navigation: [CoursePage, NavigationIconName, string][] = [["materials", "materials", "资料"], ["notes", "notes", "笔记"], ["quiz", "quiz", "测试"], ["home", "chat", "AI 辅导"]];
 const globalNavigation = [
@@ -35,6 +38,7 @@ function App({ session }: { session: AccountSession }) {
   const acceptedHash = useRef(window.location.hash);
   const route = readRoute(routeHash);
   const page = route.page;
+  const materialNoteId = materialNoteDocument(route);
   const [course, setCourse] = useState<Course | null>(null);
   const [courseReady, setCourseReady] = useState(false);
   const [courses, setCourses] = useState<Course[]>([]);
@@ -157,7 +161,7 @@ function App({ session }: { session: AccountSession }) {
             <span className="nav-text">{item.label}</span>
           </button>
         ))}
-        {inCourse && <><div className="course-nav-label"><span>当前课程</span></div><div className="course-context" title={activeCourse.name}><NavigationIcon name="courses" /><span className="nav-text">{activeCourse.name}</span></div>{navigation.map(([id, icon, text]) => <button type="button" title={text} className={`course-subnav${page === id ? " active" : ""}`} aria-current={page === id ? "page" : undefined} onClick={() => navigate(id)} key={id}><NavigationIcon name={icon} /><span className="nav-text">{text}</span></button>)}</>}
+        {inCourse && <><div className="course-nav-label"><span>当前课程</span></div><button type="button" className={`course-context${page === "overview" ? " active" : ""}`} title={activeCourse.name} aria-current={page === "overview" ? "page" : undefined} onClick={() => { if (page === "overview") setMenuOpen(false); else navigate("overview"); }}><NavigationIcon name="courses" /><span className="nav-text">{activeCourse.name}</span></button>{navigation.map(([id, icon, text]) => <button type="button" title={text} className={`course-subnav${page === id ? " active" : ""}`} aria-current={page === id ? "page" : undefined} onClick={() => navigate(id)} key={id}><NavigationIcon name={icon} /><span className="nav-text">{text}</span></button>)}</>}
       </nav>
     </aside>
     <div className="course-mobile-header"><button ref={menuTrigger} type="button" aria-label="打开导航" aria-controls="course-sidebar" aria-expanded={menuOpen} onClick={() => setMenuOpen(true)}>☰</button><span>{inCourse ? activeCourse.name : page === "account" ? "个人中心" : page === "notifications" ? "通知中心" : globalPage?.label ?? "我的课程"}</span></div>
@@ -169,9 +173,12 @@ function App({ session }: { session: AccountSession }) {
         : page === "notifications" ? <NotificationCenter />
         : !courseReady ? <p role="status">正在加载课程…</p> : page === "workbench" ? <Workbench selectedId={course?.course_id ?? null} onSelect={onSelectCourse} onEnter={value => { window.location.hash = courseHref(value.course_id); }} /> : !inCourse ? <section className="course-unavailable"><h1>课程暂不可用</h1><p>课程可能已删除，或当前账户没有访问权限。</p><a href="#/courses">返回我的课程</a></section> : <>
         {page === "home" && <ChatHome key={`${activeCourse.course_id}-${chatKey}`} courseId={activeCourse.course_id} selectedConversationId={conversationId} titleRefreshKey={refreshKey} onConversationSelected={selectConversation} onConversationRenamed={() => setRefreshKey(key => key + 1)} onConversationCreated={id => { setRefreshKey(key => key + 1); selectConversation(id); }} onNewConversation={newConversation} />}
-        {page === "materials" && <Materials key={activeCourse.course_id} selectedCourse={activeCourse} />}
+        {page === "overview" && <CourseOverview key={activeCourse.course_id} course={activeCourse} />}
+        {page === "materials" && (materialNoteId
+          ? <Suspense fallback={<p role="status">正在打开资料笔记…</p>}><MaterialNoteReader key={`${activeCourse.course_id}-${materialNoteId}`} courseId={activeCourse.course_id} documentId={materialNoteId} /></Suspense>
+          : <Materials key={activeCourse.course_id} selectedCourse={activeCourse} />)}
         {page === "notes" && <Notes hash={adaptedHash} course={activeCourse} onCourseResolved={id => { const linked = courses.find(item => item.course_id === id); if (linked && linked.course_id !== activeCourse.course_id) { if (route.courseId) window.location.hash = courseHref(id, "notes", route.detail); else onSelectCourse(linked); } }} />}
-        {page === "quiz" && <QuizDrafts key={activeCourse.course_id} courseId={activeCourse.course_id} routeDetail={route.detail} />}
+        {page === "quiz" && <QuizDrafts key={activeCourse.course_id} courseId={activeCourse.course_id} routeDetail={route.detail} courses={courses} />}
         {page === "mistakes" && <Mistakes courses={courses} selectedCourseId={activeCourse.course_id} />}
         {page === "report" && <LearningReport courses={courses} course={activeCourse} onCourse={value => { window.location.hash = courseHref(value.course_id, "report"); }} />}
       </>}

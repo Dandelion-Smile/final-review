@@ -87,7 +87,7 @@ def test_edit_creates_complete_draft_and_keeps_old_question_and_source(draft_cas
     assert new_id != card["revision_id"]
     assert changed["revision"]["state"] == "draft"
     assert changed["asset"]["latest_revision_id"] == new_id
-    assert changed["asset"]["current_revision_id"] is None
+    assert changed["asset"]["current_revision_id"] == card["revision_id"]
     assert new_question["question_id"] == old_question["question_id"]
     assert new_question["question_revision_id"] != old_question["question_revision_id"]
     assert new_question["source_review_status"] == "pending"
@@ -136,13 +136,6 @@ def test_edit_confirmed_base_leaves_current_pointer_and_history_unchanged(draft_
     system, card = generated_quiz(draft_case)
     revision = system.store.get("asset_revision", card["revision_id"])
     payload = system.store.get("quiz_revision_payload", card["revision_id"])
-    asset = system.store.get("learning_asset", card["asset_id"])
-    revision.update(state="confirmed", confirmed_at="2026-10-11T00:00:00+00:00")
-    payload["state"] = "confirmed"
-    asset.update(status="confirmed", current_revision_id=card["revision_id"])
-    system.store.put("asset_revision", card["revision_id"], revision)
-    system.store.put("quiz_revision_payload", card["revision_id"], payload)
-    system.store.put("learning_asset", card["asset_id"], asset)
     saved = save_quiz_revision(
         system.store,
         "local-user",

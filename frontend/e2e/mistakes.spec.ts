@@ -21,9 +21,7 @@ test("graded result reaches filtered mistakes, manual mastery and persisted prac
   await expect.poll(async () => (await (await request.get(`${base}/api/courses/${courseId}/quiz-jobs/${jobId}`)).json()).status, { timeout: 20000 }).toBe("succeeded");
   const job = await (await request.get(`${base}/api/courses/${courseId}/quiz-jobs/${jobId}`)).json();
   const card = job.result;
-  const revisionRoot = `${base}/api/courses/${courseId}/quizzes/${card.asset_id}/revisions/${card.revision_id}`;
-  const preview = await (await request.post(`${revisionRoot}/confirm-preview`)).json();
-  expect((await request.post(`${revisionRoot}/confirm`, { data: { confirmation_id: preview.confirmation_id } })).ok()).toBeTruthy();
+  expect(card.state).toBe("confirmed");
   const started = await (await request.post(`${base}/api/courses/${courseId}/quizzes/${card.asset_id}/attempts`)).json();
   const attemptId = started.attempt.attempt_id;
   const choice = started.questions.find((item: { question_type: string }) => item.question_type === "choice");
@@ -33,13 +31,11 @@ test("graded result reaches filtered mistakes, manual mastery and persisted prac
   expect(submitted.ok()).toBeTruthy();
   expect((await submitted.json()).attempt.grading_snapshot.items.filter((item: { correct: boolean }) => !item.correct)).toHaveLength(2);
 
-  await page.goto("/#quiz");
-  await expect(page.getByRole("heading", { name: "我的作答" })).toBeVisible();
-  await page.getByRole("button", { name: /查看已交卷记录/ }).click();
-  const result = page.getByRole("dialog", { name: "TCP 模拟试卷" });
-  await expect(result.getByRole("button", { name: "查看我的错题" })).toBeVisible();
-  await result.getByRole("button", { name: "查看我的错题" }).click();
-  await expect(page).toHaveURL(/#mistakes$/);
+  await page.goto(`/#/courses/${courseId}/quizzes/list/completed`);
+  await page.getByRole("link", { name: /查看结果/ }).click();
+  const result = page.getByRole("region", { name: "TCP 模拟试卷" });
+  await result.getByRole("link", { name: /查看我的错题/ }).click();
+  await expect(page).toHaveURL(/\/quizzes\/list\/mistakes$/);
   await expect(page.getByRole("heading", { name: "我的错题" })).toBeVisible();
   await expect(page.locator(".mistake-card")).toHaveCount(2);
   await page.getByLabel("考试筛选").selectOption(exam.exam_id);
@@ -54,7 +50,7 @@ test("graded result reaches filtered mistakes, manual mastery and persisted prac
   await expect(page.locator(".mistake-card")).toHaveCount(1);
   await page.locator(".mistake-card").getByRole("button", { name: "重新练习" }).click();
   const practice = page.getByRole("dialog", { name: "错题重练" });
-  await expect(practice).toContainText("练习记录：mistake-practice-");
+  await expect(practice.getByRole("heading", { name: "原题重练" })).toBeVisible();
   await practice.locator('input[type="radio"]').first().check();
   await practice.getByRole("button", { name: "提交重练答案" }).click();
   await expect(practice).toContainText("重练正确");

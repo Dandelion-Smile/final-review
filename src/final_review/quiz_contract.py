@@ -2,12 +2,14 @@
 
 from collections import Counter
 from decimal import Decimal
+from typing import Annotated
 
 from pydantic import Field, ValidationError, model_validator
 
 from .domain import DomainConflict, DomainNotFound, DomainService
 from .policy import SOURCE_LABELS
-from .schemas import Citation, Evidence, Model, QuestionType, ResolvedQuizConfig, Text
+from .quiz_answers import validate_extended_key
+from .schemas import Citation, Evidence, FormalQuestionType, Model, ResolvedQuizConfig, Text
 from .source_locators import material_version
 
 
@@ -19,7 +21,7 @@ class QuizEvidence(Evidence):
 class QuizGenerationContext(Model):
     config: ResolvedQuizConfig
     evidence: list[QuizEvidence] = Field(min_length=1, max_length=1000)
-    prompt_version: str = "quiz-draft-v2-batched"
+    prompt_version: str = "quiz-draft-v3-plan-recovery"
     question_slots: list[dict] = Field(default_factory=list, max_length=100)
     previous_questions: list[dict] = Field(default_factory=list, max_length=100)
     repair_notes: list[str] = Field(default_factory=list, max_length=20)
@@ -91,10 +93,11 @@ def build_quiz_context(store, config: ResolvedQuizConfig, evidence: list[dict]):
 
 class QuizPlanItem(Model):
     knowledge_point: Text
-    question_type: QuestionType
+    question_type: FormalQuestionType
     question_count: int = Field(ge=1, le=100, strict=True)
     importance: int = Field(ge=1, le=5, strict=True)
     allocation_reason: Text
+    document_ids: list[str] = Field(default_factory=list, max_length=100)
 
 
 class QuizDraftPlan(Model):
@@ -105,12 +108,16 @@ class QuizDraftQuestion(Model):
     id: Text
     order: int = Field(ge=1, le=100, strict=True)
     knowledge_point: Text
-    question_type: QuestionType
+    question_type: FormalQuestionType
     stem: Text
     options: list[Text] = Field(default_factory=list, max_length=8)
     correct_option: int | None = Field(default=None, ge=0, le=7, strict=True)
+    correct_options: list[Annotated[int, Field(ge=0, le=7, strict=True)]] = Field(
+        default_factory=list, max_length=8
+    )
     boolean_answer: bool | None = Field(default=None, strict=True)
     accepted_answers: list[Text] = Field(default_factory=list, max_length=30)
+    blank_answers: list[list[Text]] = Field(default_factory=list, max_length=30)
     score: float = Field(gt=0, le=10000, allow_inf_nan=False)
     reference_answer: Text
     explanation: Text
@@ -120,6 +127,11 @@ class QuizDraftQuestion(Model):
     scoring_tips: Text
     provenance: str = Field(pattern=r"^(source|synthesis|ai_supplement)$")
     citations: list[Citation] = Field(default_factory=list, max_length=30)
+
+    @model_validator(mode="after")
+    def check_extended_keys(self):
+        validate_extended_key(self.model_dump())
+        return self
 
 
 class QuizDraftPayload(Model):
@@ -155,6 +167,39 @@ class QuizSemanticReview(Model):
     items: list[QuizQuestionReview] = Field(min_length=1, max_length=100)
 
 
+class QuizDraftQuestionReview(QuizQuestionReview):
+    plan_evidence_insufficient: bool = Field(default=False, strict=True)
+
+    @model_validator(mode="after")
+    def check_plan_verdict(self):
+        if self.supported and self.plan_evidence_insufficient:
+            raise ValueError("通过的题目不能同时声明计划证据不足")
+        return self
+
+
+class QuizDraftSemanticReview(Model):
+    items: list[QuizDraftQuestionReview] = Field(min_length=1, max_length=100)
+
+
+class QuizPlanEvidenceReview(Model):
+    supported: bool = Field(strict=True)
+    reason: Text
+    citations: list[Citation] = Field(default_factory=list, max_length=30)
+
+    @model_validator(mode="after")
+    def require_support(self):
+        if self.supported and not self.citations:
+            raise ValueError("确认知识点有证据时必须给出原文引用")
+        return self
+
+
+class QuizPlanPointReplacement(Model):
+    knowledge_point: Text
+    document_ids: list[Text] = Field(min_length=1, max_length=100)
+    allocation_reason: Text
+    citations: list[Citation] = Field(min_length=1, max_length=30)
+
+
 class QuizPaperReview(Model):
     supported: bool = Field(strict=True)
     issues: list[Text] = Field(default_factory=list, max_length=20)
@@ -169,14 +214,56 @@ class QuizPaperReview(Model):
         return self
 
 
+def _covering_quote(content: str, quotes: list[str]) -> str | None:
+    """Join same-chunk quotes when one continuous excerpt of at most 1500 characters covers them."""
+    if len(quotes) < 2 or any(quote not in content for quote in quotes):
+        return None
+    ranges = []
+    for quote in quotes:
+        start = content.find(quote)
+        ranges.append((start, start + len(quote)))
+    start = min(item[0] for item in ranges)
+    end = max(item[1] for item in ranges)
+    span = content[start:end]
+    if len(span) > 1500 or any(quote not in span for quote in quotes):
+        return None
+    return span
+
+
+def _merge_same_chunk_citations(draft, evidence) -> None:
+    lookup = {item.chunk_id: item.content for item in evidence}
+    for question in draft.questions:
+        grouped: dict[str, list] = {}
+        order: list[str] = []
+        for ref in question.citations:
+            grouped.setdefault(ref.chunk_id, [])
+            if not grouped[ref.chunk_id]:
+                order.append(ref.chunk_id)
+            grouped[ref.chunk_id].append(ref)
+        merged = []
+        for chunk_id in order:
+            refs = grouped[chunk_id]
+            content = lookup.get(chunk_id)
+            span = _covering_quote(content, [ref.quote for ref in refs]) if content else None
+            if span is None:
+                merged.extend(refs)
+            else:
+                merged.append(refs[0].model_copy(update={"quote": span}))
+        question.citations = merged
+
+
 def validate_quiz_plan(context: QuizGenerationContext, value: dict) -> list[dict]:
     """Check allocation before spending a model call on the candidate paper."""
     try:
         plan = QuizDraftPlan.model_validate(value)
+        """ 表示尝试把 DeepSeek 返回的字典数据验证并转换成 QuizDraftPlan 类型的对象。 """
     except ValidationError:
         return [{"code": "plan_schema", "message": "出题计划结构无效"}]
+        """ 如果数据格式不符合规定，就可能抛出 ValidationError。 """
     config = context.config
+    """ 就是从 context 对象中取出 config 属性，并赋值给一个局部变量。 """
     expected = Counter({i.question_type: i.question_count for i in config.blueprint})
+
     actual, points, slots = Counter(), Counter(), set()
     issues = []
     for item in plan.allocations:
@@ -184,6 +271,9 @@ def validate_quiz_plan(context: QuizGenerationContext, value: dict) -> list[dict
         points[item.knowledge_point] += item.question_count
         key = (item.knowledge_point, item.question_type)
         if key in slots or item.knowledge_point in config.excluded_topics:
+            """判断：这个知识点和题型的组合是否已经分配过？
+            和 判断：这个知识点是否属于用户明确排除的内容？
+            """
             issues.append({"code": "allocation", "message": "分配重复或包含排除项"})
         slots.add(key)
     if actual != expected:
@@ -191,7 +281,14 @@ def validate_quiz_plan(context: QuizGenerationContext, value: dict) -> list[dict
     if any(count > 6 for count in points.values()):
         issues.append({"code": "knowledge_count", "message": "每个知识点最多 6 题"})
     if config.scope_mode == "knowledge_points" and set(points) != set(config.knowledge_points):
+        """表示用户选择的是“按指定知识点出题”的模式。
+        和 表示实际出题知识点集合与用户指定的知识点集合不相同。
+        """
         issues.append({"code": "knowledge_scope", "message": "计划未覆盖所选知识点"})
+    known = set(config.source_document_ids)
+    """ 这里用集合主要是为了方便判断某个资料 ID 是否存在。 """
+    if any(doc and doc not in known for item in plan.allocations for doc in item.document_ids):
+        issues.append({"code": "source_coverage", "message": "计划包含未选资料"})
     return issues
 
 
@@ -215,6 +312,7 @@ def validate_quiz_draft(context: QuizGenerationContext, plan: dict, payload: dic
     if issues:
         return QuizValidationResult(valid=False, issues=issues)
     plan, draft = parsed
+    _merge_same_chunk_citations(draft, context.evidence)
     config = context.config
     expected = Counter({item.question_type: item.question_count for item in config.blueprint})
     planned = Counter()
@@ -242,6 +340,18 @@ def validate_quiz_draft(context: QuizGenerationContext, plan: dict, payload: dic
         fail("question_count", "draft.questions", "题型或数量与蓝图不一致")
     if Counter((q.knowledge_point, q.question_type) for q in draft.questions) != slots:
         fail("allocation_count", "draft.questions", "题目与知识点分配计划不一致")
+        for index, (question, slot) in enumerate(zip(draft.questions, context.question_slots)):
+            if (question.knowledge_point, question.question_type) != (
+                slot["knowledge_point"],
+                slot["question_type"],
+            ):
+                fail(
+                    "slot_allocation",
+                    f"draft.questions.{index}.knowledge_point",
+                    f"题目 {question.id} 必须保持计划知识点“{slot['knowledge_point']}”及题型"
+                    f" {slot['question_type']}；实际为“{question.knowledge_point}”及题型"
+                    f" {question.question_type}。请按原计划修题，不要自行更换知识点。",
+                )
     if len({q.id for q in draft.questions}) != len(draft.questions):
         fail("duplicate_id", "draft.questions", "题目 ID 重复")
     if [q.order for q in draft.questions] != list(range(1, len(draft.questions) + 1)):
@@ -265,13 +375,17 @@ def validate_quiz_draft(context: QuizGenerationContext, plan: dict, payload: dic
                 or question.correct_option >= len(question.options)
             ):
                 fail("choice_structure", path, "选择题需要不同选项及有效正确选项索引")
-        elif question.options or question.correct_option is not None:
+        elif question.question_type != "multiple_choice" and (
+            question.options or question.correct_option is not None
+        ):
             fail("options", path, "非选择题不能包含选择题选项或答案索引")
         if question.question_type == "true_false" and question.boolean_answer is None:
             fail("boolean_answer", path, "判断题需要布尔答案")
         if question.question_type != "true_false" and question.boolean_answer is not None:
             fail("boolean_answer", path, "非判断题不能包含布尔答案")
-        if question.question_type == "fill_blank" and not question.accepted_answers:
+        if question.question_type == "fill_blank" and not (
+            question.accepted_answers or question.blank_answers
+        ):
             fail("accepted_answers", path, "填空题需要可接受答案")
         if question.question_type != "fill_blank" and question.accepted_answers:
             fail("accepted_answers", path, "非填空题不能包含填空答案列表")
@@ -291,7 +405,7 @@ def validate_quiz_draft(context: QuizGenerationContext, plan: dict, payload: dic
             fail(
                 "duplicate_citation",
                 path,
-                "每题每个chunk_id只能引用一次；请将同一片段的多条引用合并为覆盖事实的一段连续原文",
+                "同一片段被引用了两次，且这些摘录无法合并成该片段中的一段连续原文",
             )
         documents = {item.document_id for item in refs}
         if question.provenance == "ai_supplement":

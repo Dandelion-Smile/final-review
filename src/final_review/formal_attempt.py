@@ -1,10 +1,25 @@
 """Version-bound formal quiz attempts with server-side timing and resumable answers."""
 
+import logging
 from datetime import UTC, datetime, timedelta
+
+from anyio import sleep, to_thread
 
 from .domain import DomainConflict, DomainNotFound, DomainService, _id
 from .quiz_edit import _locked
 from .storage import stable_key
+
+logger = logging.getLogger(__name__)
+
+
+async def run_attempt_deadlines(store):
+    while True:
+        try:
+            await to_thread.run_sync(store.expire_quiz_attempts)
+        except Exception:
+            logger.exception("模拟考试到期交卷失败，将自动重试")
+        await sleep(5)
+
 
 _VISIBLE_QUESTION_FIELDS = (
     "question_revision_id",
@@ -31,7 +46,12 @@ def _questions(domain, course_id, revision_id, payload):
         ):
             raise DomainConflict("试题与试卷版本关系无效")
         combined = {**question, **slot}
-        questions.append({key: combined[key] for key in _VISIBLE_QUESTION_FIELDS})
+        questions.append(
+            {
+                **{key: combined[key] for key in _VISIBLE_QUESTION_FIELDS},
+                "blank_count": len(combined.get("blank_answers", [])),
+            }
+        )
     return sorted(questions, key=lambda item: item["order"])
 
 
@@ -75,14 +95,21 @@ def _public(domain, attempt):
     payload = domain._owned("quiz_revision_payload", revision_id)
     if payload.get("course_id") != attempt["course_id"]:
         raise DomainConflict("作答关联的试卷版本无效")
+    feedback = {}
+    for question_id in attempt.get("partial_grades", {}):
+        question = domain._owned("question_revision", question_id)
+        feedback[question_id] = question["explanation"]
     return {
         "attempt": attempt,
         "quiz": {"title": payload["title"], "total_score": payload["total_score"]},
         "questions": _questions(domain, attempt["course_id"], revision_id, payload),
+        **({"practice_explanations": feedback} if feedback else {}),
     }
 
 
-def start_formal_attempt(store, user_id: str, course_id: str, asset_id: str):
+def start_formal_attempt(
+    store, user_id: str, course_id: str, asset_id: str, mode=None, duration_minutes=None
+):
     """Bind an Attempt to the current confirmed revision, never to a draft."""
     domain = DomainService(store, user_id)
     with store.transaction():
@@ -95,7 +122,7 @@ def start_formal_attempt(store, user_id: str, course_id: str, asset_id: str):
             raise DomainNotFound(asset_id)
         revision_id = asset.get("current_revision_id")
         if asset.get("status") != "confirmed" or not revision_id:
-            raise DomainConflict("只能从已确认的正式试卷开始测试")
+            raise DomainConflict("请从正式试卷开始测试")
         revision = domain._owned("asset_revision", revision_id)
         payload = domain._owned("quiz_revision_payload", revision_id)
         if (
@@ -111,6 +138,12 @@ def start_formal_attempt(store, user_id: str, course_id: str, asset_id: str):
             raise DomainConflict("试卷没有可作答的题目")
         now = _now()
         duration = payload.get("duration_minutes")
+        if mode == "exam":
+            duration = duration_minutes or duration
+            if not duration:
+                raise ValueError("请设置模拟考试时长")
+        elif mode == "practice":
+            duration = None
         attempt = {
             "attempt_id": _id("attempt"),
             "user_id": user_id,
@@ -131,6 +164,8 @@ def start_formal_attempt(store, user_id: str, course_id: str, asset_id: str):
             "created_at": now.isoformat(),
             "updated_at": now.isoformat(),
         }
+        if mode is not None:
+            attempt["mode"] = mode
         store.put("attempt", attempt["attempt_id"], attempt)
         domain._audit(course_id, "quiz.attempt_started", "attempt", attempt["attempt_id"])
         return {
@@ -157,6 +192,26 @@ def _validated_answer(question: dict, answer):
     if kind == "choice":
         if type(answer) is not int or not 0 <= answer < len(question["options"]):
             raise ValueError("选择题答案必须是有效选项索引")
+    elif kind == "multiple_choice":
+        if (
+            not isinstance(answer, list)
+            or any(
+                type(index) is not int or not 0 <= index < len(question["options"])
+                for index in answer
+            )
+            or len(answer) != len(set(answer))
+        ):
+            raise ValueError("多选题答案必须是互不重复的有效选项")
+        return sorted(answer) or None
+    elif kind == "fill_blank" and question.get("blank_answers"):
+        if (
+            not isinstance(answer, list)
+            or len(answer) != len(question["blank_answers"])
+            or any(not isinstance(value, str) or len(value) > 20000 for value in answer)
+        ):
+            raise ValueError("请按题目顺序填写各空答案")
+        values = [value.strip() for value in answer]
+        return values if any(values) else None
     elif kind == "true_false":
         if type(answer) is not bool:
             raise ValueError("判断题答案必须是布尔值")
@@ -190,6 +245,8 @@ def save_formal_answer(
                 raise DomainConflict("作答已在其他位置更新，请重新加载")
             if question_revision_id not in attempt["question_revision_ids"]:
                 raise DomainNotFound(question_revision_id)
+            if question_revision_id in attempt.get("submitted_questions", {}):
+                raise DomainConflict("本题已提交，不能修改答案")
             question = domain._owned("question_revision", question_revision_id)
             if question.get("quiz_revision_id") != attempt["quiz_revision_id"]:
                 raise DomainConflict("试题不属于本次作答的试卷版本")
@@ -237,13 +294,46 @@ def submit_formal_attempt(store, user_id: str, course_id: str, attempt_id: str):
         return _public(domain, attempt)
 
 
+def lock_practice_answer(store, user_id, course_id, attempt_id, question_id, expected_version):
+    with store.transaction():
+        domain, attempt = _owned_attempt(store, user_id, course_id, attempt_id, lock=True)
+        if attempt.get("mode") != "practice":
+            raise DomainConflict("只有日常练习可以逐题提交")
+        if question_id not in attempt["question_revision_ids"]:
+            raise DomainNotFound(question_id)
+        locked = attempt.setdefault("submitted_questions", {})
+        if question_id in locked:
+            return _public(domain, attempt)
+        if attempt["status"] != "in_progress" or attempt["version"] != expected_version:
+            raise DomainConflict("作答状态已变化，请刷新后再提交")
+        if question_id not in attempt["answers"]:
+            raise ValueError("请先填写本题答案")
+        now = _now()
+        locked[question_id] = now.isoformat()
+        if len(locked) == len(attempt["question_revision_ids"]):
+            _finish(attempt, now, "practice_complete")
+        else:
+            attempt.update(version=attempt["version"] + 1, updated_at=now.isoformat())
+        store.put("attempt", attempt_id, attempt)
+        return _public(domain, attempt)
+
+
 def list_formal_attempts(store, user_id: str, course_id: str):
     domain = DomainService(store, user_id)
     domain.course(course_id)
-    return {
-        "items": sorted(
-            [
-                {
+    items = []
+    for attempt in store.scan("attempt", {"course_id": course_id}):
+        if attempt.get("user_id") != user_id or not attempt.get("quiz_revision_id"):
+            continue
+        if attempt["status"] == "in_progress" and _expired(attempt, _now()):
+            attempt = read_formal_attempt(store, user_id, course_id, attempt["attempt_id"])[
+                "attempt"
+            ]
+        payload = domain._owned("quiz_revision_payload", attempt["quiz_revision_id"])
+        snapshot = attempt.get("grading_snapshot")
+        items.append(
+            {
+                **{
                     key: attempt.get(key)
                     for key in (
                         "attempt_id",
@@ -253,13 +343,19 @@ def list_formal_attempts(store, user_id: str, course_id: str):
                         "started_at",
                         "submitted_at",
                         "elapsed_seconds",
-                        "total_score",
+                        "deadline_at",
+                        "duration_minutes",
+                        "mode",
                     )
-                }
-                for attempt in store.scan("attempt", {"course_id": course_id})
-                if attempt.get("user_id") == user_id and attempt.get("quiz_revision_id")
-            ],
-            key=lambda item: item["started_at"],
-            reverse=True,
+                },
+                "title": payload["title"],
+                "question_count": len(attempt.get("question_revision_ids", [])),
+                "answered_count": len(attempt.get("answers", {})),
+                "grading_status": "completed"
+                if snapshot
+                else ("pending" if attempt["status"] == "submitted" else None),
+                "total_score": snapshot["total_score"] if snapshot else None,
+                "max_score": payload["total_score"],
+            }
         )
-    }
+    return {"items": sorted(items, key=lambda item: item["started_at"], reverse=True)}

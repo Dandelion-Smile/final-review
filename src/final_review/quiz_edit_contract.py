@@ -4,11 +4,12 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator, model_validator
 
-from .schemas import Citation, Evidence, Identifier, Model, QuestionType, Text
+from .quiz_answers import OBJECTIVE_TYPES, validate_extended_key
+from .schemas import Citation, Evidence, FormalQuestionType, Identifier, Model, Text
 
 Provenance = Literal["source", "synthesis", "ai_supplement"]
 _OPTION_PREFIX = re.compile(r"^[A-H][.．、:：]\s*", re.IGNORECASE)
@@ -16,8 +17,10 @@ _SEMANTIC_FIELDS = (
     "stem",
     "options",
     "correct_option",
+    "correct_options",
     "boolean_answer",
     "accepted_answers",
+    "blank_answers",
     "reference_answer",
     "explanation",
     "provenance",
@@ -34,14 +37,18 @@ class QuizQuestionEdit(Model):
     """One existing question; IDs and question types are checked against the base revision."""
 
     question_revision_id: Identifier
-    question_type: QuestionType
+    question_type: FormalQuestionType
     order: int = Field(ge=1, le=100, strict=True)
     score: float = Field(gt=0, le=10000, allow_inf_nan=False)
     stem: Text
     options: list[Text] = Field(default_factory=list, max_length=8)
     correct_option: int | None = Field(default=None, ge=0, le=7, strict=True)
+    correct_options: list[Annotated[int, Field(ge=0, le=7, strict=True)]] = Field(
+        default_factory=list, max_length=8
+    )
     boolean_answer: bool | None = Field(default=None, strict=True)
     accepted_answers: list[Text] = Field(default_factory=list, max_length=30)
+    blank_answers: list[list[Text]] = Field(default_factory=list, max_length=30)
     # Objective answer text is derived from the structured answer, never accepted separately.
     reference_answer: Text | None = None
     explanation: Text
@@ -57,15 +64,18 @@ class QuizQuestionEdit(Model):
 
     @model_validator(mode="after")
     def check_structure(self):
+        validate_extended_key(self.model_dump())
         kind = self.question_type
-        if kind == "choice":
+        if kind in {"choice", "multiple_choice"}:
             options = [_option_text(value) for value in self.options]
             if (
                 len(options) < 2
                 or any(not value for value in options)
                 or len({value.casefold() for value in options}) != len(options)
-                or self.correct_option is None
-                or self.correct_option >= len(options)
+                or (
+                    kind == "choice"
+                    and (self.correct_option is None or self.correct_option >= len(options))
+                )
             ):
                 raise ValueError("选择题需要不同的非空选项及有效正确选项")
             if self.boolean_answer is not None or self.accepted_answers:
@@ -77,7 +87,9 @@ class QuizQuestionEdit(Model):
                 raise ValueError("判断题不能包含其他题型的选项或答案")
         elif kind == "fill_blank":
             answers = [value.strip() for value in self.accepted_answers]
-            if not answers or len({value.casefold() for value in answers}) != len(answers):
+            if (not answers and not self.blank_answers) or len(
+                {value.casefold() for value in answers}
+            ) != len(answers):
                 raise ValueError("填空题需要不重复的可接受答案")
             if self.options or self.correct_option is not None or self.boolean_answer is not None:
                 raise ValueError("填空题不能包含其他题型的选项或答案")
@@ -89,7 +101,7 @@ class QuizQuestionEdit(Model):
         ):
             raise ValueError("主观题不能包含客观题选项或答案")
 
-        if kind in {"choice", "true_false", "fill_blank"}:
+        if kind in OBJECTIVE_TYPES:
             if self.reference_answer is not None:
                 raise ValueError("客观题显示答案由结构化答案生成，不能单独提交")
         elif self.reference_answer is None:
@@ -126,6 +138,16 @@ def _display_answer(question: QuizQuestionEdit) -> str:
         return f"{chr(65 + index)}. {_option_text(question.options[index])}"
     if question.question_type == "true_false":
         return "正确" if question.boolean_answer else "错误"
+    if question.question_type == "multiple_choice":
+        return "；".join(
+            f"{chr(65 + index)}. {_option_text(question.options[index])}"
+            for index in sorted(question.correct_options)
+        )
+    if question.blank_answers:
+        return "；".join(
+            f"第 {index} 空：{' / '.join(answers)}"
+            for index, answers in enumerate(question.blank_answers, 1)
+        )
     return "；".join(question.accepted_answers)
 
 
@@ -154,17 +176,20 @@ def validate_quiz_edit(
         if question.question_type != original["question_type"]:
             raise ValueError("不能通过编辑改变题型")
         value = question.model_dump(mode="json")
-        if question.question_type in {"choice", "true_false", "fill_blank"}:
-            answer_fields = ("options", "correct_option", "boolean_answer", "accepted_answers")
+        list_fields = {"options", "accepted_answers", "correct_options", "blank_answers"}
+        if question.question_type in OBJECTIVE_TYPES:
+            answer_fields = (*list_fields, "correct_option", "boolean_answer")
             answer_changed = any(
-                value[field]
-                != original.get(field, [] if field in {"options", "accepted_answers"} else None)
+                value[field] != original.get(field, [] if field in list_fields else None)
                 for field in answer_fields
             )
             value["reference_answer"] = (
                 _display_answer(question) if answer_changed else original["reference_answer"]
             )
-        if any(value[field] != original.get(field) for field in _SEMANTIC_FIELDS):
+        if any(
+            value[field] != original.get(field, [] if field in list_fields else None)
+            for field in _SEMANTIC_FIELDS
+        ):
             changed.append(question.question_revision_id)
         normalized.append(value)
 

@@ -25,6 +25,10 @@
 .mistake-empty { text-align: center; padding: 50px 20px; background: #f7faf9; border-radius: 12px; color: #607585; }
 .mistake-error { color: #a12828; background: #fff2f0; padding: 10px; border-radius: 7px; }
 .mistake-practice { display: grid; gap: 12px; }
+.mistakes-page > .mistake-practice { margin-top: 20px; padding: 20px; border: 1px solid #dce6e7; border-radius: 12px; background: white; }
+.mistakes-page > header > a { display: inline-block; margin-bottom: 16px; color: #245777; }
+.mistake-actions > a { align-self: center; color: #245777; }
+.mistake-practice input:not([type="radio"]):not([type="checkbox"]) { min-width: 0; width: 100%; padding: 6px; border: 1px solid #bdcdd2; border-radius: 6px; }
 .mistake-practice > p { margin: 0; overflow-wrap: anywhere; color: #607585; }
 .mistake-practice label { display: flex; gap: 8px; align-items: flex-start; padding: 8px; border: 1px solid #e0e7e8; border-radius: 6px; }
 .mistake-practice textarea { width: 100%; border: 1px solid #bdcdd2; border-radius: 7px; padding: 9px; font: inherit; resize: vertical; }

@@ -12,6 +12,7 @@ from openai import APIStatusError, OpenAI
 from pydantic import AliasChoices, BaseModel, Field
 
 from .config import Settings
+from .observe import count, observation, record_usage
 
 PIPELINE_VERSION = "visual-slides-v1"
 PROMPT_REVISION = "9-navigation-contract"
@@ -237,10 +238,17 @@ def reviewed_record(reading: SlideReading, review: SlideReview, sources: list[di
 
 
 def material_quality(pages: list[dict]) -> str:
+    if pages and all(page["quality"] == "verified" for page in pages):
+        return "verified"
+    if pages and all(page["quality"] == "native_checked" for page in pages):
+        return "native_checked"
+    if pages and all(page["quality"] in {"verified", "native_checked"} for page in pages):
+        return "checked"
     if all(page["quality"] == "verified" for page in pages):
         return "verified"
     if any(
-        page["kind"] == "knowledge" and page["quality"] in {"verified", "partial"} for page in pages
+        page["kind"] == "knowledge" and page["quality"] in {"verified", "partial", "native_checked"}
+        for page in pages
     ):
         return "partial"
     return "review_needed"
@@ -248,6 +256,7 @@ def material_quality(pages: list[dict]) -> str:
 
 class SlideInterpreter:
     def __init__(self, settings: Settings):
+        self.limit_settings = settings
         model = next(
             (
                 item
@@ -272,6 +281,23 @@ class SlideInterpreter:
         )
 
     def _completion(self, prompt: str, image: bytes, text: str):
+        from .pipeline_runtime import resource_slot
+
+        with resource_slot("vision", self.limit_settings):
+            purpose = "understand" if prompt == READ_PROMPT else "verify"
+            with observation(
+                f"vision.{purpose}",
+                {"prompt_revision": PROMPT_REVISION},
+                as_type="generation",
+                model=self.model,
+            ) as span:
+                count("vision_requests")
+                response = self._complete_unlimited(prompt, image, text)
+                record_usage(span, getattr(response, "usage", None))
+                span.update(output={"finish_reason": response.choices[0].finish_reason})
+                return response
+
+    def _complete_unlimited(self, prompt: str, image: bytes, text: str):
         response = self.client.chat.completions.create(
             model=self.model,
             temperature=0,
@@ -315,16 +341,21 @@ class SlideInterpreter:
             raise ValueError("资料理解输出被截断")
         return _json_reply(response.choices[0].message.content or "")
 
-    def read(self, image: Path, native: str, extracted: str, cache: Path) -> dict:
+    def read(self, image: Path, native: str, extracted: str, cache: Path, *, use_ocr=True) -> dict:
         image_bytes = image.read_bytes()
-        signature = sha256(image_bytes + (native + extracted + self.identity).encode()).hexdigest()
+        signature = sha256(
+            image_bytes + (native + extracted + self.identity + str(use_ocr)).encode()
+        ).hexdigest()
         cache.mkdir(parents=True, exist_ok=True)
         record_path = cache / f"{signature}.json"
         if record_path.is_file():
             record = json.loads(record_path.read_text(encoding="utf-8"))
             if record.get("quality") == "verified":
+                count("vision_cache_hits")
                 return record
-        sources = source_evidence(native, extracted, image_evidence(image, image_bytes))
+        sources = source_evidence(
+            native, extracted, image_evidence(image, image_bytes) if use_ocr else ""
+        )
         source = json.dumps({"sources": sources}, ensure_ascii=False)
         feedback = ""
         record = None

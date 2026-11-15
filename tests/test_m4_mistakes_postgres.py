@@ -43,10 +43,6 @@ def test_mistake_survives_new_revision_and_keeps_attempt_grade_immutable(databas
     try:
         card = generated(store, config)
         first_id = card["revision_id"]
-        token = quiz_confirm_preview(store, str(USER), "course-1", card["asset_id"], first_id)
-        confirm_quiz_revision(
-            store, str(USER), "course-1", card["asset_id"], first_id, token["confirmation_id"]
-        )
         started = start_formal_attempt(store, str(USER), "course-1", card["asset_id"])
         attempt_id = started["attempt"]["attempt_id"]
         question_id = started["questions"][0]["question_revision_id"]

@@ -1,7 +1,8 @@
-"""Formal paper generation: bounded model calls and atomic draft publication."""
+"""Formal paper generation: bounded model calls and atomic publication."""
 
 import json
 import re
+from copy import deepcopy
 from datetime import UTC, datetime
 from decimal import ROUND_DOWN, Decimal
 from hashlib import sha256
@@ -12,12 +13,15 @@ from .course_chat import CourseMaterials
 from .domain import DomainConflict, DomainNotFound, DomainService
 from .quiz_contract import (
     QuizDraftPlan,
+    QuizDraftSemanticReview,
     QuizPaperReview,
-    QuizSemanticReview,
+    QuizPlanEvidenceReview,
+    QuizPlanPointReplacement,
     build_quiz_context,
     validate_quiz_draft,
     validate_quiz_plan,
 )
+from .quiz_print import build_quiz_sections
 from .storage import stable_key
 
 
@@ -52,15 +56,51 @@ def quiz_context(store, config):
     ), coverage
 
 
-def _batch_context(context, slots, previous):
-    """A batch has its own quota; all citations still bind to the original snapshots."""
+def _plan_from_slots(slots):
     allocations = {}
-    for slot in slots:
+    for slot in sorted(slots, key=lambda item: item["order"]):
         key = (slot["knowledge_point"], slot["question_type"])
         if key not in allocations:
-            allocations[key] = {**slot["allocation"], "question_count": 0}
+            allocations[key] = {
+                **slot["allocation"],
+                "knowledge_point": slot["knowledge_point"],
+                "question_type": slot["question_type"],
+                "question_count": 0,
+                "document_ids": [],
+            }
         allocations[key]["question_count"] += 1
-    plan = {"allocations": list(allocations.values())}
+        allocations[key]["document_ids"] = sorted(
+            set(allocations[key]["document_ids"]) | set(slot["allocation"].get("document_ids", []))
+        )
+    return {"allocations": list(allocations.values())}
+
+
+def _rank_quiz_evidence(context, slots):
+    terms = set()
+    documents = {doc for slot in slots for doc in slot["allocation"].get("document_ids", [])}
+    for slot in slots:
+        for term in re.findall(
+            r"[A-Za-z][A-Za-z0-9_]+|[\u4e00-\u9fff]{2,}", slot["knowledge_point"]
+        ):
+            terms.add(term.casefold())
+            if not term.isascii():
+                terms.update(term[i : i + 2] for i in range(len(term) - 1))
+    return [
+        item
+        for _, item in sorted(
+            enumerate(context.evidence),
+            key=lambda pair: (
+                -sum(t in pair[1].content.casefold() for t in terms),
+                pair[1].document_id not in documents,
+                pair[0],
+            ),
+        )
+    ]
+
+
+def _batch_context(context, slots, previous, evidence_chunk_ids=()):
+    """A batch has its own quota; all citations still bind to the original snapshots."""
+    plan = _plan_from_slots(slots)
     counts = {}
     for slot in slots:
         kind = slot["question_type"]
@@ -74,23 +114,19 @@ def _batch_context(context, slots, previous):
         if config["scope_mode"] == "knowledge_points"
         else [],
     )
-    # Rank whole, unmodified chunks; retain source diversity when no keyword matches.
-    points = {s["knowledge_point"] for s in slots}
-    terms = set()
-    for point in points:
-        for term in re.findall(r"[A-Za-z][A-Za-z0-9_]+|[\u4e00-\u9fff]{2,}", point):
-            terms.add(term.casefold())
-            if not term.isascii():
-                terms.update(term[i : i + 2] for i in range(len(term) - 1))
-    ranked = sorted(
-        enumerate(context.evidence),
-        key=lambda pair: (-sum(t in pair[1].content.casefold() for t in terms), pair[0]),
-    )
-    selected = [item for _, item in ranked[:24]]
+    # Reserve evidence per slot before filling the shared batch budget.
+    selected = {e.chunk_id: e for e in context.evidence if e.chunk_id in evidence_chunk_ids}
+    for slot in slots:
+        for item in _rank_quiz_evidence(context, [slot])[:3]:
+            selected.setdefault(item.chunk_id, item)
+    for item in _rank_quiz_evidence(context, slots):
+        if len(selected) >= 24:
+            break
+        selected.setdefault(item.chunk_id, item)
     return context.model_copy(
         update={
             "config": type(context.config).model_validate(config),
-            "evidence": selected,
+            "evidence": list(selected.values()),
             "question_slots": [{k: v for k, v in s.items() if k != "allocation"} for s in slots],
             "previous_questions": [
                 {k: q[k] for k in ("id", "knowledge_point", "stem", "reference_answer")}
@@ -100,12 +136,221 @@ def _batch_context(context, slots, previous):
     ), plan
 
 
+def _new_batch_state(attempts=0):
+    return {
+        "attempts": attempts,
+        "candidate": None,
+        "evaluated": False,
+        "audit": [],
+        "evidence_chunk_ids": [],
+        "plan_evidence_checks": {},
+    }
+
+
+def _batch_state_key(slots):
+    return paper_hash(
+        [
+            {k: slot[k] for k in ("id", "knowledge_point", "question_type", "score")}
+            for slot in slots
+        ]
+    )
+
+
+def _check_plan_citations(context, citations):
+    lookup = {item.chunk_id: item for item in context.evidence}
+    if any(
+        ref.chunk_id not in lookup or ref.quote not in lookup[ref.chunk_id].content
+        for ref in citations
+    ):
+        raise QuizGenerationError("计划证据复核返回了无效的原文引用")
+    return {lookup[ref.chunk_id].document_id for ref in citations}
+
+
+def _recheck_plan_evidence(model, context, slot):
+    try:
+        review = QuizPlanEvidenceReview.model_validate(
+            model.review_quiz_plan_evidence(context, slot)
+        )
+    except ValidationError:
+        raise QuizGenerationError("计划证据复核结果结构无效，请重试") from None
+    _check_plan_citations(context, review.citations)
+    return review.model_dump(mode="json")
+
+
+def _replace_plan_points(
+    model,
+    context,
+    plan_context,
+    state,
+    record,
+    slots,
+    previous,
+    max_plan_changes,
+    save_checkpoint,
+):
+    """Only this path may change a pending slot's planned knowledge point."""
+    targets = set(record["unsupported_slot_ids"])
+    for slot in slots:
+        if slot["id"] not in targets:
+            continue
+        point = slot["knowledge_point"]
+        evidence = _rank_quiz_evidence(context, [slot])[:48]
+        check_context = context.model_copy(update={"evidence": evidence})
+        state["read_chunk_ids"] = sorted(
+            set(state["read_chunk_ids"]) | {e.chunk_id for e in evidence}
+        )
+        checks = record["plan_evidence_checks"]
+        if point not in checks:
+            checks[point] = _recheck_plan_evidence(model, check_context, slot)
+            state["audit"].append(
+                {
+                    "phase": "plan_evidence",
+                    "question_id": slot["id"],
+                    "knowledge_point": point,
+                    "review": checks[point],
+                }
+            )
+            save_checkpoint(state)
+        if checks[point]["supported"]:
+            record["evidence_chunk_ids"] = sorted(
+                set(record["evidence_chunk_ids"]) | {e.chunk_id for e in evidence}
+            )
+            continue
+        # Explicit student choices and emphasis are not replaceable model suggestions.
+        protected = context.config.scope_mode == "knowledge_points" or any(
+            focus.casefold() in point.casefold() or point.casefold() in focus.casefold()
+            for focus in context.config.emphasis
+        )
+        if protected:
+            raise QuizGenerationError(
+                f"指定知识点或重点“{point}”缺少可用证据，请调整资料或配置",
+                [
+                    {
+                        "code": "plan_evidence",
+                        "question_id": slot["id"],
+                        "message": checks[point]["reason"],
+                    }
+                ],
+            )
+        replacement_evidence = {e.chunk_id: e for e in plan_context.evidence + evidence}
+        replacement_context = context.model_copy(
+            update={"evidence": list(replacement_evidence.values())}
+        )
+        state["read_chunk_ids"] = sorted(set(state["read_chunk_ids"]) | set(replacement_evidence))
+        while state["plan_changes_used"] < max_plan_changes:
+            change_issues = [checks[point]["reason"]]
+            change_issues.extend(
+                message
+                for prior in state["audit"]
+                if prior.get("phase") == "plan_change"
+                and prior.get("old_knowledge_point") == point
+                and prior.get("status") == "rejected"
+                for message in prior.get("issues", [])
+            )
+            state["plan_changes_used"] += 1
+            entry = {
+                "phase": "plan_change",
+                "attempt": state["plan_changes_used"],
+                "question_ids": [s["id"] for s in slots if s["knowledge_point"] == point],
+                "old_knowledge_point": point,
+                "status": "started",
+            }
+            state["audit"].append(entry)
+            save_checkpoint(state)
+            try:
+                change = QuizPlanPointReplacement.model_validate(
+                    model.replace_quiz_plan_points(
+                        replacement_context,
+                        slot,
+                        state["plan"],
+                        change_issues,
+                        previous,
+                    )
+                )
+                if "".join(change.knowledge_point.split()).casefold() == (
+                    "".join(point.split()).casefold()
+                ):
+                    raise QuizGenerationError("更换后的知识点必须区别于原知识点")
+                documents = _check_plan_citations(replacement_context, change.citations)
+                if documents != set(change.document_ids):
+                    raise QuizGenerationError("新知识点的来源文件必须与实际证据引用一致")
+                pending = deepcopy(state["pending"])
+                for target in pending[0]:
+                    if target["knowledge_point"] == point:
+                        target["knowledge_point"] = change.knowledge_point
+                        target["allocation"] = {
+                            **target["allocation"],
+                            "knowledge_point": change.knowledge_point,
+                            "document_ids": sorted(documents),
+                            "allocation_reason": change.allocation_reason,
+                        }
+                all_slots = [s for b in state["completed"] for s in b["slots"]]
+                all_slots += [s for batch in pending for s in batch]
+                plan = _plan_from_slots(all_slots)
+                issues = validate_quiz_plan(context, plan)
+                if issues:
+                    raise QuizGenerationError("新知识点不符合整卷计划约束", issues)
+                new_slot = next(s for s in pending[0] if s["id"] == slot["id"])
+                cited_ids = {ref.chunk_id for ref in change.citations}
+                support_context = replacement_context.model_copy(
+                    update={
+                        "evidence": [
+                            e for e in replacement_context.evidence if e.chunk_id in cited_ids
+                        ],
+                    }
+                )
+                support = _recheck_plan_evidence(model, support_context, new_slot)
+                if not support["supported"]:
+                    raise QuizGenerationError(support["reason"])
+            except (ValidationError, QuizGenerationError) as exc:
+                entry.update(status="rejected", issues=[str(exc)])
+                save_checkpoint(state)
+                continue
+            entry.update(
+                status="accepted",
+                new_knowledge_point=change.knowledge_point,
+                replacement=change.model_dump(mode="json"),
+                evidence_review=support,
+            )
+            state.update(plan=plan, pending=pending)
+            new_record = _new_batch_state()
+            new_record["evidence_chunk_ids"] = sorted(
+                set(record["evidence_chunk_ids"])
+                | cited_ids
+                | {ref["chunk_id"] for ref in support["citations"]}
+            )
+            new_record["plan_evidence_checks"] = {
+                name: verdict
+                for name, verdict in record["plan_evidence_checks"].items()
+                if name != point
+            }
+            new_record["plan_evidence_checks"][change.knowledge_point] = support
+            state["batch_generation_state"][_batch_state_key(pending[0])] = new_record
+            save_checkpoint(state)
+            return
+        raise QuizGenerationError(
+            "知识点更换次数已用完，请调整资料或重新配置试卷",
+            [
+                {
+                    "code": "plan_change_limit",
+                    "question_id": slot["id"],
+                    "message": checks[point]["reason"],
+                }
+            ],
+            {"audit": state["audit"]},
+        )
+    record["needs_plan_recheck"] = False
+    save_checkpoint(state)
+
+
 def generate_quiz(
     store,
     model,
     config,
     *,
     max_repairs=2,
+    max_plan_changes=3,
+    max_question_retries=3,
     progress=lambda *_: None,
     checkpoint=None,
     save_checkpoint=lambda *_: None,
@@ -125,7 +370,9 @@ def generate_quiz(
     context = build_quiz_context(store, config, [e.model_dump(mode="json") for e in pool])
     fingerprint = paper_hash(context.model_dump(mode="json"))
     state = json.loads(json.dumps(checkpoint)) if checkpoint else None
-    if state and (state.get("version") != 1 or state.get("context_hash") != fingerprint):
+    if state and state.get("version") != 2:
+        raise QuizGenerationError("旧版生成检查点不兼容新的重试规则，请重新创建试卷任务")
+    if state and state.get("context_hash") != fingerprint:
         raise QuizGenerationError("资料或生成合同已变更，请重新配置试卷")
     if not state:
         progress("planning")
@@ -137,9 +384,9 @@ def generate_quiz(
             if not issues:
                 break
         else:
-            raise QuizGenerationError(
-                "出题计划未满足配置，修复次数已用完", issues, {"audit": audit, "plan": plan}
-            )
+            coverage = [item for item in issues if item.get("code") == "source_coverage"]
+            message = coverage[-1]["message"] if coverage else "出题计划未满足配置，修复次数已用完"
+            raise QuizGenerationError(message, issues, {"audit": audit, "plan": plan})
         count = config.question_count
         total = Decimal(str(config.total_score if config.total_score is not None else count * 10))
         # Six decimal places also support unusually small positive totals without zero scores.
@@ -173,7 +420,8 @@ def generate_quiz(
         for slot in slots:
             limit = (
                 choice_batch_size
-                if slot["question_type"] in {"choice", "true_false", "fill_blank"}
+                if slot["question_type"]
+                in {"choice", "multiple_choice", "true_false", "fill_blank"}
                 else written_batch_size
             )
             if (
@@ -184,21 +432,30 @@ def generate_quiz(
                 pending.append([])
             pending[-1].append(slot)
         state = {
-            "version": 1,
+            "version": 2,
             "context_hash": fingerprint,
             "plan": plan,
             "pending": pending,
             "completed": [],
             "audit": audit,
             "title": None,
-            "batch_repairs": max_repairs - repair,
+            "plan_changes_used": 0,
+            "batch_generation_state": {},
+            "limits": {"plan_changes": max_plan_changes, "question_retries": max_question_retries},
             "read_chunk_ids": [e.chunk_id for e in plan_context.evidence],
         }
         save_checkpoint(state)
+    max_plan_changes = min(max_plan_changes, state["limits"]["plan_changes"])
+    max_question_retries = min(max_question_retries, state["limits"]["question_retries"])
     previous = [q for batch in state["completed"] for q in batch["questions"]]
     while state["pending"]:
         slots = state["pending"][0]
-        batch_context, batch_plan = _batch_context(context, slots, previous)
+        record = state["batch_generation_state"].setdefault(
+            _batch_state_key(slots), _new_batch_state()
+        )
+        batch_context, batch_plan = _batch_context(
+            context, slots, previous, record["evidence_chunk_ids"]
+        )
         batch_context = batch_context.model_copy(
             update={"repair_notes": state.get("paper_issues", [])}
         )
@@ -213,8 +470,10 @@ def generate_quiz(
                 batch_plan,
                 slots,
                 previous,
-                state["batch_repairs"],
+                max_question_retries,
                 progress,
+                batch_state=record,
+                save_attempt=lambda: save_checkpoint(state),
             )
         except ModelOutputLimitError as exc:
             if len(slots) == 1:
@@ -225,6 +484,10 @@ def generate_quiz(
                 ) from None
             middle = len(slots) // 2
             state["pending"][:1] = [slots[:middle], slots[middle:]]
+            for child in state["pending"][:2]:
+                state["batch_generation_state"].setdefault(
+                    _batch_state_key(child), _new_batch_state(record["attempts"])
+                )
             state["audit"].append(
                 {
                     "phase": "split",
@@ -233,6 +496,20 @@ def generate_quiz(
                 }
             )
             save_checkpoint(state)
+            continue
+        if generated.get("needs_plan_recheck"):
+            progress("planning")
+            _replace_plan_points(
+                model,
+                context,
+                plan_context,
+                state,
+                record,
+                slots,
+                previous,
+                max_plan_changes,
+                save_checkpoint,
+            )
             continue
         questions = generated["draft"]["questions"]
         ids = {q["id"]: slot["id"] for q, slot in zip(questions, slots, strict=True)}
@@ -285,6 +562,13 @@ def generate_quiz(
             state["pending"] = sorted([b["slots"] for b in invalid], key=lambda b: b[0]["order"])
             state["paper_issues"] = review.issues
             state["paper_repairs"] = state.get("paper_repairs", 0) + 1
+            for batch in invalid:
+                record = state["batch_generation_state"][_batch_state_key(batch["slots"])]
+                record.update(
+                    passed=False,
+                    evaluated=True,
+                    issues=[{"code": "paper_semantic", "message": i} for i in review.issues],
+                )
             save_checkpoint(state)
             if state["paper_repairs"] > max_repairs:
                 raise QuizGenerationError(
@@ -296,6 +580,8 @@ def generate_quiz(
                 model,
                 config,
                 max_repairs=max_repairs,
+                max_plan_changes=max_plan_changes,
+                max_question_retries=max_question_retries,
                 progress=progress,
                 checkpoint=state,
                 save_checkpoint=save_checkpoint,
@@ -326,13 +612,51 @@ def generate_quiz(
     }
 
 
-def _generate_batch(model, context, coverage, plan, slots, previous, max_repairs, progress):
-    audit = []
-    repair = 0
-    remaining_repairs = max_repairs
-    progress("generating")
-    candidate = model.quiz_draft(context, QuizDraftPlan.model_validate(plan))
-    for repair in range(remaining_repairs + 1):
+def _generate_batch(
+    model,
+    context,
+    coverage,
+    plan,
+    slots,
+    previous,
+    max_retries,
+    progress,
+    *,
+    batch_state=None,
+    save_attempt=lambda: None,
+):
+    record = batch_state if batch_state is not None else _new_batch_state()
+    audit = record["audit"]
+    while True:
+        if record.get("passed"):
+            return {
+                "context": context,
+                "plan": plan,
+                "draft": record["validated_draft"],
+                "coverage": coverage,
+                "audit": audit,
+            }
+        if record.get("needs_plan_recheck"):
+            return {"needs_plan_recheck": True}
+        if record["candidate"] is None or record["evaluated"]:
+            if record["attempts"] >= max_retries + 1:
+                raise QuizGenerationError(
+                    "试卷未通过校验或语义复核，生题重试次数已用完",
+                    record.get("issues", []),
+                    {"audit": audit, "candidate": record["candidate"], "plan": plan},
+                )
+            old_candidate = record["candidate"]
+            record.update(attempts=record["attempts"] + 1, candidate=None, evaluated=False)
+            # Persist before the model call so recovery cannot grant another free attempt.
+            save_attempt()
+            progress("repairing" if old_candidate is not None else "generating")
+            record["candidate"] = (
+                model.repair_quiz_draft(context, plan, old_candidate, record.get("issues", []))
+                if old_candidate is not None
+                else model.quiz_draft(context, QuizDraftPlan.model_validate(plan))
+            )
+            save_attempt()
+        candidate = record["candidate"]
         progress("validating")
         validation = validate_quiz_draft(context, plan, candidate)
         issues = [i.model_dump(mode="json") for i in validation.issues]
@@ -346,7 +670,13 @@ def _generate_batch(model, context, coverage, plan, slots, previous, max_repairs
                     slots[index]["question_type"],
                 ):
                     issues.append(
-                        {"code": "slot_allocation", "message": "题目顺序必须符合槽位分配"}
+                        {
+                            "code": "slot_allocation",
+                            "question_id": question["id"],
+                            "message": f"必须保持槽位知识点“{slots[index]['knowledge_point']}”"
+                            f"和题型 {slots[index]['question_type']}；实际为"
+                            f"“{question['knowledge_point']}”和题型 {question['question_type']}。",
+                        }
                     )
             stems = {"".join(q["stem"].split()) for q in previous}
             if any("".join(q["stem"].split()) in stems for q in candidate["questions"]):
@@ -354,7 +684,7 @@ def _generate_batch(model, context, coverage, plan, slots, previous, max_repairs
         if validation.valid and not issues:
             progress("reviewing")
             try:
-                review = QuizSemanticReview.model_validate(
+                review = QuizDraftSemanticReview.model_validate(
                     model.review_quiz_draft(context, validation.validated_draft)
                 ).model_dump(mode="json")
                 expected = {q["id"] for q in candidate["questions"]}
@@ -363,29 +693,44 @@ def _generate_batch(model, context, coverage, plan, slots, previous, max_repairs
                     issues = [{"code": "review_coverage", "message": "复核遗漏或重复题目"}]
                 else:
                     issues = [
-                        {"code": "semantic", "question_id": i["question_id"], "message": message}
+                        {
+                            "code": "plan_evidence"
+                            if i["plan_evidence_insufficient"]
+                            else "semantic",
+                            "question_id": i["question_id"],
+                            "message": message,
+                        }
                         for i in review["items"]
                         for message in i["issues"]
                     ]
             except ValidationError:
                 issues = [{"code": "review_schema", "message": "语义复核结果结构无效"}]
-        audit.append({"phase": "draft", "repair": repair, "issues": issues, "review": review})
-        if not issues:
-            return {
-                "context": context,
-                "plan": plan,
-                "draft": validation.validated_draft,
-                "coverage": coverage,
-                "audit": audit,
+        audit.append(
+            {
+                "phase": "draft",
+                "repair": record["attempts"] - 1,
+                "issues": issues,
+                "review": review,
             }
-        if repair < remaining_repairs:
-            progress("repairing")
-            candidate = model.repair_quiz_draft(context, plan, candidate, issues)
-    raise QuizGenerationError(
-        "试卷未通过校验或语义复核，修复次数已用完",
-        issues,
-        {"audit": audit, "candidate": candidate, "plan": plan},
-    )
+        )
+        record.update(evaluated=True, issues=issues)
+        if not issues:
+            record.update(passed=True, validated_draft=validation.validated_draft)
+        elif review and not any(issue["code"] == "review_coverage" for issue in issues):
+            unsupported = {
+                item["question_id"]
+                for item in review["items"]
+                if item["plan_evidence_insufficient"]
+            }
+            # Model IDs are local to the batch; checkpoint targets use global slot IDs.
+            record["unsupported_slot_ids"] = [
+                slot["id"]
+                for question, slot in zip(candidate["questions"], slots, strict=True)
+                if question["id"] in unsupported
+                and slot["knowledge_point"] not in record["plan_evidence_checks"]
+            ]
+            record["needs_plan_recheck"] = bool(record["unsupported_slot_ids"])
+        save_attempt()
 
 
 def publish_quiz(store, generated, run_id, model_id):
@@ -504,8 +849,41 @@ def publish_quiz(store, generated, run_id, model_id):
             # The parent payload must exist before the question FK is inserted.
             store.put("quiz_revision_payload", revision_id, payload)
             store.put("question_revision", question_revision_id, question)
-        domain._audit(config.course_id, "quiz.draft_generated", "learning_asset", asset_id)
+        publish_quiz_revision(store, domain, asset, revision, payload, draft["questions"], now)
         return quiz_card(asset, payload)
+
+
+def publish_quiz_revision(store, domain, asset, revision, payload, questions, now):
+    """Promote a validated revision inside the caller's transaction."""
+    asset_id = asset["asset_id"]
+    revision_id = revision["revision_id"]
+    previous_id = asset.get("current_revision_id")
+    if previous_id:
+        previous = domain._owned("asset_revision", previous_id)
+        previous_payload = domain._owned("quiz_revision_payload", previous_id)
+        if previous.get("state") != "confirmed" or previous_payload.get("state") != "confirmed":
+            raise DomainConflict("当前正式试卷版本状态无效")
+    questions_markdown, full_markdown = build_quiz_sections(
+        payload["title"], payload["total_score"], questions
+    )
+    revision.update(state="confirmed", confirmed_at=now, updated_at=now, markdown=full_markdown)
+    store.put("asset_revision", revision_id, revision)
+    payload.update(state="confirmed", updated_at=now, print_question_length=len(questions_markdown))
+    store.put("quiz_revision_payload", revision_id, payload)
+    asset.update(
+        status="confirmed",
+        current_revision_id=revision_id,
+        latest_revision_id=revision_id,
+        updated_at=now,
+    )
+    store.put("learning_asset", asset_id, asset)
+    # The asset must point to the replacement before the previous revision is superseded.
+    if previous_id:
+        previous["state"] = "superseded"
+        previous_payload.update(state="superseded", updated_at=now)
+        store.put("asset_revision", previous_id, previous)
+        store.put("quiz_revision_payload", previous_id, previous_payload)
+    domain._audit(asset["course_id"], "quiz.confirmed", "learning_asset", asset_id)
 
 
 def quiz_card(asset, payload):

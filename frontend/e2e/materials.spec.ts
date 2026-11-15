@@ -4,6 +4,88 @@ test.beforeEach(async ({ request }) => {
   await request.post("http://127.0.0.1:8081/test/reset");
 });
 
+test("basic preview opens while formal parsing is still running", async ({ page, request }) => {
+  const course = await (await request.post("http://127.0.0.1:8081/api/courses", {
+    data: { name: "基础预览验收" },
+  })).json();
+  const documentId = "preview-proof";
+  await page.route(`**/api/courses/${course.course_id}/documents`, route => route.fulfill({
+    json: { items: [{ document_id: documentId, title: "正在解析的课件", file_name: "mixed.pptx",
+      source_type: "teacher_ppt", parse_status: "running", preview_status: "ready" }] },
+  }));
+  await page.route(`**/api/courses/${course.course_id}/material-jobs`, route => route.fulfill({
+    json: { items: [{ job_id: "job-preview", document_id: documentId, status: "running",
+      stage: "复杂页面 1/2", phase: "parse", attempts: 3 }] },
+  }));
+  await page.route(`**/documents/${documentId}/basic-preview`, route => route.fulfill({
+    json: { document_id: documentId, file_name: "mixed.pptx", preview_status: "ready",
+      total_pages: 2, parse_status: "running", pages: [
+        { position: 1, title: "DNS", native_text: "DNS 并非永远只使用 UDP，端口号为 53。",
+          notes: "教学备注独立保留", route: "native", reasons: ["原生文字提取完整"],
+          status: "completed", quality: "native_checked" },
+        { position: 2, title: "图片页", native_text: "", notes: "", route: "visual",
+          reasons: ["存在图片或截图"], status: "pending", quality: "pending" },
+      ] },
+  }));
+  await page.goto(`/#/courses/${course.course_id}/materials`);
+  await page.getByRole("button", { name: "基础文字预览", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "mixed.pptx" });
+  await expect(dialog.getByText("DNS 并非永远只使用 UDP，端口号为 53。", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("本页暂无可提取的原生文字，完整内容等待视觉识别。")).toBeVisible();
+  await dialog.getByText("教学备注（原文）", { exact: true }).click();
+  await expect(dialog.getByText("教学备注独立保留", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("正式解析：复杂页面 1/2")).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "正式解析内容", exact: true })).toHaveCount(0);
+  await dialog.getByRole("button", { name: "关闭", exact: true }).click();
+});
+
+test("batch sends three uploads concurrently", async ({ page, request }) => {
+  await request.post("http://127.0.0.1:8081/api/courses", { data: { name: "并行上传" } });
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let started = 0, active = 0, peak = 0;
+  await page.route("**/knowledge/upload", async route => {
+    started += 1; active += 1; peak = Math.max(peak, active);
+    if (started === 3) release();
+    await gate;
+    active -= 1;
+    await route.fulfill({ status: 202, json: { status: "queued" } });
+  });
+  await page.goto("/#materials");
+  await page.getByLabel("文件", { exact: true }).setInputFiles(Array.from({ length: 5 }, (_, i) => ({
+    name: `parallel-${i}.md`, mimeType: "text/markdown", buffer: Buffer.from(`资料${i}`),
+  })));
+  await page.getByRole("button", { name: "上传并处理" }).click();
+  await expect(page.locator(".materials-upload-results .accepted")).toHaveCount(5);
+  expect(started).toBe(5);
+  expect(peak).toBe(3);
+});
+
+test("material and knowledge progress are displayed independently", async ({ page, request }) => {
+  const course = await (await request.post("http://127.0.0.1:8081/api/courses", { data: { name: "知识库进度" } })).json();
+  await request.post("http://127.0.0.1:8081/knowledge/upload", {
+    multipart: { course_id: course.course_id, title: "进度样本", source_type: "teacher_ppt",
+      file: { name: "progress.md", mimeType: "text/markdown", buffer: Buffer.from("HTTP无状态") } },
+  });
+  let documentId = "";
+  await expect.poll(async () => {
+    const docs = (await (await request.get(`http://127.0.0.1:8081/api/courses/${course.course_id}/documents`)).json()).items;
+    documentId = docs[0]?.document_id;
+    return docs[0]?.parse_status;
+  }).toBe("ready");
+  let finished = false;
+  await page.route("**/knowledge-build-status", route => route.fulfill({ json: { items: [{
+    document_id: documentId, job_id: "proof", status: finished ? "succeeded" : "running",
+    stage: "embedding", total_blocks: 2, completed_blocks: finished ? 2 : 1,
+    review_count: finished ? 2 : 0, rejected_count: 0,
+  }] } }));
+  await page.goto("/#materials");
+  await expect(page.getByText("资料解析：已完成，可检索")).toBeVisible();
+  await expect(page.getByText("知识库：生成向量 · 已完成 1/2 个语义块")).toBeVisible();
+  finished = true;
+  await expect(page.getByText("知识库：已入库 · 2 个候选待核对")).toBeVisible();
+});
+
 test("course loading preserves a navigation event still in flight", async ({ page, request }) => {
   await request.post("http://127.0.0.1:8081/api/courses", { data: { name: "导航恢复" } });
   let finishLoading!: () => void;

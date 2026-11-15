@@ -15,7 +15,6 @@ from final_review.migrations import apply_migrations
 from final_review.postgres import PostgresStore
 from final_review.quiz_config import resolve_quiz_config
 from final_review.quiz_jobs import enqueue_quiz, process_quiz_job
-from final_review.quiz_review import confirm_quiz_revision, quiz_confirm_preview
 from final_review.schemas import ExamCreate, QuizInput
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
@@ -126,17 +125,6 @@ def main():
         if finished["status"] != "succeeded":
             raise RuntimeError(f"合成试卷生成失败：{finished.get('error')}")
         card = finished["result"]
-        confirmation = quiz_confirm_preview(
-            store, user.id, COURSE_ID, card["asset_id"], card["revision_id"]
-        )
-        confirm_quiz_revision(
-            store,
-            user.id,
-            COURSE_ID,
-            card["asset_id"],
-            card["revision_id"],
-            confirmation["confirmation_id"],
-        )
         print("合成正式试卷已就绪；无外部模型调用。")
         print(f"前端登录：{EMAIL} / {PASSWORD}")
         print(f"课程：{COURSE_ID}；考试：{exam['name']}；试卷：{card['title']}")

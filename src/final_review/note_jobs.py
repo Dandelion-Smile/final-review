@@ -16,6 +16,7 @@ from .agent import (
 )
 from .config import Settings
 from .llm import build_models
+from .observe import finish_note_trace, start_note_trace
 from .postgres import PostgresStore
 from .rag import KnowledgeBase
 from .schemas import ResumeNoteRequest
@@ -77,6 +78,7 @@ def process_note_job(store, agent: FinalReviewAgent, job: dict) -> None:
             policy_version=job.get("note_policy_version", 1),
         )
     )
+    trace_token = start_note_trace(job["session_id"], job["job_id"])
     try:
         request = ResumeNoteRequest(
             course_id=job["course_id"],
@@ -153,6 +155,7 @@ def process_note_job(store, agent: FinalReviewAgent, job: dict) -> None:
         )
         store.finish_note_job(job["job_id"], job["attempts"], error=error)
     finally:
+        finish_note_trace(trace_token)
         stop_heartbeat.set()
         if lease_thread:
             lease_thread.join(timeout=5)

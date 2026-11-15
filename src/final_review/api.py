@@ -44,16 +44,22 @@ from .exports import (
 )
 from .formal_attempt import (
     list_formal_attempts,
+    lock_practice_answer,
     read_formal_attempt,
+    run_attempt_deadlines,
     save_formal_answer,
     start_formal_attempt,
     submit_formal_attempt,
 )
-from .formal_grading import grade_formal_attempt
+from .formal_grading import grade_formal_attempt, grade_practice_question
 from .formal_result import ask_quiz_followup, read_formal_result
+from .knowledge_routes import knowledge_router
+from .knowledge_store import KnowledgeRepository
 from .llm import ModelError, build_fast_quiz_model, build_models, build_review_model
 from .material_conversion import SUPPORTED_SUFFIXES
+from .material_note_routes import material_note_router
 from .mistakes import (
+    generate_practice_variant,
     list_mistakes,
     list_practices,
     mark_mastery,
@@ -70,6 +76,7 @@ from .quiz_generation import read_quiz
 from .quiz_jobs import enqueue_quiz, owned_job, public_quiz_job, retry_quiz
 from .quiz_print import print_quiz_revision
 from .quiz_review import confirm_quiz_revision, quiz_confirm_preview, review_quiz_revision
+from .quiz_workspace import list_quiz_jobs, list_quiz_summaries
 from .rag import KnowledgeBase
 from .rendering import render_markdown
 from .review_home import create_calendar_entry, read_calendar, read_home, set_calendar_completion
@@ -94,6 +101,8 @@ from .schemas import (
     FastQuizRequest,
     FastQuizSubmission,
     FormalAnswerSave,
+    FormalAttemptStart,
+    FormalQuestionSubmit,
     Identifier,
     MasteryMark,
     MaterialDelete,
@@ -150,6 +159,7 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
             if database_url:
                 store = PostgresStore(database_url)
                 store.setup()
+                store.knowledge_settings = settings
                 app.state.store = store
             # Course and exam data only need PostgreSQL. The RAG agent needs both
             # model providers, so it can remain unavailable during M1-01 testing.
@@ -168,9 +178,11 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
                     )
                     for config in settings.available_chat_models()
                 }
-            if database_auth.enabled and store is not None:
+            if store is not None:
                 async with create_task_group() as tasks:
-                    tasks.start_soon(run_account_purge, store, settings)
+                    if database_auth.enabled:
+                        tasks.start_soon(run_account_purge, store, settings)
+                    tasks.start_soon(run_attempt_deadlines, store)
                     try:
                         yield
                     finally:
@@ -434,12 +446,24 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
         store = conversation_store()
         guard = (
             store.account_file_access(user.id)
-            if isinstance(store, PostgresStore) else nullcontext(True)
+            if isinstance(store, PostgresStore)
+            else nullcontext(True)
         )
         with guard as allowed:
             if not allowed:
                 raise HTTPException(403, "账户当前无法操作资料文件")
             yield
+
+    app.include_router(
+        knowledge_router(
+            settings, authorize, require_course, conversation_store, require_file_access
+        )
+    )
+    app.include_router(
+        material_note_router(
+            settings, authorize, require_course, conversation_store, require_file_access
+        )
+    )
 
     @app.get("/api/chat/models", dependencies=[Depends(authorize)])
     def list_chat_models():
@@ -1151,6 +1175,58 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
         chunks = store.list_material_chunks(document_id)
         return document, version, chunks
 
+    @app.get(
+        "/api/courses/{course_id}/documents/{document_id}/basic-preview",
+        dependencies=[Depends(authorize)],
+    )
+    def basic_material_preview(
+        course_id: Identifier,
+        document_id: Identifier,
+        user: CurrentUser = Depends(authorize),
+    ):
+        require_course(course_id, user)
+        store = conversation_store()
+        document = store.get("document", document_id)
+        if (
+            not document
+            or document.get("user_id") != user.id
+            or document.get("course_id") != course_id
+            or document.get("parse_status") == "deleted"
+        ):
+            raise HTTPException(404, "资料不存在")
+        if "preview_status" not in document:
+            raise HTTPException(404, "这份资料没有基础预览，请查看正式解析内容")
+        pages = store.material_pages(document) if document.get("preview_status") == "ready" else []
+        return dict(
+            document_id=document_id,
+            file_name=document.get("file_name", document["title"]),
+            source_type=document["source_type"],
+            preview_status=document["preview_status"],
+            preview_version=document.get("preview_version"),
+            total_pages=document.get("preview_page_count", 0),
+            preview_error=document.get("preview_error"),
+            parse_status=document["parse_status"],
+            parse_error=document.get("parse_error"),
+            pages=[
+                {
+                    key: page.get(key)
+                    for key in (
+                        "position",
+                        "title",
+                        "native_text",
+                        "notes",
+                        "blocks",
+                        "route",
+                        "reasons",
+                        "status",
+                        "quality",
+                        "error",
+                    )
+                }
+                for page in pages
+            ],
+        )
+
     def public_chunk(chunk: dict, *, include_content: bool = False) -> dict:
         result = {
             "chunk_id": chunk["chunk_id"],
@@ -1425,11 +1501,21 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
                 if existing:
                     if existing["fingerprint"] != fingerprint:
                         raise HTTPException(409, "相同幂等键对应不同资料")
+                    existing_document = store.get("document", existing["document_id"])
+                    if (
+                        isinstance(store, PostgresStore)
+                        and existing_document
+                        and existing_document.get("parse_status") == "ready"
+                    ):
+                        KnowledgeRepository(store).enqueue_ready(
+                            course_id, existing["document_id"], settings
+                        )
                     return JSONResponse(
                         status_code=202,
                         content={
                             "job_id": existing["job_id"],
                             "document_id": existing["document_id"],
+                            "parse_strategy": (existing_document or {}).get("parse_strategy"),
                             "status": existing["status"],
                             "status_url": (
                                 f"/api/courses/{course_id}/material-jobs/{existing['job_id']}"
@@ -1440,12 +1526,20 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
                 course_id, file.filename or "upload", content_sha256
             )
             if duplicate:
+                if (
+                    isinstance(store, PostgresStore)
+                    and duplicate["document"].get("parse_status") == "ready"
+                ):
+                    KnowledgeRepository(store).enqueue_ready(
+                        course_id, duplicate["document"]["document_id"], settings
+                    )
                 existing = duplicate["job"]
                 return JSONResponse(
                     status_code=200,
                     content={
                         "job_id": existing["job_id"] if existing else None,
                         "document_id": duplicate["document"]["document_id"],
+                        "parse_strategy": duplicate["document"].get("parse_strategy"),
                         "status": duplicate["document"]["parse_status"],
                         "reused": True,
                         "status_url": (
@@ -1479,6 +1573,17 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
                 "chunk_count": 0,
                 "parse_status": "queued",
             }
+            text_images = settings.material_pptx_parse_mode == "text_images" and suffix in {
+                ".ppt",
+                ".pptx",
+            }
+            hybrid = text_images or (
+                settings.material_hybrid_enabled and suffix in {".ppt", ".pptx"}
+            )
+            if text_images:
+                document["parse_strategy"] = "text-images-v1"
+            if hybrid:
+                document["preview_status"] = "queued"
             job = store.create_material_job(
                 document,
                 {
@@ -1487,6 +1592,7 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
                     "course_id": course_id,
                     "idempotency_key": key,
                     "fingerprint": fingerprint,
+                    "phase": "preview" if hybrid else "parse",
                 },
             )
             if job["document_id"] != document_id:
@@ -1497,6 +1603,14 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
             ):
                 raise HTTPException(409, "相同幂等键对应不同资料")
             final_document = store.get("document", job["document_id"]) if reused else None
+            if (
+                isinstance(store, PostgresStore)
+                and final_document
+                and final_document.get("parse_status") == "ready"
+            ):
+                KnowledgeRepository(store).enqueue_ready(
+                    course_id, final_document["document_id"], settings
+                )
             return JSONResponse(
                 status_code=202,
                 content={
@@ -1506,6 +1620,7 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
                     if final_document
                     else job["status"],
                     "reused": reused,
+                    "parse_strategy": (final_document or document).get("parse_strategy"),
                     "status_url": f"/api/courses/{course_id}/material-jobs/{job['job_id']}",
                 },
             )
@@ -2084,11 +2199,11 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
                         updated,
                     )
             reply = (
-                "试卷草稿已生成，可在当前对话或模拟测验查看。"
+                "试卷已生成，可在当前对话或模拟测验打开。"
                 if quiz_job and quiz_job["status"] == "succeeded"
-                else "试卷配置已就绪，生成任务已排队。完成后可在当前对话查看草稿。"
+                else "试卷配置已就绪，生成任务已排队。完成后可从当前对话开始测试。"
                 if result.status == "ready" and request.quiz_input is not None
-                else "请在输入框上方分步确认试题要求和生成依据。"
+                else "请在输入框上方设置试题要求和生成依据。"
             )
             event_id = stable_key(quiz_job["job_id"], "submission") if quiz_job else uuid4().hex
             note_message(
@@ -2193,6 +2308,11 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
             idempotency_key=idempotency_key,
         )
 
+    @app.get("/api/courses/{course_id}/quiz-jobs", dependencies=[Depends(authorize)])
+    def course_quiz_jobs(course_id: Identifier, user: CurrentUser = Depends(authorize)):
+        require_course(course_id, user)
+        return list_quiz_jobs(conversation_store(), user.id, course_id)
+
     @app.get("/api/courses/{course_id}/quiz-jobs/{job_id}", dependencies=[Depends(authorize)])
     def get_quiz_job(
         course_id: Identifier, job_id: Identifier, user: CurrentUser = Depends(authorize)
@@ -2214,19 +2334,7 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
     @app.get("/api/courses/{course_id}/quizzes", dependencies=[Depends(authorize)])
     def list_quizzes(course_id: Identifier, user: CurrentUser = Depends(authorize)):
         require_course(course_id, user)
-        return {
-            "items": sorted(
-                [
-                    asset
-                    for asset in conversation_store().scan(
-                        "learning_asset", {"course_id": course_id}
-                    )
-                    if asset.get("asset_type") == "quiz" and asset.get("user_id") == user.id
-                ],
-                key=lambda asset: asset["created_at"],
-                reverse=True,
-            )
-        }
+        return list_quiz_summaries(conversation_store(), user.id, course_id)
 
     @app.post(
         "/api/courses/{course_id}/quizzes/{asset_id}/revisions",
@@ -2328,10 +2436,19 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
         dependencies=[Depends(authorize)],
     )
     def start_quiz_attempt(
-        course_id: Identifier, asset_id: Identifier, user: CurrentUser = Depends(authorize)
+        course_id: Identifier,
+        asset_id: Identifier,
+        request: FormalAttemptStart | None = None,
+        user: CurrentUser = Depends(authorize),
     ):
         require_course(course_id, user)
-        return start_formal_attempt(conversation_store(), user.id, course_id, asset_id)
+        return start_formal_attempt(
+            conversation_store(),
+            user.id,
+            course_id,
+            asset_id,
+            **(request.model_dump() if request else {}),
+        )
 
     @app.get(
         "/api/courses/{course_id}/formal-attempts",
@@ -2349,7 +2466,10 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
         course_id: Identifier, attempt_id: Identifier, user: CurrentUser = Depends(authorize)
     ):
         require_course(course_id, user)
-        return read_formal_attempt(conversation_store(), user.id, course_id, attempt_id)
+        return {
+            **read_formal_attempt(conversation_store(), user.id, course_id, attempt_id),
+            "server_now": datetime.now(UTC).isoformat(),
+        }
 
     @app.put(
         "/api/courses/{course_id}/formal-attempts/{attempt_id}/answers",
@@ -2373,6 +2493,41 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
         )
 
     @app.post(
+        "/api/courses/{course_id}/formal-attempts/{attempt_id}/questions/{question_id}/submit",
+        dependencies=[Depends(authorize)],
+    )
+    def submit_practice_question(
+        course_id: Identifier,
+        attempt_id: Identifier,
+        question_id: Identifier,
+        request: FormalQuestionSubmit,
+        user: CurrentUser = Depends(authorize),
+    ):
+        require_course(course_id, user)
+        store = conversation_store()
+        lock_practice_answer(
+            store, user.id, course_id, attempt_id, question_id, request.expected_version
+        )
+        try:
+            reviewer, model_id, model_version = model_for_attempt(course_id, attempt_id, user)
+            detail = grade_practice_question(
+                store, user.id, course_id, attempt_id, question_id, reviewer
+            )
+            if detail["attempt"]["status"] == "submitted" and all(
+                key in detail["attempt"].get("partial_grades", {})
+                for key in detail["attempt"]["question_revision_ids"]
+            ):
+                return grade_formal_attempt(
+                    store, user.id, course_id, attempt_id, reviewer, model_id, model_version
+                )
+            return detail
+        except (DomainConflict, ModelError, ValueError):
+            return {
+                **read_formal_attempt(store, user.id, course_id, attempt_id),
+                "grading_error": "本题答案已提交，评分暂未完成，可以重试",
+            }
+
+    @app.post(
         "/api/courses/{course_id}/formal-attempts/{attempt_id}/submit",
         dependencies=[Depends(authorize)],
     )
@@ -2381,6 +2536,8 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
     ):
         require_course(course_id, user)
         submitted = submit_formal_attempt(conversation_store(), user.id, course_id, attempt_id)
+        if submitted["attempt"].get("mode"):
+            return submitted
         try:
             return grade_attempt(course_id, attempt_id, user)
         except (DomainConflict, ModelError, ValueError):
@@ -2489,6 +2646,19 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
     ):
         require_course(course_id, user)
         return list_practices(conversation_store(), user.id, course_id, mistake_id)
+
+    @app.post(
+        "/api/courses/{course_id}/mistakes/{mistake_id}/variants",
+        dependencies=[Depends(authorize)],
+    )
+    def create_mistake_variant(
+        course_id: Identifier, mistake_id: Identifier, user: CurrentUser = Depends(authorize)
+    ):
+        require_course(course_id, user)
+        store = conversation_store()
+        mistake = read_mistake(store, user.id, course_id, mistake_id)
+        reviewer, _, _ = model_for_attempt(course_id, mistake["attempt_id"], user)
+        return generate_practice_variant(store, user.id, course_id, mistake_id, reviewer)
 
     @app.get(
         "/api/courses/{course_id}/mistake-practices/{practice_id}",
@@ -2859,16 +3029,35 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
                     "cancelled": True,
                 },
             )
+            saved = store.get("note_job", job_id) or {}
+            excerpts = [
+                {"index": key, "reason": batch["fallback_reason"]}
+                for key, batch in (saved.get("partial_batches") or {}).items()
+                if isinstance(batch, dict) and batch.get("fallback_reason")
+            ]
+            excerpts.sort(
+                key=lambda item: int(item["index"]) if str(item["index"]).isdigit() else 0
+            )
+            detail = "".join(
+                f"第 {int(item['index']) + 1} 部分：这一部分是原文摘录（{item['reason']}）。"
+                for item in excerpts
+                if str(item["index"]).isdigit()
+            )
+            message = (
+                f"已取消笔记生成。{detail}"
+                if detail
+                else "已取消笔记生成。你可以继续聊天，或重新发起笔记任务。"
+            )
             note_message(
                 request.course_id,
                 conversation_id,
                 user,
                 f"{request.session_id}-cancel-assistant",
                 "assistant",
-                "已取消笔记生成。你可以继续聊天，或重新发起笔记任务。",
+                message,
             )
             note_state(request.course_id, conversation_id, user, None)
-        return {"cancelled": True}
+        return {"cancelled": True, "excerpts": excerpts if job_id else []}
 
     @app.post(
         "/assessment/evaluate", response_model=AgentResponse, dependencies=[Depends(authorize)]

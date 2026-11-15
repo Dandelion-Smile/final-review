@@ -5,13 +5,13 @@ from copy import deepcopy
 from pydantic import ValidationError
 
 from .domain import DomainConflict, DomainNotFound, DomainService, _now
+from .quiz_answers import OBJECTIVE_TYPES
 from .quiz_contract import QuizSemanticReview
 from .quiz_edit import _current_evidence, _locked
 from .quiz_edit_contract import QuizQuestionEdit, QuizRevisionEdit, validate_quiz_edit_sources
-from .quiz_generation import paper_hash, read_quiz
-from .quiz_print import build_quiz_sections
+from .quiz_generation import paper_hash, publish_quiz_revision, read_quiz
 
-_OBJECTIVE = {"choice", "true_false", "fill_blank"}
+_OBJECTIVE = OBJECTIVE_TYPES
 
 
 def _draft(store, user_id, course_id, asset_id, revision_id):
@@ -36,7 +36,7 @@ def _draft(store, user_id, course_id, asset_id, revision_id):
         or payload.get("asset_revision_id") != revision_id
         or payload.get("state") != "draft"
     ):
-        raise DomainConflict("只能复核或确认本试卷的最新草稿")
+        raise DomainConflict("只能复核或发布本试卷的最新草稿")
     questions = []
     for slot in payload["questions"]:
         question = domain._owned("question_revision", slot["question_revision_id"])
@@ -151,7 +151,7 @@ def _confirmable(store, user_id, course_id, asset_id, revision_id):
     if payload.get("pending_semantic_review_question_ids"):
         raise DomainConflict("请先完成已编辑题目的语义复核")
     if payload.get("confirmation_issues"):
-        raise DomainConflict("请先处理试卷总分等确认问题")
+        raise DomainConflict("请先处理试卷总分等发布问题")
     _, evidence_hash = _evidence(store, user_id, course_id, revision_id, payload, questions)
     return domain, asset, revision, payload, questions, evidence_hash
 
@@ -192,41 +192,5 @@ def confirm_quiz_revision(store, user_id, course_id, asset_id, revision_id, conf
             resource_id=asset_id,
             payload=_confirmation_payload(asset, revision, payload, evidence_hash),
         )
-        previous_id = asset.get("current_revision_id")
-        now = _now()
-        previous = previous_payload = None
-        if previous_id:
-            previous = domain._owned("asset_revision", previous_id)
-            previous_payload = domain._owned("quiz_revision_payload", previous_id)
-            if previous.get("state") != "confirmed" or previous_payload.get("state") != "confirmed":
-                raise DomainConflict("当前正式试卷版本状态无效")
-        questions_markdown, full_markdown = build_quiz_sections(
-            payload["title"], payload["total_score"], questions
-        )
-        revision.update(
-            state="confirmed",
-            confirmed_at=now,
-            updated_at=now,
-            markdown=full_markdown,
-        )
-        payload.update(
-            state="confirmed", updated_at=now, print_question_length=len(questions_markdown)
-        )
-        store.put("asset_revision", revision_id, revision)
-        store.put("quiz_revision_payload", revision_id, payload)
-        asset.update(
-            status="confirmed",
-            current_revision_id=revision_id,
-            latest_revision_id=revision_id,
-            updated_at=now,
-        )
-        store.put("learning_asset", asset_id, asset)
-        # The DB trigger requires the asset to point at the replacement before
-        # its old confirmed revision may become superseded.
-        if previous_id:
-            previous["state"] = "superseded"
-            previous_payload.update(state="superseded", updated_at=now)
-            store.put("asset_revision", previous_id, previous)
-            store.put("quiz_revision_payload", previous_id, previous_payload)
-        domain._audit(course_id, "quiz.confirmed", "learning_asset", asset_id)
+        publish_quiz_revision(store, domain, asset, revision, payload, questions, _now())
     return read_quiz(store, user_id, course_id, asset_id, revision_id)

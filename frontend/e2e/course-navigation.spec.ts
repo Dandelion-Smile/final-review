@@ -13,9 +13,9 @@ test("course cards open scoped modules and preserve course across reload and his
   await expect(card.getByRole("link", { name: "资料 0", exact: true })).toBeVisible();
   await page.screenshot({ path: "test-results/course-list-desktop.png", fullPage: true });
   await card.getByRole("button", { name: "进入课程" }).click();
-  await expect(page).toHaveURL(new RegExp(`/courses/${network.course_id}/materials$`));
-  await expect(page.getByRole("heading", { name: "我的复习资料" })).toBeVisible();
-  await expect(nav.getByRole("button")).toHaveCount(7);
+  await expect(page).toHaveURL(new RegExp(`/courses/${network.course_id}/overview$`));
+  await expect(page.getByRole("heading", { name: "知识目录", exact: true })).toBeVisible();
+  await expect(nav.getByRole("button")).toHaveCount(8);
   await nav.getByRole("button", { name: "笔记", exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/courses/${network.course_id}/notes$`));
   await page.reload();
@@ -23,7 +23,7 @@ test("course cards open scoped modules and preserve course across reload and his
   await nav.getByRole("button", { name: "我的课程", exact: true }).click();
   await expect(nav.getByRole("button")).toHaveCount(3);
   await page.locator(".course-list-card").filter({ hasText: "高等数学" }).getByRole("button", { name: "进入课程" }).click();
-  await expect(page).toHaveURL(new RegExp(`/courses/${math.course_id}/materials$`));
+  await expect(page).toHaveURL(new RegExp(`/courses/${math.course_id}/overview$`));
   await page.goBack();
   await expect(nav.getByRole("button")).toHaveCount(3);
   await page.goBack();
@@ -110,6 +110,8 @@ test("course card management retains course and exam editing, deletion and recov
   await expect(management).toContainText("期末考试");
   await management.getByRole("button", { name: "收起管理", exact: true }).click();
   await page.locator(".course-list-card").filter({ hasText: "网络原理" }).getByRole("button", { name: "进入课程" }).click();
+  await expect(page.getByRole("heading", { name: "知识目录", exact: true })).toBeVisible();
+  await page.getByRole("navigation", { name: "课程导航" }).getByRole("button", { name: "资料", exact: true }).click();
   await expect(page.getByRole("heading", { name: "我的复习资料" })).toBeVisible();
   await expect(page.locator(".material-current-course")).toHaveText("网络原理");
 });

@@ -2,10 +2,14 @@
 
 from datetime import UTC, datetime
 
+from pydantic import ValidationError
+
 from .domain import DomainConflict, DomainNotFound, DomainService, _id
 from .formal_attempt import _owned_attempt, _validated_answer
-from .formal_grading import objective_correct
+from .quiz_answers import OBJECTIVE_TYPES, objective_fraction, objective_score
+from .quiz_contract import QuizDraftQuestion
 from .quiz_edit import _locked
+from .quiz_edit_contract import QuizQuestionEdit, _display_answer
 from .storage import stable_key
 
 
@@ -38,7 +42,7 @@ def sync_mistakes_for_attempt(store, user_id, course_id, attempt_id):
         exam = store.get("exam", exam_id) if exam_id else None
         created = []
         for grade in snapshot["items"]:
-            if grade["correct"]:
+            if grade["correct"] or (attempt.get("mode") and grade["student_answer"] is None):
                 continue
             question_id = grade["question_revision_id"]
             slot = slots.get(question_id)
@@ -171,7 +175,7 @@ def mark_mastery(store, user_id, course_id, mistake_id, status):
         return item
 
 
-def start_practice(store, user_id, course_id, mistake_id):
+def start_practice(store, user_id, course_id, mistake_id, variant=None):
     with store.transaction():
         domain, mistake = _owned_mistake(store, user_id, course_id, mistake_id)
         domain.course(course_id, writable=True)
@@ -191,9 +195,71 @@ def start_practice(store, user_id, course_id, mistake_id):
             "created_at": now,
             "submitted_at": None,
         }
+        if variant is not None:
+            item.update(kind="variant", variant=variant)
         store.put("mistake_practice", practice_id, item)
         domain._audit(course_id, "mistake.practice_started", "mistake_practice", practice_id)
-        return {"practice": item, "mistake": mistake}
+        return _practice_view(item, mistake)
+
+
+def generate_practice_variant(store, user_id, course_id, mistake_id, model):
+    domain, mistake = _owned_mistake(store, user_id, course_id, mistake_id)
+    domain.course(course_id, writable=True)
+    original = mistake["question"]
+    if model is None:
+        raise DomainConflict("出题服务暂不可用，请稍后重试")
+    try:
+        generated = QuizDraftQuestion.model_validate(
+            model.generate_quiz_variant(
+                {
+                    key: original[key]
+                    for key in (
+                        "stem",
+                        "knowledge_point",
+                        "question_type",
+                        "reference_answer",
+                        "explanation",
+                        "score",
+                    )
+                }
+            )
+        ).model_dump(mode="json")
+        if (
+            generated["question_type"] != original["question_type"]
+            or "".join(generated["stem"].split()).casefold()
+            == "".join(original["stem"].split()).casefold()
+        ):
+            raise DomainConflict("新题未通过题型或重复校验，请重试")
+        generated.update(
+            question_revision_id=mistake["question_revision_id"],
+            order=1,
+            knowledge_point=original["knowledge_point"],
+            score=original["score"],
+            provenance="ai_supplement",
+            citations=[],
+        )
+        edit = {key: generated[key] for key in QuizQuestionEdit.model_fields if key in generated}
+        if generated["question_type"] in OBJECTIVE_TYPES:
+            edit.pop("reference_answer")
+        checked = QuizQuestionEdit.model_validate(edit)
+        if generated["question_type"] in OBJECTIVE_TYPES:
+            generated["reference_answer"] = _display_answer(checked)
+    except ValidationError as exc:
+        raise DomainConflict("新题未通过结构校验，请重试") from exc
+    return start_practice(store, user_id, course_id, mistake_id, variant=generated)
+
+
+def _practice_view(practice, mistake):
+    result = {"practice": practice, "mistake": mistake}
+    if practice.get("kind") == "variant":
+        question = practice["variant"]
+        result["practice"] = {key: value for key, value in practice.items() if key != "variant"}
+        result["question"] = {
+            key: question[key]
+            for key in ("stem", "question_type", "options", "knowledge_point", "score")
+        }
+        result["question"]["blank_count"] = len(question.get("blank_answers", []))
+    return result
 
 
 def _owned_practice(store, user_id, course_id, practice_id, *, lock=False):
@@ -217,7 +283,7 @@ def _owned_practice(store, user_id, course_id, practice_id, *, lock=False):
 
 def read_practice(store, user_id, course_id, practice_id):
     _, practice, mistake = _owned_practice(store, user_id, course_id, practice_id)
-    return {"practice": practice, "mistake": mistake}
+    return _practice_view(practice, mistake)
 
 
 def list_practices(store, user_id, course_id, mistake_id):
@@ -227,7 +293,13 @@ def list_practices(store, user_id, course_id, mistake_id):
         for item in store.scan("mistake_practice", {"course_id": course_id})
         if item.get("user_id") == user_id and item.get("mistake_id") == mistake_id
     ]
-    return {"items": sorted(items, key=lambda item: item["created_at"], reverse=True)}
+    return {
+        "items": sorted(
+            (_practice_view(item, {})["practice"] for item in items),
+            key=lambda item: item["created_at"],
+            reverse=True,
+        )
+    }
 
 
 def submit_practice(store, user_id, course_id, practice_id, answer):
@@ -237,12 +309,13 @@ def submit_practice(store, user_id, course_id, practice_id, answer):
         )
         if practice["status"] != "in_progress":
             raise DomainConflict("重练已提交，不能重复修改")
-        question = mistake["question"]
+        question = practice.get("variant", mistake["question"])
         value = _validated_answer(question, answer)
         if value is None:
             raise ValueError("请先填写重练答案")
-        objective = question["question_type"] in {"choice", "true_false", "fill_blank"}
-        correct = objective_correct(question, value) if objective else None
+        objective = question["question_type"] in OBJECTIVE_TYPES
+        fraction = objective_fraction(question, value) if objective else None
+        correct = fraction == 1 if fraction is not None else None
         now = _now()
         practice.update(
             status="submitted",
@@ -250,7 +323,7 @@ def submit_practice(store, user_id, course_id, practice_id, answer):
             submitted_at=now,
             result={
                 "correct": correct,
-                "score": question["score"] if correct else (0 if objective else None),
+                "score": objective_score(question, fraction) if fraction is not None else None,
                 "reference_answer": question["reference_answer"],
                 "explanation": question["explanation"],
                 "grading_mode": "deterministic" if objective else "self_review",
@@ -258,4 +331,4 @@ def submit_practice(store, user_id, course_id, practice_id, answer):
         )
         store.put("mistake_practice", practice_id, practice)
         domain._audit(course_id, "mistake.practice_submitted", "mistake_practice", practice_id)
-        return {"practice": practice, "mistake": mistake}
+        return _practice_view(practice, mistake)

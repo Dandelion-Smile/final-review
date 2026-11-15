@@ -1,37 +1,49 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Modal } from "antd";
 import ReactMarkdown from "react-markdown";
 import { renderToStaticMarkup } from "react-dom/server";
 import { api } from "./workbench-api";
 import type { Paper, Question } from "./QuizDraftPreview";
 
-type Preview = { confirmation_id: string; revision_id: string; question_count: number; total_score: number; replaces_confirmed: boolean };
 type PrintView = { variant: "questions" | "answers"; title: string; markdown: string };
-const objective = new Set(["choice", "true_false", "fill_blank"]);
+const objective = new Set(["choice", "multiple_choice", "true_false", "fill_blank"]);
 const lines = (value: string) => value.split("\n").map(item => item.trim()).filter(Boolean);
 
-export default function QuizDraftActions({ courseId, assetId, paper, onUpdated, onAttemptStarted }: {
-  courseId: string; assetId: string; paper: Paper; onUpdated: (paper: Paper) => void;
+export default function QuizDraftActions({ courseId, assetId, paper, openMode, onUpdated, onAttemptStarted }: {
+  courseId: string; assetId: string; paper: Paper; openMode?: boolean; onUpdated: (paper: Paper) => void;
   onAttemptStarted?: (attemptId: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [preview, setPreview] = useState<Preview | null>(null);
   const [printView, setPrintView] = useState<PrintView | null>(null);
+  const [chooseMode, setChooseMode] = useState(Boolean(openMode));
+  const [duration, setDuration] = useState(String(paper.revision.duration_minutes ?? 30));
   const printFrame = useRef<HTMLIFrameElement>(null);
   const revisionId = paper.revision.quiz_revision_id;
+  const canStart = paper.asset.status === "confirmed" && paper.revision.state === "confirmed" &&
+    paper.asset.current_revision_id === revisionId;
   const root = `/api/courses/${encodeURIComponent(courseId)}/quizzes/${encodeURIComponent(assetId)}/revisions`;
   const revisionRoot = `${root}/${encodeURIComponent(revisionId)}`;
   const pending = paper.revision.pending_semantic_review_question_ids ?? [];
   const issues = paper.revision.confirmation_issues ?? [];
+  useEffect(() => {
+    if (!editing || busy) return;
+    const guard = (event: Event) => {
+      if (event.type === "beforeunload") { event.preventDefault(); (event as BeforeUnloadEvent).returnValue = ""; }
+      else if (!window.confirm("正在编辑试卷，未保存的修改将丢失。确定离开吗？")) event.preventDefault();
+    };
+    window.addEventListener("note-navigation", guard);
+    window.addEventListener("beforeunload", guard);
+    return () => { window.removeEventListener("note-navigation", guard); window.removeEventListener("beforeunload", guard); };
+  }, [editing, busy]);
 
   function beginEdit() {
     setQuestions(paper.revision.questions.map(question => ({ ...question,
       options: [...question.options], accepted_answers: [...question.accepted_answers],
     })).sort((a, b) => a.order - b.order));
-    setPreview(null); setError(""); setEditing(true);
+    setError(""); setEditing(true);
   }
 
   function change(id: string, update: Partial<Question>) {
@@ -60,15 +72,17 @@ export default function QuizDraftActions({ courseId, assetId, paper, onUpdated, 
         stem: question.stem,
         options: question.options,
         correct_option: question.correct_option,
+        correct_options: question.correct_options ?? [],
         boolean_answer: question.boolean_answer,
         accepted_answers: question.accepted_answers,
+        blank_answers: question.blank_answers ?? [],
         ...(objective.has(question.question_type) ? {} : { reference_answer: question.reference_answer }),
         explanation: question.explanation,
         provenance: question.provenance,
         citations: question.citations,
       }));
       const updated = await api<Paper>(root, "POST", { base_revision_id: revisionId, questions: edit });
-      onUpdated(updated); setEditing(false); setPreview(null);
+      onUpdated(updated); setEditing(false);
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : "试卷编辑保存失败");
     } finally { setBusy(false); }
@@ -86,20 +100,13 @@ export default function QuizDraftActions({ courseId, assetId, paper, onUpdated, 
     } finally { setBusy(false); }
   }
 
-  async function prepareConfirm() {
-    setBusy(true); setError("");
-    try { setPreview(await api<Preview>(revisionRoot + "/confirm-preview", "POST")); }
-    catch (failure) { setError(failure instanceof Error ? failure.message : "确认预览失败"); }
-    finally { setBusy(false); }
-  }
-
-  async function confirm() {
-    if (!preview) return;
+  async function publish() {
     setBusy(true); setError("");
     try {
-      const updated = await api<Paper>(revisionRoot + "/confirm", "POST", { confirmation_id: preview.confirmation_id });
-      onUpdated(updated); setPreview(null);
-    } catch (failure) { setError(failure instanceof Error ? failure.message : "试卷确认失败"); }
+      const { confirmation_id } = await api<{ confirmation_id: string }>(revisionRoot + "/confirm-preview", "POST");
+      const updated = await api<Paper>(revisionRoot + "/confirm", "POST", { confirmation_id });
+      onUpdated(updated);
+    } catch (failure) { setError(failure instanceof Error ? failure.message : "试卷发布失败"); }
     finally { setBusy(false); }
   }
 
@@ -110,11 +117,12 @@ export default function QuizDraftActions({ courseId, assetId, paper, onUpdated, 
     finally { setBusy(false); }
   }
 
-  async function startAttempt() {
+  async function startAttempt(mode: "practice" | "exam") {
     setBusy(true); setError("");
     try {
       const started = await api<{ attempt: { attempt_id: string } }>(
-        `/api/courses/${encodeURIComponent(courseId)}/quizzes/${encodeURIComponent(assetId)}/attempts`, "POST"
+        `/api/courses/${encodeURIComponent(courseId)}/quizzes/${encodeURIComponent(assetId)}/attempts`, "POST",
+        { mode, ...(mode === "exam" ? { duration_minutes: Number(duration) } : {}) }
       );
       if (onAttemptStarted) onAttemptStarted(started.attempt.attempt_id);
       else {
@@ -134,26 +142,33 @@ export default function QuizDraftActions({ courseId, assetId, paper, onUpdated, 
   return <div className="quiz-actions">
     {error && <p role="alert" className="quiz-action-error">{error}</p>}
     {paper.revision.state === "draft" && <>
-      {issues.map(issue => <p key={issue} role="status" className="quiz-action-warning">确认前需处理：{issue}</p>)}
+      {issues.map(issue => <p key={issue} role="status" className="quiz-action-warning">发布前需处理：{issue}</p>)}
       {pending.length > 0 && <p role="status" className="quiz-action-warning">{pending.length} 道编辑后的题目待语义复核，复核前来源仅作候选展示。</p>}
-      {!editing && <div className="quiz-action-buttons">
-        <button type="button" disabled={busy} onClick={beginEdit}>编辑试卷</button>
-        {pending.length > 0 && <button type="button" disabled={busy} onClick={() => void review()}>{busy ? "正在复核…" : "复核编辑内容"}</button>}
-        <button type="button" disabled={busy || pending.length > 0 || issues.length > 0} onClick={() => void prepareConfirm()}>查看确认信息</button>
-      </div>}
-      {preview && !editing && <section className="quiz-confirm-summary">
-        <p>即将确认第 {preview.revision_id} 版：{preview.question_count} 题，共 {preview.total_score} 分。</p>
-        {preview.replaces_confirmed && <p>确认后将替换当前正式版本，历史版本和既有作答仍保留。</p>}
-        <button type="button" disabled={busy} onClick={() => void confirm()}>确认这份试卷</button>
-        <button type="button" disabled={busy} onClick={() => setPreview(null)}>返回</button>
-      </section>}
+      {!editing && <>
+        {paper.asset.current_revision_id && <p>发布新版后，新作答将使用新版，已有作答继续使用原版本。</p>}
+        <div className="quiz-action-buttons">
+          <button type="button" disabled={busy} onClick={beginEdit}>编辑试卷</button>
+          {pending.length > 0 && <button type="button" disabled={busy} onClick={() => void review()}>{busy ? "正在复核…" : "复核编辑内容"}</button>}
+          <button type="button" disabled={busy || pending.length > 0 || issues.length > 0} onClick={() => void publish()}>{paper.asset.current_revision_id ? "发布新版" : "发布试卷"}</button>
+        </div>
+      </>}
     </>}
     {paper.revision.state === "confirmed" || paper.revision.state === "superseded" ? <div className="quiz-action-buttons">
       {paper.asset.latest_revision_id === revisionId && <button type="button" disabled={busy} onClick={beginEdit}>编辑新草稿</button>}
-      {paper.asset.current_revision_id === revisionId && <button type="button" disabled={busy} onClick={() => void startAttempt()}>开始测试</button>}
+      {canStart && <button type="button" disabled={busy} aria-expanded={chooseMode} onClick={() => setChooseMode(value => !value)}>开始测试</button>}
       <button type="button" disabled={busy} onClick={() => void showPrint("questions")}>打印仅题目版</button>
       <button type="button" disabled={busy} onClick={() => void showPrint("answers")}>打印题目与答案解析版</button>
     </div> : null}
+    {canStart && chooseMode && <section className="quiz-confirm-summary" aria-label="选择测试模式">
+      <p>日常练习逐题查看反馈。模拟考试在交卷后统一查看答案和解析。</p>
+      <div className="quiz-action-buttons">
+        <button type="button" disabled={busy} onClick={() => void startAttempt("practice")}>开始日常练习</button>
+        <label>考试时长（分钟） <input type="number" min={1} max={240} step={1}
+          value={duration} onChange={event => setDuration(event.target.value)} /></label>
+        <button type="button" disabled={busy || !Number.isInteger(Number(duration)) || Number(duration) < 1 || Number(duration) > 240}
+          onClick={() => void startAttempt("exam")}>开始模拟考试</button>
+      </div>
+    </section>}
     {editing && <div className="quiz-edit-form">
       <h3>编辑试卷</h3>
       <p>保存会创建新的草稿版本，原版本不会改变。</p>
@@ -163,15 +178,29 @@ export default function QuizDraftActions({ courseId, assetId, paper, onUpdated, 
             <button type="button" disabled={index === questions.length - 1} onClick={() => move(index, 1)}>下移</button></span></div>
         <label>题干<textarea value={question.stem} onChange={event => change(question.question_revision_id, { stem: event.target.value })} /></label>
         <label>分值<input type="number" min="0.01" max="10000" step="0.01" value={question.score} onChange={event => change(question.question_revision_id, { score: Number(event.target.value) })} /></label>
-        {question.question_type === "choice" && <>
+        {["choice", "multiple_choice"].includes(question.question_type) && <>
           <label>选项（每行一项）<textarea value={question.options.join("\n")} onChange={event => change(question.question_revision_id, { options: lines(event.target.value) })} /></label>
-          <label>正确选项<select value={question.correct_option ?? ""} onChange={event => change(question.question_revision_id, { correct_option: Number(event.target.value) })}>
+          {question.question_type === "choice" ? <label>正确选项<select value={question.correct_option ?? ""} onChange={event => change(question.question_revision_id, { correct_option: Number(event.target.value) })}>
             {question.options.map((_, optionIndex) => <option key={optionIndex} value={optionIndex}>{String.fromCharCode(65 + optionIndex)}</option>)}
-          </select></label>
+          </select></label> : <fieldset><legend>正确选项</legend>
+            {question.options.map((option, index) => {
+              const selected = question.correct_options ?? [];
+              return <label key={index}><input type="checkbox" checked={selected.includes(index)}
+                onChange={event => change(question.question_revision_id, {
+                  correct_options: event.target.checked ? [...selected, index] : selected.filter(item => item !== index),
+                })} />{option}</label>;
+            })}
+          </fieldset>}
         </>}
         {question.question_type === "true_false" && <label>判断题答案<select value={String(question.boolean_answer)} onChange={event => change(question.question_revision_id, { boolean_answer: event.target.value === "true" })}>
           <option value="true">正确</option><option value="false">错误</option></select></label>}
-        {question.question_type === "fill_blank" && <label>可接受答案（每行一项）<textarea value={question.accepted_answers.join("\n")} onChange={event => change(question.question_revision_id, { accepted_answers: lines(event.target.value) })} /></label>}
+        {question.question_type === "fill_blank" && (question.blank_answers?.length
+          ? question.blank_answers.map((answers, blank) => <label key={blank}>第 {blank + 1} 空的可接受答案（每行一项）
+            <textarea value={answers.join("\n")} onChange={event => change(question.question_revision_id, {
+              blank_answers: question.blank_answers!.map((value, index) => index === blank ? lines(event.target.value) : value),
+            })} />
+          </label>)
+          : <label>可接受答案（每行一项）<textarea value={question.accepted_answers.join("\n")} onChange={event => change(question.question_revision_id, { accepted_answers: lines(event.target.value) })} /></label>)}
         {!objective.has(question.question_type) && <label>参考答案<textarea value={question.reference_answer} onChange={event => change(question.question_revision_id, { reference_answer: event.target.value })} /></label>}
         <label>解析<textarea value={question.explanation} onChange={event => change(question.question_revision_id, { explanation: event.target.value })} /></label>
       </section>)}

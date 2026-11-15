@@ -7,6 +7,8 @@ def fixture_plan(context):
     allocations = []
     counts = {}
     point_index = 0
+    documents = list(dict.fromkeys(item.document_id for item in context.evidence))
+    pending = documents.copy()
     for item in context.config.blueprint:
         remaining = item.question_count
         while remaining:
@@ -14,6 +16,12 @@ def fixture_plan(context):
                 point_index
             ]
             count = min(remaining, 6 - counts.get(name, 0))
+            owned = []
+            for _ in range(count):
+                if pending:
+                    owned.append(pending.pop(0))
+            if not owned and documents:
+                owned = [documents[0]]
             allocations.append(
                 {
                     "knowledge_point": name,
@@ -21,6 +29,7 @@ def fixture_plan(context):
                     "question_count": count,
                     "importance": 5,
                     "allocation_reason": "测试资料中明确出现的考点。",
+                    "document_ids": list(dict.fromkeys(owned)),
                 }
             )
             counts[name] = counts.get(name, 0) + count
@@ -31,7 +40,10 @@ def fixture_plan(context):
 
 
 def fixture_draft(context, plan):
-    ref = context.evidence[0]
+    by_document = {}
+    for item in context.evidence:
+        by_document.setdefault(item.document_id, item)
+    doc_refs = list(by_document.values()) or [context.evidence[0]]
     total = Decimal(str(context.config.total_score or context.config.question_count * 10))
     unit = (total / context.config.question_count).quantize(Decimal("0.01"))
     questions = []
@@ -41,6 +53,7 @@ def fixture_draft(context, plan):
             global_order = (
                 context.question_slots[order - 1]["order"] if context.question_slots else order
             )
+            ref = doc_refs[(order - 1) % len(doc_refs)]
             question = {
                 "id": f"q{order}",
                 "order": order,
@@ -63,6 +76,12 @@ def fixture_draft(context, plan):
             }
             if item.question_type == "choice":
                 question.update(options=["同步初始序列号", "与序列号无关"], correct_option=0)
+            elif item.question_type == "multiple_choice":
+                question.update(
+                    options=["同步初始序列号", "确认双方收发能力", "跳过连接确认"],
+                    correct_options=[0, 1],
+                    reference_answer="A、B",
+                )
             elif item.question_type == "true_false":
                 question.update(boolean_answer=True)
             elif item.question_type == "fill_blank":

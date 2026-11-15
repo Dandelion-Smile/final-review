@@ -25,6 +25,7 @@ type Point = {
   heading: string;
   content: string;
   provenance: "source" | "synthesis" | "ai_supplement";
+  excerpt?: boolean;
   references: Reference[];
 };
 type Revision = {
@@ -544,6 +545,7 @@ function NoteEditor({
           <article className={`note-point${editing ? "" : " note-point-reading"}`} key={point.point_id}>
             <div className="note-point-body">
               <small className="note-point-number">考点 {index + 1}</small>
+              {point.excerpt && <p className="note-point-excerpt">这一部分是原文摘录</p>}
               {editing ? (
                 <>
                   <label>

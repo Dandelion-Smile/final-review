@@ -17,6 +17,7 @@ from final_review.quiz_contract import (
     QuizGenerationContext,
     build_quiz_context,
     validate_quiz_draft,
+    validate_quiz_plan,
 )
 from final_review.schemas import MaterialInput
 
@@ -39,6 +40,7 @@ def draft_case(quiz_system):
                 "question_count": 1,
                 "importance": 5,
                 "allocation_reason": "老师课件强调同步初始序列号，属于核心考点。",
+                "document_ids": ["m3-ppt"],
             }
         ]
     }
@@ -325,3 +327,90 @@ def test_formal_llm_contract_roundtrip_uses_frozen_config(draft_case):
         generated = model.quiz_draft(context, QuizDraftPlan.model_validate(generated_plan))
     assert len(requests) == 2
     assert validate_quiz_draft(context, generated_plan, generated).valid
+
+
+def test_same_chunk_quotes_merge_before_duplicate_check(draft_case):
+    _, context, plan, payload = draft_case
+    content = context.evidence[0].content
+    start = content.index("同步双方")
+    end = content.index("初始序列号") + len("初始序列号")
+    payload["questions"][0]["citations"] = [
+        {"chunk_id": context.evidence[0].chunk_id, "quote": content[start:end]},
+        {"chunk_id": context.evidence[0].chunk_id, "quote": "初始序列号"},
+    ]
+    result = validate_quiz_draft(context, plan, payload)
+    assert result.valid, result.issues
+    references = result.validated_draft["questions"][0]["references"]
+    assert len(references) == 1
+    assert references[0]["quote"] == content[start:end]
+
+
+def test_plan_names_files_left_out_before_generation(draft_case):
+    system, _, _, _ = draft_case
+    system.kb.ingest(
+        MaterialInput(
+            document_id="m3-exam",
+            course_id="net",
+            title="历年考试",
+            chapter="TCP",
+            source_type="past_exam",
+            markdown="真题要求解释三次握手同步双方初始序列号。",
+        ),
+        user_id="local-user",
+    )
+    config = resolve_quiz_config(
+        system.store,
+        "local-user",
+        "net",
+        complete_input(
+            source_document_ids=["m3-ppt", "m3-exam"],
+            blueprint=[{"question_type": "short_answer", "question_count": 2}],
+        ),
+    ).config
+    materials = CourseMaterials(system.store, "net", "local-user")
+    evidence = [
+        item.model_dump(mode="json")
+        for item in materials.chunks(materials.select(config.source_document_ids))
+    ]
+    context = build_quiz_context(system.store, config, evidence)
+    plan = {
+        "allocations": [
+            {
+                "knowledge_point": "三次握手",
+                "question_type": "short_answer",
+                "question_count": 2,
+                "importance": 5,
+                "allocation_reason": "只写了课件里的握手。",
+                "document_ids": ["m3-ppt"],
+            }
+        ]
+    }
+    issues = validate_quiz_plan(context, plan)
+    coverage = [issue for issue in issues if issue["code"] == "source_coverage"]
+    assert coverage
+    assert "不会进入试卷" in coverage[0]["message"]
+    assert "历年考试" in coverage[0]["message"]
+    payload = {
+        "title": "TCP模拟卷",
+        "questions": [
+            {
+                "id": f"q{order}",
+                "order": order,
+                "knowledge_point": "三次握手",
+                "question_type": "short_answer",
+                "stem": f"第{order}题：三次握手的作用是什么？",
+                "score": 5,
+                "reference_answer": "同步初始序列号。",
+                "explanation": "建立连接前需要同步序列号。",
+                "core_point": "连接建立",
+                "must_include": ["同步初始序列号"],
+                "common_mistakes": ["只写建立连接"],
+                "scoring_tips": "写出同步序列号这一关键词。",
+                "provenance": "source",
+                "citations": [{"chunk_id": evidence[0]["chunk_id"], "quote": "同步双方初始序列号"}],
+            }
+            for order in (1, 2)
+        ],
+    }
+    result = validate_quiz_draft(context, plan, payload)
+    assert any(issue.code == "source_coverage" for issue in result.issues)

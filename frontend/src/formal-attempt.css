@@ -6,7 +6,7 @@
 .formal-attempt input[type="text"], .formal-attempt textarea, .formal-attempt article > label > input { display: block; width: 100%; margin-top: 5px; padding: 9px; border: 1px solid #b8c9be; border-radius: 6px; font: inherit; }
 .formal-attempt textarea { min-height: 110px; resize: vertical; }
 .formal-options label { display: flex; align-items: center; gap: 9px; }
-.formal-save { display: flex; gap: 12px; align-items: center; margin-top: 12px; }
+.formal-save { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-top: 12px; }
 .formal-save span { color: #53685b; font-size: 13px; }
 .formal-submit { border-top: 1px solid #dce5de; padding: 20px 0; }
 .formal-submit button, .formal-save button { border: 1px solid #91b89b; border-radius: 7px; background: #edf7ef; padding: 8px 14px; cursor: pointer; }

@@ -12,6 +12,7 @@ from .checkpoints import SurrealSaver
 from .config import Settings
 from .domain import DomainService
 from .llm import ModelError
+from .observe import observation
 from .policy import SOURCE_PRIORITY
 from .quiz_config import merge_quiz_input, resolve_quiz_config
 from .schemas import (
@@ -612,26 +613,38 @@ class FinalReviewAgent:
     ):
         lookup = {item["chunk_id"]: item for item in evidence}
         issues = []
+        batch_meta = {
+            "batch_index": batch_index + 1,
+            "batch_total": batch_total,
+            "point_limit": point_limit,
+        }
         for _ in range(self.settings.max_repairs + 1):
-            try:
-                generated = GeneratedNote.model_validate(
-                    self.model.note(
-                        {
-                            "note_config": config,
-                            "evidence": evidence,
-                            "issues_to_fix": issues,
-                            "batch_index": batch_index + 1,
-                            "batch_total": batch_total,
-                            "batch_instruction": (
-                                f"本批最多生成 {point_limit} 个考点，逐字引用本批原文；"
-                                "不要输出批次字样"
-                            ),
-                        }
+            fallback_reason = None
+            with observation("note-batch-generate", batch_meta) as span:
+                try:
+                    generated = GeneratedNote.model_validate(
+                        self.model.note(
+                            {
+                                "note_config": config,
+                                "evidence": evidence,
+                                "issues_to_fix": issues,
+                                "batch_index": batch_index + 1,
+                                "batch_total": batch_total,
+                                "batch_instruction": (
+                                    f"本批最多生成 {point_limit} 个考点，逐字引用本批原文；"
+                                    "不要输出批次字样"
+                                ),
+                            }
+                        )
                     )
-                )
-            except (ModelError, ValueError):
+                except (ModelError, ValueError) as exc:
+                    span.update(level="ERROR", status_message=type(exc).__name__)
+                    fallback_reason = "模型响应格式错误"
+                else:
+                    span.update(output={"points": len(generated.points)})
+            if fallback_reason:
                 return self._extractive_note_batch(
-                    evidence, config["note_type"], "模型响应格式错误", point_limit
+                    evidence, config["note_type"], fallback_reason, point_limit
                 )
             points, issues = [], []
             if len(generated.points) > point_limit:
@@ -672,19 +685,26 @@ class FinalReviewAgent:
             if not issues:
                 if progress:
                     progress.report(f"正在核对第 {batch_index + 1}/{batch_total} 部分")
-                try:
-                    verdict = self.model.verify(
-                        {
-                            "request": request,
-                            "output": {
-                                "points": [point for point in points if point["references"]]
-                            },
-                            "evidence": evidence,
-                        }
-                    )
-                except ModelError:
+                fallback_reason = None
+                with observation("note-batch-verify", batch_meta) as span:
+                    try:
+                        verdict = self.model.verify(
+                            {
+                                "request": request,
+                                "output": {
+                                    "points": [point for point in points if point["references"]]
+                                },
+                                "evidence": evidence,
+                            }
+                        )
+                    except ModelError as exc:
+                        span.update(level="ERROR", status_message=type(exc).__name__)
+                        fallback_reason = "模型核对响应格式错误"
+                    else:
+                        span.update(output={"supported": bool(verdict.get("supported"))})
+                if fallback_reason:
                     return self._extractive_note_batch(
-                        evidence, config["note_type"], "模型核对响应格式错误", point_limit
+                        evidence, config["note_type"], fallback_reason, point_limit
                     )
                 if not verdict["supported"]:
                     issues = verdict["issues"] or ["考点未通过语义证据校验"]
@@ -724,6 +744,7 @@ class FinalReviewAgent:
                     "heading": heading[:200],
                     "content": content[:400],
                     "provenance": "source",
+                    "excerpt": True,
                     "references": [
                         {
                             "chunk_id": source["chunk_id"],
@@ -739,12 +760,18 @@ class FinalReviewAgent:
                 break
         if not points:
             raise ValueError("所选资料片段均为空，无法生成笔记")
-        return {
+        result = {
             "title": "复习资料摘录",
             "points": points,
             "source_ids": [item["chunk_id"] for item in evidence],
             "fallback_reason": reason,
         }
+        with observation(
+            "note-batch-excerpt-fallback",
+            {"reason": reason, "point_count": len(points)},
+        ) as span:
+            span.update(output={"fallback_reason": reason, "point_count": len(points)})
+        return result
 
     @staticmethod
     def _merge_note_batches(results: list[dict], point_limit: int = 20) -> list[dict]:
@@ -771,6 +798,8 @@ class FinalReviewAgent:
                         for ref in point["references"]
                         if (ref["chunk_id"], ref["quote"]) not in known
                     )
+                    if point.get("excerpt"):
+                        existing["excerpt"] = True
                     if existing["provenance"] != "ai_supplement":
                         sources = {ref["document_id"] for ref in existing["references"]}
                         existing["provenance"] = "synthesis" if len(sources) > 1 else "source"
@@ -976,11 +1005,20 @@ class FinalReviewAgent:
                 if result is None:
                     return {"response": self._note_refusal(request["session_id"])}
                 if progress:
-                    progress.report(
-                        f"已完成第 {index + 1}/{len(batches)} 部分",
-                        batch_index=index,
-                        batch_result=result,
-                    )
+                    with observation(
+                        "note-batch-save",
+                        {
+                            "batch_index": index + 1,
+                            "batch_total": len(batches),
+                            "fallback_reason": result.get("fallback_reason"),
+                            "point_count": len(result.get("points") or []),
+                        },
+                    ):
+                        progress.report(
+                            f"已完成第 {index + 1}/{len(batches)} 部分",
+                            batch_index=index,
+                            batch_result=result,
+                        )
             results.append(result)
         if progress:
             progress.report("正在合并与去重")
@@ -1016,7 +1054,10 @@ class FinalReviewAgent:
         coverage = plan["coverage"]
         lines = [f"# {title}"]
         for point in points:
-            lines.extend(["", f"## {point['heading']}", "", point["content"]])
+            lines.extend(["", f"## {point['heading']}", ""])
+            if point.get("excerpt"):
+                lines.extend(["这一部分是原文摘录", ""])
+            lines.append(point["content"])
         created = DomainService(self.store, request["owner_id"]).create_note_draft(
             request["course_id"],
             {

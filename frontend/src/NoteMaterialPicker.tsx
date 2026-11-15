@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { api, checkSession } from "./workbench-api";
 import "./note-material-picker.css";
+import { materialNoteHref } from "./course-routes";
 
 export type NoteMaterial = {
   document_id: string;
@@ -13,6 +14,7 @@ export type NoteMaterial = {
   parse_error?: string;
   uploaded_at?: string;
   file_size?: number;
+  parse_strategy?: string;
 };
 
 const sourceNames: Record<string, string> = {
@@ -210,7 +212,7 @@ export default function NoteMaterialPicker({ courseId, selected, onUploaded, onC
         return <label key={item.document_id} className={`note-source-row${isChecked ? " selected" : ""}${ready ? "" : " unavailable"}`}>
           <input type="checkbox" checked={isChecked} disabled={!ready && !isChecked} onChange={() => { if (!isChecked && checked.length >= maxSelection) { setError(`单次最多选择 ${maxSelection} 份资料，请先移除一份。`); return; } setError(""); setChecked(current => isChecked ? current.filter(id => id !== item.document_id) : [...current, item.document_id]); }} aria-label={`选择 ${materialLabel(item)}，编号 ${item.document_id.slice(0, 8)}`} />
           <span className="note-source-row-body"><strong>{materialLabel(item)}</strong><span>{sourceNames[item.source_type] ?? item.source_type} · {item.chapter || "未归类"} · {item.uploaded_at ? new Date(item.uploaded_at).toLocaleString("zh-CN") : "上传时间未知"} · 编号 {item.document_id.slice(0, 8)}</span>{!ready && item.parse_error && <em>{item.parse_error}</em>}{item.parse_status === "failed" && isChecked && <button type="button" onClick={event => { event.preventDefault(); void retry(item); }}>重试处理</button>}</span>
-          <span className={`note-source-status ${item.parse_status}`}>{statusNames[item.parse_status] ?? item.parse_status}</span>
+          {item.parse_strategy === "text-images-v1" && <a href={materialNoteHref(courseId, item.document_id)} onClick={() => onClose()}>打开资料笔记</a>}<span className={`note-source-status ${item.parse_status}`}>{statusNames[item.parse_status] ?? item.parse_status}</span>
         </label>;
       })}
     </div>

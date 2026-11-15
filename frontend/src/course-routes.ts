@@ -1,12 +1,21 @@
-export type CoursePage = "materials" | "notes" | "quiz" | "home" | "mistakes" | "report";
+export type CoursePage = "overview" | "materials" | "notes" | "quiz" | "home" | "mistakes" | "report";
 export type Page = CoursePage | "workbench" | "dashboard" | "calendar" | "account" | "notifications";
 export type CourseRoute = { page: Page; courseId?: string; detail?: string[] };
-const sections: Record<string, CoursePage> = { materials: "materials", notes: "notes", quizzes: "quiz", tutor: "home", mistakes: "mistakes", report: "report" };
-const paths: Record<CoursePage, string> = { materials: "materials", notes: "notes", quiz: "quizzes", home: "tutor", mistakes: "mistakes", report: "report" };
+const sections: Record<string, CoursePage> = { overview: "overview", materials: "materials", notes: "notes", quizzes: "quiz", tutor: "home", mistakes: "mistakes", report: "report" };
+const paths: Record<CoursePage, string> = { overview: "overview", materials: "materials", notes: "notes", quiz: "quizzes", home: "tutor", mistakes: "mistakes", report: "report" };
 const decode = (value: string) => { try { return decodeURIComponent(value); } catch { return value; } };
 
-export function courseHref(id: string, page: CoursePage = "materials", detail: string[] = []) {
+export function courseHref(id: string, page: CoursePage = "overview", detail: string[] = []) {
   return `#/courses/${encodeURIComponent(id)}/${paths[page]}${detail.length ? "/" + detail.map(encodeURIComponent).join("/") : ""}`;
+}
+
+export function materialNoteHref(courseId: string, documentId: string) {
+  return courseHref(courseId, "materials", [documentId, "note"]);
+}
+
+export function materialNoteDocument(route: CourseRoute): string | null {
+  return route.page === "materials" && route.detail?.length === 2 && route.detail[1] === "note"
+    ? route.detail[0] : null;
 }
 
 export function readRoute(hash: string): CourseRoute {
@@ -19,7 +28,7 @@ export function readRoute(hash: string): CourseRoute {
   const parts = hash.replace(/^#\/?/, "").split("/").map(decode);
   if (parts[0] === "courses") {
     if (!parts[1]) return { page: "workbench" };
-    return { page: sections[parts[2]] ?? "materials", courseId: parts[1], detail: parts.slice(3) };
+    return { page: sections[parts[2]] ?? (parts[2] ? "materials" : "overview"), courseId: parts[1], detail: parts.slice(3) };
   }
   // Keep links in existing notes, citations and chat cards usable.
   if (parts[0] === "chat") return { page: "home", courseId: parts[1], detail: parts.slice(2) };
@@ -33,6 +42,7 @@ export function readRoute(hash: string): CourseRoute {
 export function legacyHash(hash: string): string {
   if (!hash.startsWith("#/courses/")) return hash;
   const route = readRoute(hash);
+  if (materialNoteDocument(route)) return hash;
   if (route.page === "notes") return route.detail?.length ? `#note/${route.detail.join("/")}` : "#notes";
   if (route.page === "materials") return route.detail?.length ? `#materials/${encodeURIComponent(route.courseId!)}/${route.detail.map(encodeURIComponent).join("/")}` : "#materials";
   return hash;

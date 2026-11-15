@@ -8,6 +8,7 @@ from .domain import DomainConflict, DomainNotFound, _id
 from .formal_attempt import _owned_attempt
 from .quiz_generation import read_quiz
 from .schemas import Identifier, Model, Text
+from .storage import stable_key
 
 
 class QuizFollowUpReply(Model):
@@ -31,6 +32,7 @@ def _result(store, user_id, course_id, attempt_id):
         question = questions.get(grade["question_revision_id"])
         if question is None:
             raise DomainConflict("评分题目与试卷版本不一致")
+        mistake_id = "mistake-" + stable_key(attempt_id, grade["question_revision_id"])[:32]
         items.append(
             {
                 "question_revision_id": question["question_revision_id"],
@@ -42,6 +44,7 @@ def _result(store, user_id, course_id, attempt_id):
                 "explanation": question["explanation"],
                 "source_label": question["source_label"],
                 "references": question["references"],
+                "mistake_id": mistake_id if store.get("mistake", mistake_id) else None,
                 **grade,
             }
         )
