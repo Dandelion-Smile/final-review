@@ -125,6 +125,16 @@ def _process_material_job(
             ):
                 raise MaterialLeaseLost()
             return
+        if document.get("parse_strategy") == "text-polish-v1":
+            from .material_text_polish_worker import process_text_polish
+
+            if isinstance(store, PostgresStore):
+                store.knowledge_settings = kb.settings
+            if not process_text_polish(
+                store, kb, job, document, path, source_hash, progress, metrics
+            ):
+                raise MaterialLeaseLost()
+            return
         if phase == "preview":
             progress("native_extract")
             pages = extract_preview(path, cache_dir, source_hash)
@@ -320,7 +330,7 @@ def main() -> None:
             finally:
                 queue_store.close()
 
-        with ThreadPoolExecutor(max_workers=3, thread_name_prefix="material-queue") as pools:
+        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="material-queue") as pools:
             futures = [
                 pools.submit(queue, phase, capacity)
                 for phase, capacity in (
@@ -329,6 +339,7 @@ def main() -> None:
                     ("images", settings.material_image_concurrency),
                 )
             ]
+            futures.append(pools.submit(_polish_queue_loop, shutdown, database_url, settings))
             try:
                 completed, _ = wait(futures, return_when=FIRST_EXCEPTION)
                 for future in completed:
@@ -338,6 +349,30 @@ def main() -> None:
     finally:
         store.close()
         flush()
+
+
+def _polish_queue_loop(shutdown, database_url, settings):
+    """Dedicated queue for note polish; extraction never waits on the model."""
+    from .material_note_polish_jobs import process_polish_job
+
+    queue_store = PostgresStore(database_url)
+
+    def execute(job):
+        task_store = PostgresStore(database_url)
+        try:
+            process_polish_job(task_store, job, settings)
+        finally:
+            task_store.close()
+
+    try:
+        run_queue(
+            queue_store.claim_polish_job,
+            execute,
+            settings.material_note_polish_concurrency,
+            stop_event=shutdown,
+        )
+    finally:
+        queue_store.close()
 
 
 if __name__ == "__main__":

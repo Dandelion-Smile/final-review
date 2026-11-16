@@ -54,9 +54,9 @@ flowchart TD
 
 本机处理 PPT/PPTX/DOC 需安装 LibreOffice；PPT 页面渲染需安装 Poppler 的 `pdftoppm`；图片 OCR 需安装 Tesseract 及 `chi_sim`、`eng` 语言包。使用 Docker Compose 启动 Agent 时，这些依赖由镜像安装。缺少工具或语言包时，上传会显示明确失败原因。PPT 最多处理 80 页，检索结果保留幻灯片位置。
 
-本机新增 PPT/PPTX 已启用 `MATERIAL_PPTX_PARSE_MODE=text_images`：提取原生文字、标题和备注，生成独立的连续资料笔记；复杂页后台配图，不调用视觉模型或 OCR。资料页单文件上传后自动进入阅读编辑页，支持目录、编辑保存、备注、原文对照、图片显隐和下载。可靠的初始文字独立进入索引与知识构建，截图不阻塞正文。已有正式资料不自动重建，其他格式保留原流程。详见 [第四步实现与本机启用](docs/material-note-reader-step4.md)。
+本机使用 `MATERIAL_PPTX_PARSE_MODE=text_only_polished`：新上传提取原生文字，可靠原文独立进入索引与知识构建，文本模型按知识主题生成完整学习笔记，含少量辅助解释、表格和章节归纳。每批语义复核，全文整理后发布；正文隐藏逐段来源，原文可集中查看。不调用视觉模型、OCR 或页面截图。已有资料保留上传时的策略；重新整理生成候选版本。详见 [资料学习笔记](docs/material-learning-notes.md) 与 [上传流程](docs/material-upload-and-polish-flow.md)。此前图文策略见 [第四步实现](docs/material-note-reader-step4.md)。
 
-`MATERIAL_NOTE_EDIT_ENABLED=true` 已在本机开放显式保存，服务端维护不可变笔记版本和多标签页冲突保护。编辑后保存仅更新资料笔记，检索/知识库仍使用上传时 V1；自动索引更新和旧证据失效属于后续步骤，页面会明确显示各自版本。018、019 迁移已在本机备份后应用，远端未发布。前三步历史验收见 [版本与任务基础](docs/material-text-images.md)。
+`MATERIAL_NOTE_EDIT_ENABLED=true` 已开放显式保存，服务端维护不可变版本和保存冲突保护。编辑只更新阅读笔记，检索/知识库仍使用初始原文；自动索引更新和旧证据失效属于后续步骤。本机已备份并应用 020、021 迁移，启用新规则需要后端与资料 worker 同时更新。前三步历史验收见 [版本与任务基础](docs/material-text-images.md)。
 
 旧的 `hybrid_visual` 策略保留供历史任务和显式回退使用；该策略复杂页的视觉理解由 `MATERIAL_VISION_ENABLED=true` 开启。`MATERIAL_VISION_MODEL_ID` 选择现有 `CHAT_MODELS` 中的提供商 ID；`MATERIAL_VISION_MODEL` 指定该账号可用的视觉模型，例如 [Qwen3-VL](https://help.aliyun.com/zh/model-studio/qwen3-vl-plus)。worker 将原生文字、教学备注与原页图片分别编号，逐块对照证据核验；本地 OCR 仅提供辅助提示。仅通过核验的视觉知识块与检查完整的原生文本进入正式索引；部分待核对时保留其他已通过内容。启用混合解析但关闭视觉模型时，纯文字页仍可完成，含复杂页的资料会明确提示需启用视觉解析；关闭混合解析后，新上传恢复原全页处理路径。
 

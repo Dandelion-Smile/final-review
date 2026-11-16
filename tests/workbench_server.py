@@ -21,7 +21,13 @@ COMPLETE_NOTE_REQUEST = "用 TCP 讲义生成一份笔记，整理成 12 分钟�
 def app():
     from tempfile import mkdtemp
 
-    settings = Settings(_env_file=None, embedding_dimensions=3, material_vision_enabled=False)
+    # MemoryStore exercises the original upload worker; PostgreSQL owns polish jobs.
+    settings = Settings(
+        _env_file=None,
+        embedding_dimensions=3,
+        material_vision_enabled=False,
+        material_pptx_parse_mode="hybrid_visual",
+    )
     settings.exports_dir = mkdtemp(prefix="final_review_e2e_exports_")
     settings.chat_models = [
         ChatModelConfig(

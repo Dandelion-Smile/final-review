@@ -36,6 +36,7 @@ def _resource_slot(kind, settings=None):
         "conversion": settings.material_conversion_concurrency,
         "vision": settings.material_vision_global_concurrency,
         "embedding": settings.embedding_request_concurrency,
+        "polish": settings.material_note_polish_concurrency,
     }[kind]
     with _lock:
         semaphore = _limits.setdefault((kind, capacity), BoundedSemaphore(capacity))

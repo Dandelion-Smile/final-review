@@ -1573,13 +1573,21 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
                 "chunk_count": 0,
                 "parse_status": "queued",
             }
-            text_images = settings.material_pptx_parse_mode == "text_images" and suffix in {
-                ".ppt",
-                ".pptx",
-            }
-            hybrid = text_images or (
-                settings.material_hybrid_enabled and suffix in {".ppt", ".pptx"}
+            text_polish = settings.material_pptx_parse_mode == "text_only_polished"
+            text_images = (
+                not text_polish
+                and settings.material_pptx_parse_mode == "text_images"
+                and suffix in {".ppt", ".pptx"}
             )
+            hybrid = (
+                text_polish
+                or text_images
+                or (settings.material_hybrid_enabled and suffix in {".ppt", ".pptx"})
+            )
+            if text_polish:
+                # Unified mode: every format takes the text-only snapshot path,
+                # including images (which report "no native text" instead of OCR).
+                document["parse_strategy"] = "text-polish-v1"
             if text_images:
                 document["parse_strategy"] = "text-images-v1"
             if hybrid:

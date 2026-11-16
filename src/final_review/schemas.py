@@ -56,6 +56,11 @@ class MaterialNoteSave(Model):
     body: dict
 
 
+class MaterialNoteCandidateApply(Model):
+    base_revision_id: Identifier
+    candidate_revision_id: Identifier
+
+
 class CourseCreate(Model):
     name: Annotated[str, Field(min_length=1, max_length=100)]
 

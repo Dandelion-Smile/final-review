@@ -11,7 +11,7 @@ async function loadTypeScript(path) {
 const { wireBody, bodyKey, plainNode } = await loadTypeScript("../src/material-note-api.ts");
 const { materialNoteHref, materialNoteDocument, readRoute, legacyHash } = await loadTypeScript("../src/course-routes.ts");
 const source = content => ({ type: "sourceBlock", attrs: { block_id: "native-1", page: 1,
-  content_origin: "native", searchable: true, exclusion_reasons: [] }, content });
+  content_origin: "native", searchable: true, exclusion_reasons: [], source_refs: [] }, content });
 
 test("editor code language defaults and ordered-list metadata obey the server contract", () => {
   const body = wireBody({ type: "doc", content: [source([
@@ -48,4 +48,23 @@ test("reading-note route has priority and existing citation URLs remain usable",
   assert.equal(materialNoteDocument(readRoute("#/courses/course-a/materials/document-b/chunk-1")), null);
   assert.equal(legacyHash("#/courses/course-a/materials/document-b/chunk-1"), "#materials/course-a/document-b/chunk-1");
   assert.equal(readRoute("#materials/course-a/document-b/chunk-1").page, "materials");
+});
+
+test("learning-note tables, inline marks and server-owned content roles survive serialization", () => {
+  const body = wireBody({ type: "doc", content: [{ ...source([
+    { type: "table", attrs: { style: "untrusted" }, content: [
+      { type: "tableRow", content: [{ type: "tableHeader", content: [{ type: "paragraph", content: [
+        { type: "text", text: "参数", marks: [{ type: "bold" }] },
+      ] }] }] },
+      { type: "tableRow", content: [{ type: "tableCell", attrs: { colspan: 1 }, content: [{ type: "paragraph", content: [
+        { type: "text", text: "port", marks: [{ type: "code" }] },
+      ] }] }] },
+    ] },
+  ]), attrs: { ...source([]).attrs, content_role: "explanation" } }] });
+  assert.equal(body.content[0].attrs.content_role, "explanation");
+  const table = body.content[0].content[0];
+  assert.equal(table.attrs, undefined);
+  assert.equal(table.content[1].content[0].attrs, undefined);
+  assert.deepEqual(table.content[0].content[0].content[0].content[0].marks, [{ type: "bold" }]);
+  assert.equal(plainNode(body), "参数\nport");
 });

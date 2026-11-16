@@ -41,3 +41,5 @@ htmlcov/
 .tools/
 logs/
 exports/
+# Database rollback artifact for learning-note v2 (contains private application data).
+backups/before-learning-note-v2-*.dump

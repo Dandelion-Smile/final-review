@@ -1,43 +1,16 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 test.beforeEach(async ({ request }) => {
   await request.post("http://127.0.0.1:8081/test/reset");
 });
 
-test("basic preview opens while formal parsing is still running", async ({ page, request }) => {
-  const course = await (await request.post("http://127.0.0.1:8081/api/courses", {
-    data: { name: "基础预览验收" },
-  })).json();
-  const documentId = "preview-proof";
-  await page.route(`**/api/courses/${course.course_id}/documents`, route => route.fulfill({
-    json: { items: [{ document_id: documentId, title: "正在解析的课件", file_name: "mixed.pptx",
-      source_type: "teacher_ppt", parse_status: "running", preview_status: "ready" }] },
-  }));
-  await page.route(`**/api/courses/${course.course_id}/material-jobs`, route => route.fulfill({
-    json: { items: [{ job_id: "job-preview", document_id: documentId, status: "running",
-      stage: "复杂页面 1/2", phase: "parse", attempts: 3 }] },
-  }));
-  await page.route(`**/documents/${documentId}/basic-preview`, route => route.fulfill({
-    json: { document_id: documentId, file_name: "mixed.pptx", preview_status: "ready",
-      total_pages: 2, parse_status: "running", pages: [
-        { position: 1, title: "DNS", native_text: "DNS 并非永远只使用 UDP，端口号为 53。",
-          notes: "教学备注独立保留", route: "native", reasons: ["原生文字提取完整"],
-          status: "completed", quality: "native_checked" },
-        { position: 2, title: "图片页", native_text: "", notes: "", route: "visual",
-          reasons: ["存在图片或截图"], status: "pending", quality: "pending" },
-      ] },
-  }));
-  await page.goto(`/#/courses/${course.course_id}/materials`);
-  await page.getByRole("button", { name: "基础文字预览", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "mixed.pptx" });
-  await expect(dialog.getByText("DNS 并非永远只使用 UDP，端口号为 53。", { exact: true })).toBeVisible();
-  await expect(dialog.getByText("本页暂无可提取的原生文字，完整内容等待视觉识别。")).toBeVisible();
-  await dialog.getByText("教学备注（原文）", { exact: true }).click();
-  await expect(dialog.getByText("教学备注独立保留", { exact: true })).toBeVisible();
-  await expect(dialog.getByText("正式解析：复杂页面 1/2")).toBeVisible();
-  await expect(dialog.getByRole("button", { name: "正式解析内容", exact: true })).toHaveCount(0);
-  await dialog.getByRole("button", { name: "关闭", exact: true }).click();
-});
+// Existing citations still open their source preview without a card action.
+async function openSourceCitation(page: Page) {
+  const courses = await (await page.request.get("http://127.0.0.1:8081/api/courses")).json();
+  const courseId = courses.items[0].course_id;
+  const documents = await (await page.request.get(`http://127.0.0.1:8081/api/courses/${courseId}/documents`)).json();
+  await page.goto(`/#/courses/${courseId}/materials/${documents.items[0].document_id}`);
+}
 
 test("batch sends three uploads concurrently", async ({ page, request }) => {
   await request.post("http://127.0.0.1:8081/api/courses", { data: { name: "并行上传" } });
@@ -209,10 +182,11 @@ test("student uploads course material and sees a readable failure", async ({ pag
   await page.getByRole("button", { name: "上传并处理" }).click();
   await expect(page.locator(".material-status.failed")).toBeVisible();
   await expect(page.getByText("图片损坏或格式与扩展名不符")).toBeVisible();
-  await expect(page.getByRole("button", { name: "重试" })).toBeVisible();
+  await expect(page.locator(".material-actions").getByRole("button", { name: "重试", exact: true })).toHaveCount(0);
+  await expect(page.locator(".materials-list li").filter({ hasText: "bad.png" }).getByRole("button", { name: "详情", exact: true })).toBeDisabled();
 });
 
-test("student edits, filters and deletes an unreferenced material", async ({ page }) => {
+test("student filters and deletes an unreferenced material", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "＋ 新建课程" }).click();
   await page.getByRole("dialog", { name: "新建课程" }).getByRole("textbox", { name: "课程名称" }).fill("计算机网络");
@@ -222,24 +196,16 @@ test("student edits, filters and deletes an unreferenced material", async ({ pag
   await page.getByLabel("文件").setInputFiles({ name: "lecture.md", mimeType: "text/markdown", buffer: Buffer.from("网络三次握手") });
   await page.getByRole("button", { name: "上传并处理" }).click();
   await expect(page.locator(".material-status.ready")).toBeVisible();
-  await page.getByRole("button", { name: "编辑", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "编辑资料信息" });
-  await dialog.getByLabel("标题").fill("网络讲义");
-  await dialog.getByLabel("章节").fill("第二章");
-  await dialog.getByRole("combobox", { name: "来源类型", exact: true }).click();
-  await page.getByRole("option", { name: "老师 PPT", exact: true }).click();
-  await dialog.getByRole("button", { name: "保存资料信息" }).click();
-  await expect(page.getByText("网络讲义")).toBeVisible();
   await page.getByRole("combobox", { name: "筛选章节", exact: true }).click();
-  await page.getByRole("option", { name: "第二章", exact: true }).click();
+  await page.getByRole("option", { name: "第一章", exact: true }).click();
   await page.getByRole("combobox", { name: "筛选来源", exact: true }).click();
-  await page.getByRole("option", { name: "平时作业", exact: true }).click();
+  await page.getByRole("option", { name: "老师 PPT", exact: true }).click();
   await expect(page.getByText("没有符合筛选条件的资料。")).toBeVisible();
   await page.getByRole("combobox", { name: "筛选来源", exact: true }).click();
-  await page.getByRole("option", { name: "老师 PPT", exact: true }).click();
-  await expect(page.getByText("网络讲义")).toBeVisible();
+  await page.getByRole("option", { name: "平时作业", exact: true }).click();
+  await expect(page.locator(".materials-list strong")).toHaveText("lecture.md");
   await page.getByRole("button", { name: "删除", exact: true }).click();
-  const deleteDialog = page.getByRole("dialog", { name: "删除“网络讲义”？" });
+  const deleteDialog = page.getByRole("dialog", { name: "删除“lecture.md”？" });
   await expect(deleteDialog.getByText("正式资产")).toBeVisible();
   await deleteDialog.getByRole("button", { name: "确认删除资料" }).click();
   await expect(page.getByText("资料已删除。")).toBeVisible();
@@ -285,7 +251,7 @@ test("student opens a material excerpt and returns to its link", async ({ page }
   });
   await page.getByRole("button", { name: "上传并处理" }).click();
   await expect(page.locator(".material-status.ready")).toBeVisible();
-  await page.getByRole("button", { name: "预览" }).click();
+  await openSourceCitation(page);
   const dialog = page.getByRole("dialog", { name: "整理后的资料" });
   await expect(dialog.getByText("lecture.md", { exact: false })).toBeVisible();
   await expect(dialog.locator(".material-reading-text")).toHaveText("Source excerpt for review");
@@ -320,9 +286,10 @@ test("duplicate uploads report ready and failed material states truthfully", asy
   await page.getByLabel("文件", { exact: true }).setInputFiles(broken);
   await page.getByRole("button", { name: "上传并处理" }).click();
   await expect(page.locator(".materials-upload-results .processing_failed")).toContainText("已有资料处理失败");
-  await expect(page.getByRole("status")).toContainText("请在下方资料列表点击“重试”");
+  await expect(page.getByRole("status")).toContainText("具体原因见下方资料列表");
   await expect(page.getByRole("button", { name: "上传并处理" })).toBeDisabled();
-  await expect(page.getByRole("button", { name: "重试", exact: true })).toBeEnabled();
+  await expect(page.locator(".material-actions").getByRole("button", { name: "重试", exact: true })).toHaveCount(0);
+  await expect(page.locator(".materials-list li").filter({ hasText: "broken.png" }).getByRole("button", { name: "详情", exact: true })).toBeDisabled();
   await expect(page.locator(".materials-list .material-detail")).toHaveCount(2);
 });
 
@@ -372,7 +339,7 @@ test("plain knowledge preview offers original slides and excluded page warnings"
   await page.route("**/documents/*/pages/*", route => route.fulfill({ contentType: "image/png", body: Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a5F8AAAAASUVORK5CYII=", "base64",
   ) }));
-  await page.getByRole("button", { name: "预览", exact: true }).click();
+  await openSourceCitation(page);
   const dialog = page.getByRole("dialog", { name: "整理后的资料" });
   await expect(dialog.getByRole("heading", { name: "请求流程" })).toBeVisible();
   await expect(dialog.locator(".material-reading-text")).toHaveText("Servlet 调用 service() 方法。");
@@ -423,7 +390,7 @@ test("partial page retains verified knowledge and lists only failed blocks for r
     body.items[0].position_kind = "slide";
     await route.fulfill({ json: body });
   });
-  await page.getByRole("button", { name: "预览", exact: true }).click();
+  await openSourceCitation(page);
   const dialog = page.getByRole("dialog", { name: "整理后的资料" });
   await expect(dialog.locator(".material-reading-text")).toHaveText("service()");
   await expect(dialog.getByText("图片未包含此事实")).toHaveCount(0);
@@ -453,7 +420,7 @@ test("continuous reading scrolls while tabs and actions stay visible", async ({ 
   });
   await page.getByRole("button", { name: "上传并处理" }).click();
   await expect(page.locator(".material-status.ready")).toBeVisible();
-  await page.getByRole("button", { name: "预览" }).click();
+  await openSourceCitation(page);
   const dialog = page.getByRole("dialog", { name: "整理后的资料" });
   const reading = dialog.locator(".material-preview-content");
   await expect(reading.locator(".material-reading-section").first()).toBeVisible();

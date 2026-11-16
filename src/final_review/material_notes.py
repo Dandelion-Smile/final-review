@@ -8,7 +8,18 @@ from hashlib import sha256
 STRATEGY = "text-images-v1"
 MAX_BODY_BYTES = 2_000_000
 BLOCK_TYPES = {"sourceBlock", "teachingNote", "nativeFragment"}
-FORMATS = {"heading", "paragraph", "bulletList", "orderedList", "listItem", "codeBlock"}
+FORMATS = {
+    "heading",
+    "paragraph",
+    "bulletList",
+    "orderedList",
+    "listItem",
+    "codeBlock",
+    "table",
+    "tableRow",
+    "tableHeader",
+    "tableCell",
+}
 MARKS = {"bold", "italic", "strike", "code"}
 IDENTIFIER = re.compile(r"^[\w.-]{1,100}$")
 
@@ -31,7 +42,13 @@ def node_text(node):
     if node["type"] == "hardBreak":
         return "\n"
     children = node.get("content", [])
-    separator = "" if node["type"] in {"paragraph", "heading", "codeBlock"} else "\n"
+    separator = (
+        ""
+        if node["type"] in {"paragraph", "heading", "codeBlock"}
+        else "\t"
+        if node["type"] == "tableRow"
+        else "\n"
+    )
     return separator.join(node_text(child) for child in children)
 
 
@@ -164,6 +181,23 @@ def validate_body(body, previous):
         content = node.get("content", [])
         if not isinstance(content, list):
             raise ValueError("正文内容无效")
+        if kind in {"table", "tableRow", "tableCell", "tableHeader"}:
+            allowed_children = {
+                "table": {"tableRow"},
+                "tableRow": {"tableCell", "tableHeader"},
+                "tableCell": {"paragraph"},
+                "tableHeader": {"paragraph"},
+            }[kind]
+            if not content or any(
+                c.get("type") not in allowed_children for c in content if isinstance(c, dict)
+            ):
+                raise ValueError("表格结构无效")
+            if kind == "table":
+                widths = [len(row.get("content", [])) for row in content if isinstance(row, dict)]
+                if not widths or len(set(widths)) != 1 or not 1 <= widths[0] <= 8:
+                    raise ValueError("表格列数无效或行宽不一致")
+                if len(content) > 61:
+                    raise ValueError("表格行数过多")
         for child in content:
             check(child, depth + 1)
 
@@ -200,8 +234,17 @@ def validate_body(body, previous):
             "content_origin",
             "searchable",
             "exclusion_reasons",
+            "source_refs",
+            "content_role",
         }:
             raise ValueError("资料来源节点无效")
+        refs = attrs.get("source_refs", [])
+        if not isinstance(refs, list) or any(
+            not isinstance(ref, str) or not ref or len(ref) > 100 for ref in refs
+        ):
+            raise ValueError("来源引用无效")
+        if attrs.get("content_role", "source") not in {"source", "explanation", "summary"}:
+            raise ValueError("内容类别无效")
         if not isinstance(node.get("content"), list):
             raise ValueError("资料来源内容无效")
         for child in node["content"]:

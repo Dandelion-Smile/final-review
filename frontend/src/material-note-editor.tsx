@@ -6,25 +6,31 @@ import { plainNode, type PageImage } from "./material-note-api";
 
 export const MaterialNoteContext = createContext<{
   images: Record<number, PageImage>; editable: boolean; originals: Record<string, string>;
+  showSources?: boolean;
   retryImages: () => void;
 }>({ images: {}, editable: false, originals: {}, retryImages: () => {} });
 
 function SourceView({ node }: NodeViewProps) {
-  const { originals } = useContext(MaterialNoteContext);
+  const { originals, showSources = false } = useContext(MaterialNoteContext);
   const [expanded, setExpanded] = useState(true);
+  const [showRefs, setShowRefs] = useState(false);
   const note = node.type.name === "teachingNote";
   const origin = node.attrs.content_origin;
   const changed = origin === "native" || origin === "teaching_note"
     ? originals[node.attrs.block_id] !== undefined && originals[node.attrs.block_id] !== plainNode(node.toJSON()) : false;
-  const label = origin === "user_added" ? "用户补充" : origin === "user_edit" || changed ? "用户编辑" : note ? "教学备注" : "课件原文";
-  return <NodeViewWrapper className={`material-note-source${note ? " is-teaching-note" : ""}${node.attrs.searchable === false ? " is-fragment" : ""}`}
+  const label = origin === "model_polished" ? "根据课件文字整理"
+    : origin === "user_added" ? "用户补充" : origin === "user_edit" || changed ? "用户编辑" : note ? "教学备注" : "课件原文";
+  const refs: string[] = Array.isArray(node.attrs.source_refs) ? node.attrs.source_refs : [];
+  return <NodeViewWrapper className={`material-note-source${note ? " is-teaching-note" : ""}${node.attrs.searchable === false && origin !== "model_polished" ? " is-fragment" : ""}`}
     data-note-block={node.attrs.block_id} data-page={node.attrs.page ?? "supplement"}>
-    <div className="material-note-source-meta" contentEditable={false}>
+    {showSources && <div className="material-note-source-meta" contentEditable={false}>
       <span>{node.attrs.page ? `第 ${node.attrs.page} 页` : "补充说明"}</span><span>{label}</span>
-      {node.attrs.searchable === false && <span className="material-note-fragment-label" title={(node.attrs.exclusion_reasons ?? []).join("；")}>原生片段 · 待补充</span>}
+      {node.attrs.searchable === false && origin === "native" && <span className="material-note-fragment-label" title={(node.attrs.exclusion_reasons ?? []).join("；")}>原生片段 · 待核对</span>}
+      {refs.length > 0 && <button type="button" className="material-note-refs-toggle" aria-expanded={showRefs} onClick={() => setShowRefs(!showRefs)}>来源 {refs.length}</button>}
       {note && <button type="button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? "收起备注" : "展开备注"}</button>}
-    </div>
+    </div>}
     <div className={expanded ? "" : "material-note-folded"}><NodeViewContent className="material-note-source-content" /></div>
+    {showSources && showRefs && refs.length > 0 && <p className="material-note-source-refs" contentEditable={false}>依据原文块：{refs.join("、")}</p>}
   </NodeViewWrapper>;
 }
 
@@ -70,6 +76,8 @@ function sourceNode(name: string) {
     addAttributes: () => ({
       block_id: { default: null }, page: { default: null }, content_origin: { default: "user_added" },
       searchable: { default: true }, exclusion_reasons: { default: [] },
+      source_refs: { default: [] },
+      content_role: { default: null },
     }),
     parseHTML: () => [{ tag: `section[data-material-kind="${name}"]` }],
     renderHTML: ({ HTMLAttributes }) => ["section", mergeAttributes(HTMLAttributes, { "data-material-kind": name }), 0],
@@ -82,6 +90,18 @@ export const materialNoteExtensions = [
     underline: false, trailingNode: false, heading: { levels: [1, 2, 3] } }),
   Node.create({ name: "doc", topNode: true, content: "materialBlock*" }),
   sourceNode("sourceBlock"), sourceNode("teachingNote"), sourceNode("nativeFragment"),
+  Node.create({ name: "table", group: "block", content: "tableRow+", isolating: true,
+    parseHTML: () => [{ tag: "table" }],
+    renderHTML: () => ["table", { class: "material-note-table" }, ["tbody", 0]],
+  }),
+  Node.create({ name: "tableRow", content: "(tableHeader | tableCell)+",
+    parseHTML: () => [{ tag: "tr" }], renderHTML: () => ["tr", 0],
+  }),
+  ...(["tableHeader", "tableCell"] as const).map(name => Node.create({
+    name, content: "paragraph+", isolating: true,
+    parseHTML: () => [{ tag: name === "tableHeader" ? "th" : "td" }],
+    renderHTML: () => [name === "tableHeader" ? "th" : "td", 0],
+  })),
   Node.create({
     name: "pageImage", group: "materialBlock", atom: true, selectable: false,
     addAttributes: () => ({ block_id: { default: null }, page: { default: null }, hidden: { default: false } }),

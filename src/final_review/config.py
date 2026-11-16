@@ -69,7 +69,9 @@ class Settings(BaseSettings):
     material_vision_concurrency: int = Field(default=4, ge=1, le=4)
     material_file_concurrency: int = Field(default=5, ge=1, le=5)
     material_hybrid_enabled: bool = True
-    material_pptx_parse_mode: Literal["hybrid_visual", "text_images"] = "hybrid_visual"
+    material_pptx_parse_mode: Literal["hybrid_visual", "text_images", "text_only_polished"] = (
+        "hybrid_visual"
+    )
     material_note_edit_enabled: bool = False
     material_preview_concurrency: int = Field(default=2, ge=1, le=4)
     material_image_concurrency: int = Field(default=1, ge=1, le=2)
@@ -85,6 +87,17 @@ class Settings(BaseSettings):
     knowledge_block_pages: int = Field(default=4, ge=1, le=20)
     knowledge_top_k: int = Field(default=5, ge=1, le=20)
     knowledge_min_similarity: float = Field(default=0.65, ge=-1, le=1)
+    # Text-polish strategy: one text model turns the immutable native-text snapshot
+    # into a continuous, editable reading note. Never uses the vision/OCR stack.
+    material_note_polish_model_id: str = "default"
+    material_note_polish_model: str = ""
+    material_note_polish_timeout: float = Field(default=180, gt=0, le=600)
+    material_note_polish_max_output_tokens: int = Field(default=16384, ge=2048, le=65536)
+    material_note_polish_concurrency: int = Field(default=3, ge=1, le=6)
+    material_note_polish_batch_blocks: int = Field(default=24, ge=6, le=60)
+    material_note_polish_prompt_version: str = "material-learning-v2"
+    material_note_polish_review_mode: Literal["always", "on_check_failed"] = "always"
+    material_note_polish_max_attempts: int = Field(default=3, ge=1, le=5)
     max_upload_mb: int = Field(default=10, ge=1, le=50)
     top_k: int = Field(default=5, ge=1, le=20)
     retrieval_candidates: int = Field(default=20, ge=1, le=100)
