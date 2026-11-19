@@ -40,7 +40,11 @@ SUPPORTED_SUFFIXES = {
 }
 IMAGE_FORMATS = {".png": "PNG", ".jpg": "JPEG", ".jpeg": "JPEG", ".webp": "WEBP"}
 MAX_IMAGE_PIXELS = 20_000_000
+# Visual, OCR and PDF-render paths. Do not raise this for text-only polished notes.
 MAX_PRESENTATION_SLIDES = 80
+TEXT_POLISH_STRATEGY = "text-polish-v1"
+MATERIAL_TEXT_MAX_SLIDES_MIN = 1
+MATERIAL_TEXT_MAX_SLIDES_MAX = 500
 PRESENTATION_TIMEOUT_SECONDS = 600
 CONVERSION_TIMEOUT_SECONDS = 45
 LEGACY_OFFICE_TIMEOUT_SECONDS = 120
@@ -94,13 +98,126 @@ def _tessdata_dir() -> Path | None:
     return None
 
 
+class OfficeArchiveError(ValueError):
+    """Unreadable Office package. Match ``reason``, not the message text."""
+
+    reason = "corrupt"
+
+
+class PresentationSlideError(ValueError):
+    """PPT acceptance failure. Tests and callers match ``reason``, not Chinese text.
+
+    ``empty`` — the package opened and contains zero slides.
+    ``corrupt`` — the package is not a readable presentation.
+    ``over_limit`` — the slide count is above the limit for the saved strategy.
+    """
+
+    def __init__(
+        self,
+        reason: str,
+        message: str,
+        *,
+        actual: int | None = None,
+        limit: int | None = None,
+        parse_strategy: str | None = None,
+    ):
+        super().__init__(message)
+        self.reason = reason
+        self.actual = actual
+        self.limit = limit
+        self.parse_strategy = parse_strategy
+
+
+def presentation_slide_limit(
+    parse_strategy: str | None, *, text_max_slides: int | None = None
+) -> int:
+    """Choose a cap from the task's saved strategy, never from the live global mode.
+
+    Only ``text-polish-v1`` uses ``MATERIAL_TEXT_MAX_SLIDES``. Every other saved
+    strategy, including a missing historical strategy, keeps the visual cap.
+    """
+    if parse_strategy != TEXT_POLISH_STRATEGY:
+        return MAX_PRESENTATION_SLIDES
+    if text_max_slides is None:
+        text_max_slides = Settings().material_text_max_slides
+    if (
+        isinstance(text_max_slides, bool)
+        or not isinstance(text_max_slides, int)
+        or not MATERIAL_TEXT_MAX_SLIDES_MIN <= text_max_slides <= MATERIAL_TEXT_MAX_SLIDES_MAX
+    ):
+        raise ValueError(
+            "MATERIAL_TEXT_MAX_SLIDES 必须是 "
+            f"{MATERIAL_TEXT_MAX_SLIDES_MIN} 到 {MATERIAL_TEXT_MAX_SLIDES_MAX} 的整数"
+        )
+    return text_max_slides
+
+
+def presentation_slide_error(
+    reason: str,
+    *,
+    actual: int | None = None,
+    limit: int | None = None,
+    parse_strategy: str | None = None,
+) -> PresentationSlideError:
+    details = {
+        "empty": "PPT 页数为 0，没有可解析的幻灯片",
+        "corrupt": "PPT 文件损坏或格式与扩展名不符，无法读取页数",
+        "over_limit": f"PPT 页数超限：实际 {actual} 页，允许 {limit} 页",
+    }
+    if reason not in details:
+        raise ValueError(f"unknown slide error reason: {reason}")
+    tokens = [f"slide_error={reason}"]
+    if actual is not None:
+        tokens.append(f"actual={actual}")
+    if limit is not None:
+        tokens.append(f"limit={limit}")
+    if parse_strategy:
+        tokens.append(f"strategy={parse_strategy}")
+    return PresentationSlideError(
+        reason,
+        f"{' '.join(tokens)}；{details[reason]}",
+        actual=actual,
+        limit=limit,
+        parse_strategy=parse_strategy,
+    )
+
+
+def validate_presentation_slide_count(
+    count: int | None, *, limit: int, parse_strategy: str | None = None
+) -> None:
+    """Shared empty / over-limit check. Corrupt files are rejected before this."""
+    if count is None or count < 0:
+        raise presentation_slide_error(
+            "corrupt", actual=None, limit=limit, parse_strategy=parse_strategy
+        )
+    if count == 0:
+        raise presentation_slide_error(
+            "empty", actual=0, limit=limit, parse_strategy=parse_strategy
+        )
+    if count > limit:
+        raise presentation_slide_error(
+            "over_limit", actual=count, limit=limit, parse_strategy=parse_strategy
+        )
+
+
+def as_corrupt_slide_error(exc: BaseException, *, limit: int | None, parse_strategy: str | None):
+    """Return a stable corrupt error for known package failures; otherwise None."""
+    from pptx.exc import InvalidXmlError, PackageNotFoundError
+
+    if isinstance(exc, PresentationSlideError):
+        return exc
+    if isinstance(exc, (OfficeArchiveError, BadZipFile, PackageNotFoundError, InvalidXmlError)):
+        return presentation_slide_error("corrupt", limit=limit, parse_strategy=parse_strategy)
+    return None
+
+
 def _check_office_archive(content: bytes, max_bytes: int) -> None:
     try:
         with ZipFile(BytesIO(content)) as archive:
             if sum(info.file_size for info in archive.infolist()) > max_bytes * 20:
                 raise ValueError("Office 文件解压体积超过限制")
     except BadZipFile as exc:
-        raise ValueError("Office 文件损坏或格式与扩展名不符") from exc
+        raise OfficeArchiveError("Office 文件损坏或格式与扩展名不符") from exc
 
 
 def _run(command: list[str], label: str, timeout_seconds: int = CONVERSION_TIMEOUT_SECONDS) -> None:
@@ -275,17 +392,24 @@ def _convert_presentation(
 ) -> ConvertedMaterial:
     import pdfplumber
     from pptx import Presentation
+    from pptx.exc import InvalidXmlError, PackageNotFoundError
 
     from .source_locators import _slide_sections
 
     started = time.monotonic()
+    # Count slides before MarkItDown, PDF export, render or OCR. This path is
+    # visual/legacy and always uses the 80-page cap, not the text-only cap.
     try:
         native = _slide_sections(Presentation(path))
+    except (BadZipFile, PackageNotFoundError, InvalidXmlError, OfficeArchiveError) as exc:
+        raise presentation_slide_error("corrupt", limit=MAX_PRESENTATION_SLIDES) from exc
+    except Exception as exc:
+        raise ValueError("PPT 文字提取失败，请检查格式和可读性") from exc
+    validate_presentation_slide_count(len(native), limit=MAX_PRESENTATION_SLIDES)
+    try:
         markdown = MarkItDown(enable_plugins=False).convert(str(path)).text_content
     except Exception as exc:
         raise ValueError("PPT 文字提取失败，请检查格式和可读性") from exc
-    if not native or len(native) > MAX_PRESENTATION_SLIDES:
-        raise ValueError(f"PPT 页数为空或超过 {MAX_PRESENTATION_SLIDES} 页限制")
     if stage_callback:
         stage_callback("convert")
     pdf = _convert_presentation_to_pdf(path, directory)

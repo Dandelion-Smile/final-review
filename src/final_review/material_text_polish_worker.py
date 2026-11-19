@@ -8,6 +8,7 @@ is the only external conversion this path may perform.
 import time
 from contextlib import contextmanager
 
+from .material_conversion import presentation_slide_limit, validate_presentation_slide_count
 from .material_note_polish import polish_model_config
 from .material_notes import digest
 from .material_text_images import text_sections
@@ -55,6 +56,11 @@ def process_text_polish(store, kb, job, document, path, source_hash, progress, m
         pdf_conversions=0,
     )
     started = time.monotonic()
+    # One decision for preview and parse, from the saved strategy, not the live mode.
+    strategy = job.get("parse_strategy") or document.get("parse_strategy")
+    slide_limit = presentation_slide_limit(
+        strategy, text_max_slides=settings.material_text_max_slides
+    )
 
     def checkpoint_metrics():
         metrics["processing_seconds"] = round(time.monotonic() - started, 6)
@@ -63,7 +69,15 @@ def process_text_polish(store, kb, job, document, path, source_hash, progress, m
     if phase == "preview":
         progress("native_extract")
         with polish_conversion_lock(store, job, progress):
-            pages = classify_blocks(extract_source_pages(path, cache, source_hash))
+            pages = classify_blocks(
+                extract_source_pages(
+                    path,
+                    cache,
+                    source_hash,
+                    parse_strategy=strategy,
+                    text_max_slides=settings.material_text_max_slides,
+                )
+            )
         model_config = polish_model_config(settings)
         units = source_units(pages, source_hash)
         input_hash = units_input_hash(
@@ -92,6 +106,14 @@ def process_text_polish(store, kb, job, document, path, source_hash, progress, m
             input_hash=input_hash,
             prompt_version=settings.material_note_polish_prompt_version,
         )
+    if phase == "parse" and path.suffix.lower() in {".ppt", ".pptx"}:
+        # Same validator and same saved-strategy cap as preview. Do not re-read
+        # the file and do not apply MAX_PRESENTATION_SLIDES here.
+        preview_count = document.get("preview_page_count")
+        if isinstance(preview_count, int):
+            validate_presentation_slide_count(
+                preview_count, limit=slide_limit, parse_strategy=strategy
+            )
     revision = store.text_polish_job_source(job)
     if not revision:
         return False

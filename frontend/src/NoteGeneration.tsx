@@ -31,7 +31,7 @@ export default function NoteGeneration({ courseId, progressTarget, onStarted, on
   const [progress, setProgress] = useState<Progress>({ status: "queued" });
   const [open, setOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [noteType, setNoteType] = useState("key_points");
+  const [noteType, setNoteType] = useState("chapter");
   const [duration, setDuration] = useState("10");
   const [materials, setMaterials] = useState<NoteMaterial[]>([]);
   const [requirements, setRequirements] = useState("");

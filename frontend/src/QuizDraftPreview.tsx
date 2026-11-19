@@ -8,8 +8,26 @@ import QuizSources from "./QuizSources";
 import QuizQuestionIndex from "./QuizQuestionIndex";
 
 export type QuizDraftCard = { asset_id: string; revision_id: string; title: string; question_count: number; total_score: number; state?: string };
-export type QuizIssue = { code?: string; path?: string; message?: string; question_id?: string };
+export type QuizIssue = { question_number?: number; code?: string; path?: string; message?: string; question_id?: string };
 export type QuizJob = { job_id: string; status: "queued" | "running" | "failed" | "succeeded"; stage: string; progress?: { completed_questions: number; total_questions: number }; error?: string; issues?: QuizIssue[]; result?: QuizDraftCard };
+function quizIssueText(issue: QuizIssue): string {
+  const pathIndex = issue.path?.match(/questions\.(\d+)/);
+  const idIndex = issue.question_id?.match(/^q(\d+)$/);
+  const index = issue.question_number ?? (pathIndex ? Number(pathIndex[1]) + 1 : idIndex ? Number(idIndex[1]) : undefined);
+  let message = issue.message || "";
+  if (issue.code === "duplicate_citation" && !message.includes("同一片段被引用了两次")) {
+    message = message ? `同一片段被引用了两次。${message}` : "同一片段被引用了两次";
+  }
+  if (!message) return "";
+  return index ? `第 ${index} 题：${message}` : message;
+}
+
+export function quizFailureText(job: QuizJob): string {
+  const details = (job.issues ?? []).map(quizIssueText).filter(Boolean);
+  const head = `试卷生成失败：${job.error || "请稍后重试"}`;
+  return details.length ? `${head} ${details.join("；")}` : head;
+}
+
 export const quizStages: Record<string, string> = { queued: "等待生成", retrieving: "读取资料", planning: "分配考点与题型", generating: "生成题目", validating: "检查题目结构与来源", reviewing: "复核答案与解析", repairing: "修复题目", publishing: "发布试卷" };
 type Ref = { document_id: string; chunk_id: string; file_name: string; quote: string; available?: boolean; position_kind?: string; position?: number };
 export type Question = { question_revision_id: string; order: number; score: number; question_type: string; knowledge_point: string; stem: string; options: string[]; correct_option: number | null; correct_options?: number[]; blank_answers?: string[][]; boolean_answer: boolean | null; accepted_answers: string[]; reference_answer: string; explanation: string; provenance: string; citations: { chunk_id: string; quote: string }[]; must_include: string[]; common_mistakes: string[]; scoring_tips: string; source_label: string; source_review_status?: string; references: Ref[]; candidate_references?: Ref[] };

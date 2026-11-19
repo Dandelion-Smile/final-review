@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 
 from langchain_core.exceptions import OutputParserException
 from langchain_core.messages import SystemMessage, ToolMessage
@@ -13,10 +14,10 @@ from .formal_grading import SubjectiveReview
 from .formal_result import QuizFollowUpReply
 from .policy import DOMAIN_POLICY
 from .quiz_contract import (
-    QuizDraftPayload,
     QuizDraftPlan,
     QuizDraftQuestion,
     QuizDraftSemanticReview,
+    QuizExcerptDraft,
     QuizGenerationContext,
     QuizPaperReview,
     QuizPlanEvidenceReview,
@@ -69,7 +70,9 @@ class ReviewModel:
     def __init__(self, model):
         self.model = model
 
-    def structured(self, schema, task, data, *, policy=DOMAIN_POLICY):
+    def structured(
+        self, schema, task, data, *, policy=DOMAIN_POLICY, before_request=None, retry_parse=True
+    ):
         prompt = ChatPromptTemplate.from_messages(
             [
                 ("system", getattr(self, "material_polish_policy", policy) + "\n" + task),
@@ -83,8 +86,10 @@ class ReviewModel:
         )
         payload = {"data": json.dumps(data, ensure_ascii=False)}
         last_error = None
-        attempts = 3 if schema is GeneratedNote else 2
+        attempts = (3 if schema is GeneratedNote else 2) if retry_parse else 1
         for attempt in range(1, attempts + 1):
+            if before_request is not None:
+                before_request()
             try:
                 from .observe import observation, record_usage
 
@@ -204,7 +209,8 @@ class ReviewModel:
             "若提供 batch_instruction，只处理本批 evidence，严格控制本批考点数量；"
             "最终整份笔记由系统合并，不要推测其他批次的内容。"
             "scope 是写作要求，不代表已验证的资料章节；不要仅凭 scope 给不相关内容冠上章节标题。"
-            "chapter 按章节逻辑组织精简结论；key_points 写逐条考点；"
+            "chapter 写成可连续阅读的文章，每个 heading 是有意义的小节标题，content 用段落说明概念、依据与联系；"
+            "如有 verified_excerpts，只引用单条 quote 的连续原文，所有段落都要有资料依据。key_points 写逐条考点；"
             "qa_cards 的 heading 写问题、content 写可背的答案；"
             "mnemonic 的 heading 写口诀、content 写对应含义和使用条件。"
             "优先保留核心定义、性质、标准方法、常见考法和易错点。"
@@ -284,13 +290,15 @@ class ReviewModel:
             "document_ids 只能填写 evidence 中该知识点实际依据的 document_id。"
             "source_document_ids 是允许取材的范围，不要求每份资料都进入计划或至少出一题。"
             "严格保持配置题量，结合 emphasis、知识点重要度和题源优先级分配，"
-            "尽量兼顾不同知识点，避免机械平均分配。遵守排除项和来源约束。",
+            "尽量兼顾不同知识点，避免机械平均分配。遵守排除项和来源约束。"
+            "若有 config.catalog_scope，每个考点逐字使用 refs 中的 name，只从对应 quote 取材。",
             {**context.model_dump(mode="json"), "repair_issues": issues or []},
         )
 
     def quiz_draft(self, context: QuizGenerationContext, plan: QuizDraftPlan):
-        return self.structured(
-            QuizDraftPayload,
+        return self._quiz_excerpt_draft(
+            context,
+            {"plan": plan.model_dump(mode="json")},
             "仅生成当前批次的正式试卷候选，严格按 config 和 plan 的题型/知识点数量出题。"
             "question_slots 给出当前批次题目对应的知识点、题型及分值，按槽位顺序生成；"
             "当前批次 order 从1开始。previous_questions 是已完成题目摘要，避免语义重复。"
@@ -300,18 +308,62 @@ class ReviewModel:
             "multiple_choice 提供不同选项及 correct_options，"
             "其中至少两个不同的正确选项索引，索引从0开始；"
             "fill_blank 单空提供 accepted_answers，多空在题干标明空位顺序并提供 blank_answers，"
-            "每个内层列表是对应空的同义答案。引用仅来自 evidence，quote逐字摘录。"
-            "每题每个chunk_id最多引用一次；同一片段支持多个事实时，引用覆盖这些事实的"
-            "一段连续原文，不按句子重复添加同一个chunk_id。原文空格和标点不能增删。"
-            "provenance按引用的不同document_id数量判断：恰好1份文件为source，"
-            "2份及以上不同文件为synthesis；不是按知识点或chunk数量判断。"
+            "每个内层列表是对应空的同义答案。"
             "计划里每个 allocation 的 document_ids 必须被该知识点的题目实际引用；"
             "所选资料是允许取材的范围，不要求逐份覆盖，"
             "不要为覆盖文件增加题量或添加与题目无关的引用。"
             "仅明确获准才可生成无引用的"
             "ai_supplement。不要输出来源标签，标签由服务器计算。",
-            {**context.model_dump(mode="json"), "plan": plan.model_dump(mode="json")},
         )
+
+    def _quiz_excerpt_draft(self, context, extra, task):
+        excerpts = {}
+        scope = context.config.catalog_scope
+        for item in context.evidence:
+            texts = (
+                [item.content]
+                if not scope
+                else [
+                    r["quote"]
+                    for r in scope["refs"]
+                    if r["chunk_id"] == item.chunk_id and r["quote"] in item.content
+                ]
+            )
+            for source in dict.fromkeys(texts):
+                for start in range(0, len(source), 1200):
+                    quote = source[start : start + 1200]
+                    if quote.strip():
+                        excerpts[f"E{len(excerpts) + 1}"] = {
+                            "chunk_id": item.chunk_id,
+                            "document_id": item.document_id,
+                            "source_type": item.source_type,
+                            "quote": quote,
+                        }
+        result = self.structured(
+            QuizExcerptDraft,
+            task + " 每题用 excerpt_ids 选择实际支持题干、答案的摘录编号。仅获准的补充题"
+            "可设 ai_supplement=true 并留空编号。填空题必须给出 accepted_answers（单空）"
+            "或 blank_answers（多空，按顺序每空一组答案）。",
+            {
+                **context.model_dump(mode="json", exclude={"evidence"}),
+                **extra,
+                "excerpts": excerpts,
+            },
+        )
+        for question in result["questions"]:
+            ids = question.pop("excerpt_ids")
+            ai = question.pop("ai_supplement", False)
+            documents = {excerpts[i]["document_id"] for i in ids if i in excerpts}
+            question["provenance"] = (
+                "ai_supplement" if ai else ("synthesis" if len(documents) > 1 else "source")
+            )
+            question["citations"] = [
+                {k: excerpts[i][k] for k in ("chunk_id", "quote")}
+                if i in excerpts
+                else {"chunk_id": i, "quote": ""}
+                for i in ids
+            ]
+        return result
 
     def generate_quiz_variant(self, question: dict):
         return self.structured(
@@ -420,19 +472,37 @@ class ReviewModel:
         )
 
     def repair_quiz_draft(self, context, plan, draft, issues):
-        return self.structured(
-            QuizDraftPayload,
-            "修复候选试卷的具体问题，返回完整候选试卷。保持配置、计划、题型数量和题目ID；"
-            "每道题的 knowledge_point 必须逐字保持 question_slots 的计划名称，"
-            "题型、分值和槽位顺序也必须保持；本方法无权更换计划知识点。"
-            "即使 issues 提到更换知识点，也只能围绕原知识点改写题干、选项、答案、解析及引用。"
-            "未受影响题目尽量保持原样。引用只能来自evidence且quote逐字摘录；遵守AI补充授权。"
-            "每题citations中的chunk_id必须唯一，同片段多条引用合并为一段连续原文。"
-            "provenance必须按citations中不同document_id数量重新计算：1份source，2份及以上synthesis。"
-            "保持题目ID；本批order必须从1连续排列，不能使用槽位的全局order。"
-            "候选输出仅包含QuizDraftPayload字段，不输出服务端来源标签或references。",
-            {**context.model_dump(mode="json"), "plan": plan, "draft": draft, "issues": issues},
+        questions = draft["questions"]
+        ids = [q["id"] for q in questions]
+        targets = set()
+        for issue in issues:
+            match = re.match(r"^draft\.questions\.(\d+)(?:\.|$)", issue.get("path", ""))
+            if match and int(match[1]) < len(ids):
+                targets.add(ids[int(match[1])])
+            elif issue.get("question_id") in ids:
+                targets.add(issue["question_id"])
+            else:
+                targets.clear()
+                break
+        partial = bool(targets) and len(targets) < len(ids) and len(ids) == len(set(ids))
+        result = self._quiz_excerpt_draft(
+            context,
+            {
+                "plan": plan,
+                "draft": draft,
+                "issues": issues,
+                "repair_ids": [i for i in ids if i in targets] if partial else ids,
+            },
+            "只返回 repair_ids 指定的题目。逐项落实复核意见，保持原 ID、order、题型、知识点和分值。"
+            "填空题优先考一个清晰且有原文支持的空；多空从①连续编号。答案不能出现在题干提示中。"
+            "题干、参考答案、各空答案、解析、易错点和评分说明必须对应同一组空。",
         )
+        if not partial:
+            return result
+        replacements = {q["id"]: q for q in result["questions"]}
+        if replacements.keys() != targets or len(replacements) != len(result["questions"]):
+            return draft  # The original issues remain actionable on the next bounded retry.
+        return {**draft, "questions": [replacements.get(q["id"], q) for q in questions]}
 
     def answer(self, data):
         return self.structured(

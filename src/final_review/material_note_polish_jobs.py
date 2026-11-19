@@ -11,7 +11,7 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import nullcontext
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 
 from .llm import ModelError, ModelOutputLimitError, build_polish_review_model
 from .material_note_polish import (
@@ -26,12 +26,16 @@ from .material_note_polish import (
     PolishOutline,
     assemble_body,
     batch_input,
+    batch_reuse_decision,
     build_batches,
     check_batch,
     consolidate_outline,
+    contract_mismatches,
     final_coverage,
+    outline_checkpoint_reusable,
     outline_input,
     polish_model_config,
+    program_error_class,
     repair_batch,
     repair_outline,
     review_input,
@@ -47,6 +51,118 @@ logger = logging.getLogger(__name__)
 
 class PolishLeaseLost(RuntimeError):
     pass
+
+
+class PolishBudgetExhausted(RuntimeError):
+    """The batch or job used its model-call budget, including nested repair."""
+
+
+# One corrective model call per batch. ReviewModel.structured may invoke the
+# provider twice per logical call; the polish client itself has max_retries=0.
+MAX_BATCH_REPAIRS = 1
+MAX_BATCH_MODEL_CALLS = 5
+POLISH_STRUCTURED_ATTEMPTS = 2
+MAX_JOB_MODEL_CALLS = 64
+MAX_CONTINUATION_CALLS = 24
+
+
+class PolishRequestBudget:
+    """One generation ledger shared by outline, parallel batches and editorial review."""
+
+    def __init__(self, job, model, progress):
+        self.model = model
+        self.progress = progress
+        self.lock = Lock()
+        identity = {key: job.get(key) for key in ("job_id", "generation", "input_hash")}
+        stored = job.get("metrics") or {}
+        ledger = stored.get("request_budget")
+        continuation = stored.get("request_budget_continuation")
+        self.call_limit = MAX_JOB_MODEL_CALLS
+        self.request_limit = MAX_JOB_MODEL_CALLS * POLISH_STRUCTURED_ATTEMPTS
+        if continuation:
+            self.call_limit = continuation["logical_calls_before"] + continuation["extra_calls"]
+            self.request_limit = (
+                continuation["model_requests_before"]
+                + continuation["extra_calls"] * POLISH_STRUCTURED_ATTEMPTS
+            )
+        if ledger is None and job["attempts"] == 1 and not stored:
+            ledger = dict(version=1, identity=identity, logical_calls=0, model_requests=0)
+        if (
+            not isinstance(ledger, dict)
+            or ledger.get("version") != 1
+            or ledger.get("identity") != identity
+            or type(ledger.get("logical_calls")) is not int
+            or type(ledger.get("model_requests")) is not int
+            or not (
+                0
+                <= ledger["logical_calls"]
+                <= ledger["model_requests"]
+                <= POLISH_STRUCTURED_ATTEMPTS * ledger["logical_calls"]
+            )
+        ):
+            raise ValueError("缺少兼容的累计请求预算记录，需要先核实历史用量")
+        self.ledger = dict(ledger)
+        self.progress(metrics={"request_budget": dict(self.ledger)})
+
+    def structured(self, schema, task, data):
+        first = True
+
+        def reserve():
+            nonlocal first
+            with self.lock:
+                if (first and self.ledger["logical_calls"] >= self.call_limit) or self.ledger[
+                    "model_requests"
+                ] >= self.request_limit:
+                    raise PolishBudgetExhausted()
+                self.ledger["logical_calls"] += int(first)
+                self.ledger["model_requests"] += 1
+                first = False
+                self.progress(metrics={"request_budget": dict(self.ledger)})
+
+        return self.model.structured(schema, task, data, before_request=reserve)
+
+
+def _output_limit(metrics) -> int:
+    try:
+        return int(metrics.get("max_output_tokens") or 16384)
+    except (TypeError, ValueError):
+        return 16384
+
+
+def _call_step(metrics) -> int:
+    return _output_limit(metrics) * POLISH_STRUCTURED_ATTEMPTS
+
+
+def job_call_room(metrics) -> bool:
+    step = _call_step(metrics)
+    return (
+        metrics.get("model_requests", 0) < MAX_JOB_MODEL_CALLS
+        and metrics.get("output_tokens_reserved", 0) + step <= MAX_JOB_MODEL_CALLS * step
+    )
+
+
+def batch_failure_code(review: dict | None) -> str:
+    review = review or {}
+    if review.get("budget_exhausted"):
+        return "batch_budget_exhausted"
+    errors = review.get("program_errors") or []
+    if not errors:
+        return "faithfulness_failed"
+    classes = {program_error_class(error) for error in errors}
+    if classes <= {
+        "exclusion_navigation",
+        "exclusion_course_admin",
+        "exclusion_duplicate",
+        "exclusion_other",
+    }:
+        return "exclusion_failed"
+    if classes <= {"structure"}:
+        return "structure_failed"
+    if classes <= {"faithfulness"}:
+        return "faithfulness_failed"
+    if classes <= {"coverage"}:
+        return "coverage_failed"
+    return "program_failed"
 
 
 def process_polish_job(store, job: dict, settings) -> None:
@@ -95,6 +211,7 @@ def _process_polish_job(store, job: dict, settings, lost, metrics) -> None:
         parse_mode=STRATEGY,
         visual_requests=0,
         ocr_calls=0,
+        max_output_tokens=settings.material_note_polish_max_output_tokens,
     )
     started = time.monotonic()
 
@@ -142,12 +259,9 @@ def _process_polish_job(store, job: dict, settings, lost, metrics) -> None:
                 update={target: frozen[key] for key, target in fields.items() if key in frozen}
             )
             current = polish_model_config(settings)
-            if any(
-                current.get(key) != frozen.get(key)
-                for key in ("resolved_model", "base_url", "contract_version", "prompt_digest")
-            ):
+            if contract_mismatches(frozen, current):
                 raise ValueError("润色规则或模型配置已更新，请基于原文重新整理")
-        model = build_polish_review_model(settings)
+        model = PolishRequestBudget(job, build_polish_review_model(settings), progress)
         model_config = polish_model_config(settings)
         document_title = outline_title(document)
 
@@ -157,9 +271,7 @@ def _process_polish_job(store, job: dict, settings, lost, metrics) -> None:
             units, model_config, settings.material_note_polish_prompt_version
         )
         checkpoint = job.get("metrics", {}).get("outline_checkpoint", {})
-        if checkpoint.get("input_hash") == plan_hash and not validate_outline(
-            checkpoint.get("outline", {}), units
-        ):
+        if outline_checkpoint_reusable(checkpoint, plan_hash, units):
             outline = checkpoint["outline"]
         else:
             outline = _plan_outline(model, document_title, units, metrics)
@@ -188,18 +300,17 @@ def _process_polish_job(store, job: dict, settings, lost, metrics) -> None:
         concurrency = max(1, min(settings.material_note_polish_concurrency, len(batches)))
         batches_results = [None] * len(batches)
         done_count = sum(
-            row["status"] == "done"
-            and bool(row["result"])
-            and not check_batch(row["result"], batch)
-            for row, batch in zip(rows, batches)
+            batch_reuse_decision(row, batch) == "reuse" for row, batch in zip(rows, batches)
         )
         failures = []
 
         def run_one(position, batch, row):
-            if row["status"] == "done" and row["result"] and not check_batch(row["result"], batch):
+            if batch_reuse_decision(row, batch) == "reuse":
                 return {"result": row["result"], "review": row["review"], "cached": True}
             # Local counters avoid concurrent read/modify/write of shared metrics.
             local_metrics = {}
+            if metrics.get("max_output_tokens"):
+                local_metrics["max_output_tokens"] = metrics["max_output_tokens"]
             result, review = _run_batch(
                 model,
                 document_title,
@@ -224,13 +335,21 @@ def _process_polish_job(store, job: dict, settings, lost, metrics) -> None:
                 entry = None
                 try:
                     entry = future.result()
-                    metrics["model_requests"] = metrics.get("model_requests", 0) + entry.get(
-                        "metrics", {}
-                    ).get("model_requests", 0)
+                    spent = entry.get("metrics", {})
+                    metrics["model_requests"] = metrics.get("model_requests", 0) + spent.get(
+                        "model_requests", 0
+                    )
+                    metrics["output_tokens_reserved"] = metrics.get(
+                        "output_tokens_reserved", 0
+                    ) + spent.get("output_tokens_reserved", 0)
                     if entry["result"] is None:
-                        error = "faithfulness_failed"
+                        error = batch_failure_code(entry.get("review"))
                 except ModelOutputLimitError:
                     error = "output_limit"
+                except PolishBudgetExhausted:
+                    error = "budget_exhausted"
+                except PolishLeaseLost:
+                    raise
                 except Exception as exc:
                     error = "model_unavailable"
                     logger.warning("润色批次 %s 失败: %s", position, type(exc).__name__)
@@ -256,12 +375,22 @@ def _process_polish_job(store, job: dict, settings, lost, metrics) -> None:
                 batches_results[position] = {**batches[position], **entry}
                 progress(stage="batches", batches_done=done_count, batches_total=len(batches))
         if failures:
-            fail(failures[0], "部分章节整理未完成，已保存通过校验的批次，可重试继续", True)
+            blocked = "budget_exhausted" in failures
+            fail(
+                "budget_exhausted" if blocked else failures[0],
+                "笔记整理已达到本次任务的模型调用预算"
+                if blocked
+                else "部分章节整理未完成，已保存通过校验的批次，可重试继续",
+                not blocked,
+            )
             return
 
         # Editorial pass sees complete draft groups, the global plan and neighbours.
         # Repairs are bounded and source-reviewed again before replacing checkpoints.
         progress(stage="editorial")
+        if not job_call_room(metrics):
+            fail("budget_exhausted", "笔记整理已达到本次任务的模型调用预算", False)
+            return
         issues = _review_document(model, document_title, outline, batches_results, metrics)
         for position, issue in issues.items():
             if not 0 <= position < len(batches):
@@ -313,6 +442,8 @@ def _process_polish_job(store, job: dict, settings, lost, metrics) -> None:
     except PolishLeaseLost:
         metrics["status"] = "lease_lost"
         logger.warning("润色任务租约失效，停止发布: %s", job["job_id"])
+    except PolishBudgetExhausted:
+        fail("budget_exhausted", "笔记整理已达到本次任务的模型调用预算", False)
     except ValueError as exc:
         fail("polish_unavailable", str(exc), False)
     except ModelError:
@@ -326,7 +457,12 @@ def _process_polish_job(store, job: dict, settings, lost, metrics) -> None:
 
 
 def _request(model, schema, task, data, metrics):
+    if not job_call_room(metrics):
+        raise PolishBudgetExhausted()
     metrics["model_requests"] = metrics.get("model_requests", 0) + 1
+    metrics["output_tokens_reserved"] = metrics.get("output_tokens_reserved", 0) + _call_step(
+        metrics
+    )
     return model.structured(schema, task, data)
 
 
@@ -491,28 +627,83 @@ def _review_document(model, title, outline, results, metrics, *, blocking_only=F
     return issues
 
 
-def _run_batch(model, document_title, batch, previous_tail, next_head, metrics, *, review_mode):
-    """One drafting call plus one review call; at most one repair round.
+def _draft_and_notes(result):
+    result = dict(result)
+    constraints = result.pop("exclusion_constraints", None) or []
+    restorations = result.pop("exclusion_restorations", None) or []
+    return result, constraints, restorations
 
-    Learning notes always receive semantic review, even when a legacy
-    deployment still carries ``review_mode=on_check_failed``.
+
+def _with_restorations(review, restorations):
+    if not restorations:
+        return review
+    return {**review, "exclusion_restorations": restorations}
+
+
+def _program_failure(review, errors, *, budget=False):
+    payload = {
+        **(review or {}),
+        "program_errors": list(errors),
+        "program_error_classes": [program_error_class(error) for error in errors],
+    }
+    if budget:
+        payload["budget_exhausted"] = True
+        if not payload["program_errors"]:
+            payload["program_errors"] = ["已达单批模型调用或输出预算上限"]
+            payload["program_error_classes"] = ["budget"]
+    return None, payload
+
+
+def _run_batch(model, document_title, batch, previous_tail, next_head, metrics, *, review_mode):
+    """One drafting call plus one review; at most one model repair.
+
+    A supported semantic review never skips check_batch. Illegally excluded
+    reliable text is restored from the source block before that review.
+    ReviewModel may retry a structured call once; that factor is reserved here
+    and the polish client itself does not add transport retries.
     """
+    call_origin = metrics.get("model_requests", 0)
+    token_origin = metrics.get("output_tokens_reserved", 0)
+    step = _call_step(metrics)
+    batch_budget = metrics.get("output_token_budget", MAX_BATCH_MODEL_CALLS * step)
+    repairs_used = 0
+
+    def reserve() -> bool:
+        used = metrics.get("model_requests", 0) - call_origin
+        spent = metrics.get("output_tokens_reserved", 0) - token_origin
+        if used >= MAX_BATCH_MODEL_CALLS or spent + step > batch_budget:
+            return False
+        if not job_call_room(metrics):
+            return False
+        metrics["model_requests"] = metrics.get("model_requests", 0) + 1
+        metrics["output_tokens_reserved"] = metrics.get("output_tokens_reserved", 0) + step
+        return True
+
+    def review_draft(draft):
+        if not reserve():
+            return None
+        return _review_decision(
+            model.structured(
+                PolishBatchReview, REVIEW_TASK, review_input(document_title, batch, draft)
+            )
+        )
+
     data = batch_input(document_title, batch, previous_tail, next_head)
     if batch.get("editorial_issues"):
         data["editorial_issues"] = batch["editorial_issues"]
-    result = repair_batch(model.structured(PolishBatch, BATCH_TASK, data), batch)
-    metrics["model_requests"] = metrics.get("model_requests", 0) + 1
-    errors = check_batch(result, batch)
-    review = _review_decision(
-        model.structured(
-            PolishBatchReview, REVIEW_TASK, review_input(document_title, batch, result)
-        )
+    if not reserve():
+        return _program_failure({}, [], budget=True)
+    result, constraints, restorations = _draft_and_notes(
+        repair_batch(model.structured(PolishBatch, BATCH_TASK, data), batch)
     )
-    metrics["model_requests"] = metrics.get("model_requests", 0) + 1
+    errors = check_batch(result, batch)
+    review = review_draft(result)
+    if review is None:
+        return _program_failure({}, errors, budget=True)
+    review = _with_restorations(review, restorations)
+    # Program errors block publication even when the reviewer says supported.
     if not errors and review.get("supported") and not review.get("issues"):
         return result, review
-    # Optional explanations can be removed without losing the source material.
-    # This is a bounded repair, followed by another semantic review, not a bypass.
     removable = {
         issue["index"]
         for issue in review.get("issues", [])
@@ -525,7 +716,11 @@ def _run_batch(model, document_title, batch, previous_tail, next_head, metrics, 
     if removable:
         trimmed = {
             **result,
-            "elements": [e for i, e in enumerate(result["elements"]) if i not in removable],
+            "elements": [
+                element
+                for index, element in enumerate(result["elements"])
+                if index not in removable
+            ],
         }
         from .material_note_polish import _element_nodes
         from .material_notes import node_text
@@ -533,7 +728,9 @@ def _run_batch(model, document_title, batch, previous_tail, next_head, metrics, 
         remaining = node_text(
             dict(
                 type="group",
-                content=[node for e in trimmed["elements"] for node in _element_nodes(e)],
+                content=[
+                    node for element in trimmed["elements"] for node in _element_nodes(element)
+                ],
             )
         )
         excluded_ids = {item["block_id"] for item in trimmed.get("excluded", [])}
@@ -545,25 +742,27 @@ def _run_batch(model, document_title, batch, previous_tail, next_head, metrics, 
         }
         retained_numbers = set(re.findall(r"\d+(?:\.\d+)?%?", remaining))
         if source_numbers <= retained_numbers and not check_batch(trimmed, batch):
-            verdict = _review_decision(
-                model.structured(
-                    PolishBatchReview, REVIEW_TASK, review_input(document_title, batch, trimmed)
-                )
-            )
-            metrics["model_requests"] = metrics.get("model_requests", 0) + 1
+            verdict = review_draft(trimmed)
+            if verdict is None:
+                return _program_failure(review, errors, budget=True)
             if verdict["supported"]:
-                return trimmed, verdict
+                return trimmed, _with_restorations(verdict, restorations)
             return None, {**verdict, "program_errors": []}
+    if repairs_used >= MAX_BATCH_REPAIRS or not reserve():
+        return _program_failure(review, errors, budget=True)
+    repairs_used += 1
     issues = list(errors) + [
         f"元素 {item.get('index')}：{item.get('issue')}" for item in review.get("issues", [])
     ]
     repair_data = {
         **data,
         "issues": issues,
-        "draft": [{"index": i, "element": e} for i, e in enumerate(result["elements"])],
+        "draft": [{"index": i, "element": element} for i, element in enumerate(result["elements"])],
         "excluded": result.get("excluded", []),
         "valid_indices": list(range(len(result["elements"]))),
     }
+    if constraints:
+        repair_data["exclusion_constraints"] = constraints
     patch = model.structured(
         PolishBatchRepair,
         "你是学习笔记修订编辑，仅修复issues指出的元素，不重写整批。"
@@ -576,29 +775,36 @@ def _run_batch(model, document_title, batch, previous_tail, next_head, metrics, 
         "不改动未受影响的元素；只使用blocks的来源ID；解释不必逐字但不得改变原意。",
         repair_data,
     )
-    metrics["model_requests"] = metrics.get("model_requests", 0) + 1
     replacements = {}
     for change in patch["changes"]:
         index = change["index"]
         if index in replacements or not 0 <= index < len(result["elements"]):
-            return None, {"supported": False, "issues": [], "program_errors": ["修订序号无效"]}
+            return None, {
+                "supported": False,
+                "issues": [],
+                "program_errors": ["修订序号无效"],
+                "program_error_classes": ["structure"],
+            }
         replacements[index] = change["replacement"]
     revised = [replacements.get(i, element) for i, element in enumerate(result["elements"])]
     excluded = {item["block_id"]: item for item in result.get("excluded", [])}
     excluded.update({item["block_id"]: item for item in patch["excluded"]})
-    result = repair_batch(
-        dict(elements=[e for e in revised if e is not None], excluded=list(excluded.values())),
-        batch,
-    )
-    errors = check_batch(result, batch)
-    review = _review_decision(
-        model.structured(
-            PolishBatchReview, REVIEW_TASK, review_input(document_title, batch, result)
+    result, _, repaired_restorations = _draft_and_notes(
+        repair_batch(
+            dict(
+                elements=[element for element in revised if element is not None],
+                excluded=list(excluded.values()),
+            ),
+            batch,
         )
     )
-    metrics["model_requests"] = metrics.get("model_requests", 0) + 1
+    errors = check_batch(result, batch)
+    review = review_draft(result)
+    if review is None:
+        return _program_failure({}, errors, budget=True)
+    review = _with_restorations(review, restorations + repaired_restorations)
     if errors or not review.get("supported") or review.get("issues"):
-        return None, {**review, "program_errors": errors}
+        return _program_failure(review, errors)
     return result, review
 
 

@@ -4,7 +4,8 @@ import { ApiError, api, checkSession } from "./workbench-api";
 import AccountMenu from "./AccountMenu";
 import NoteConfigDialog from "./NoteConfigDialog";
 import QuizConfigDialog, { type PendingQuiz, type QuizInput, type QuizConfiguration } from "./QuizConfigDialog";
-import { quizStages, type QuizDraftCard, type QuizIssue, type QuizJob } from "./QuizDraftPreview";
+import FormalAttemptView from "./FormalAttemptView";
+import QuizDraftPreview, { quizStages, quizFailureText, type QuizDraftCard, type QuizJob } from "./QuizDraftPreview";
 import { courseHref } from "./course-routes";
 import { ChatQuiz, ChatSources, type ChatCitation, type ChatQuizCard } from "./ChatSources";
 import NoteMaterialPicker, { materialLabel, type NoteMaterial } from "./NoteMaterialPicker";
@@ -31,27 +32,13 @@ function coverageSummary(coverage?: NoteCoverage): string {
   return coverage ? `已选 ${coverage.selected_files} 份资料；共有 ${coverage.readable_chunks} 个可读片段；本次读取 ${coverage.read_chunks} 个${coverage.partial ? "，部分覆盖" : "，已读取范围内全部片段"}。` : "";
 }
 
-function quizIssueText(issue: QuizIssue): string {
-  const pathIndex = issue.path?.match(/questions\.(\d+)/);
-  const idIndex = issue.question_id?.match(/^q(\d+)$/);
-  const index = pathIndex ? Number(pathIndex[1]) + 1 : idIndex ? Number(idIndex[1]) : undefined;
-  let message = issue.message || "";
-  if (issue.code === "duplicate_citation" && !message.includes("同一片段被引用了两次")) {
-    message = message ? `同一片段被引用了两次。${message}` : "同一片段被引用了两次";
-  }
-  if (!message) return "";
-  return index ? `第 ${index} 题：${message}` : message;
-}
-
 function quizStatusText(job: QuizJob): string {
   if (job.status !== "failed") {
     const stage = quizStages[job.stage] || "处理中";
     const progress = job.progress ? ` · 已完成 ${job.progress.completed_questions}/${job.progress.total_questions} 题` : "";
     return `正在生成试卷 · ${stage}${progress}`;
   }
-  const details = (job.issues ?? []).map(quizIssueText).filter(Boolean);
-  const head = `试卷生成失败：${job.error || "请稍后重试"}`;
-  return details.length ? `${head} ${details.join("；")}` : head;
+  return quizFailureText(job);
 }
 
 async function noteRequest(path: string, body?: unknown): Promise<AgentResult> {
@@ -71,6 +58,20 @@ async function noteRequest(path: string, body?: unknown): Promise<AgentResult> {
     if (controller.signal.aborted) throw new Error("等待超过 3 分钟。任务可能仍在后台运行，请点击“恢复笔记任务”查看结果。");
     throw error;
   } finally { window.clearTimeout(timeout); }
+}
+
+function ConversationPaper({ courseId, card }: { courseId: string; card: QuizDraftCard }) {
+  const [open, setOpen] = useState(false);
+  const [attempt, setAttempt] = useState("");
+  return <div>
+    <button type="button" className="quiz-draft-card" aria-expanded={open} onClick={() => setOpen(!open)}>
+      <strong>{card.title}</strong><span>{card.question_count} 题 · {card.total_score} 分 · {open ? "收起试卷" : "查看试卷"}</span>
+    </button>
+    {open && (attempt
+      ? <FormalAttemptView courseId={courseId} attemptId={attempt} onClose={() => setAttempt("")} />
+      : <QuizDraftPreview courseId={courseId} card={card} onAttemptStarted={setAttempt}
+          onClose={() => setOpen(false)} />)}
+  </div>;
 }
 
 export default function ChatHome({ courseId, selectedConversationId, titleRefreshKey, onConversationCreated, onConversationRenamed, onNewConversation, onConversationSelected }: { courseId: string | null; selectedConversationId: string | null; titleRefreshKey: number; onConversationCreated: (id: string) => void; onConversationRenamed: () => void; onNewConversation: () => void; onConversationSelected: (id: string) => void }) {
@@ -678,14 +679,8 @@ export default function ChatHome({ courseId, selectedConversationId, titleRefres
           <label>{item.from === "agent" ? item.model || "助手" : "你"}</label><p>{item.text}</p>
           {Boolean(item.citations?.length) && <ChatSources citations={item.citations!} />}
           {item.quiz && courseId && <ChatQuiz courseId={courseId} quiz={item.quiz} />}
-          {item.quiz_draft && courseId && <a className="quiz-draft-card" href={courseHref(courseId, "quiz", [
-            "papers", item.quiz_draft.asset_id, item.quiz_draft.revision_id,
-            ...(item.quiz_draft.state === "confirmed" ? ["start"] : []),
-          ])}>
-            <strong>{item.quiz_draft.title}</strong>
-            <span>{item.quiz_draft.question_count} 题 · {item.quiz_draft.total_score} 分 · {item.quiz_draft.state === "confirmed" ? "开始测试" : "查看试卷"} →</span>
-          </a>}
-          {item.draft && <a className="note-draft-card" href={item.draft.url}><strong>{item.draft.title}</strong><span>打开笔记草稿 →</span></a>}
+          {item.quiz_draft && courseId && <ConversationPaper key={item.quiz_draft.revision_id} courseId={courseId} card={item.quiz_draft} />}
+          {item.draft && <a className="note-draft-card" href={courseId ? courseHref(courseId, "notes", [item.draft.asset_id, item.draft.revision_id]) : item.draft.url}><strong>{item.draft.title}</strong><span>打开笔记草稿 →</span></a>}
         </div>
       </article>)}
       {noteRecovery && noteSession && <article className="message agent note-job-message" role="status"><i aria-hidden="true">✦</i><div><label>助手</label><div className="note-job-status"><div className="note-job-copy"><span>{noteRecovery === "queued" ? "笔记任务已排队，正在等待生成。" : noteRecovery === "running" ? `正在生成笔记${noteJobStage ? ` · ${noteJobStage}` : "…"}` : `笔记生成失败${noteJobError ? `：${noteJobError}` : ""}`}</span>{noteCoverage && <small>{coverageSummary(noteCoverage)}</small>}</div><div className="note-job-actions">{noteRecovery === "failed" && <button type="button" className="note-job-retry" disabled={isSending} onClick={() => void recoverNote()}>{noteJobId ? "重试生成" : "恢复笔记任务"}</button>}<button type="button" className="note-job-cancel" disabled={noteCancelling} onClick={() => void cancelNote()}>{noteCancelling ? "正在取消…" : noteRecovery === "failed" ? "结束任务" : "取消生成"}</button></div></div></div></article>}

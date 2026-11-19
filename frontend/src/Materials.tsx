@@ -2,7 +2,7 @@ import { courseHref, legacyHash, materialNoteHref } from "./course-routes";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api, checkSession, type Course } from "./workbench-api";
 import MaterialSelect from "./MaterialSelect";
-import type { PolishStatus } from "./material-note-api";
+import { materialActionState, type PolishStatus } from "./material-note-api";
 import "./materials.css";
 
 type SourceType = "past_exam" | "teacher_ppt" | "homework" | "other_practice" | "external_upload" | "crash_course" | "ai_supplement";
@@ -11,25 +11,6 @@ type MaterialJob = { job_id: string; document_id: string; status: "queued" | "ru
 type UploadSelection = { file: File; key: string; metadata?: { courseId: string; title: string; chapter: string; sourceType: SourceType } };
 type UploadResult = { key: string; name: string; status: "waiting" | "uploading" | "accepted" | "reused" | "processing_failed" | "failed"; error?: string };
 const MAX_UPLOAD_FILES = 5;
-// Only notes published by these strategies can be opened in MaterialNoteReader.
-const NOTE_STRATEGIES = ["text-images-v1", "text-polish-v1"];
-
-function noteReady(item: Material) {
-  return NOTE_STRATEGIES.includes(item.parse_strategy ?? "") && item.note_status === "ready"
-    && (item.polish_status === "ready" || item.polish_status === "applied" || item.polish_status === "candidate");
-}
-
-function noteLabel(item: Material) {
-  if (item.polish_status === "candidate" && noteReady(item)) return "新版笔记已就绪，可查看并应用";
-  if (noteReady(item)) return "AI 润色完成，可查看详情";
-  if (item.polish_status === "failed") return "AI 润色失败，暂时无法查看详情";
-  if (item.polish_status === "not_required") return "无可提取文字，无法生成润色笔记";
-  if (item.polish_status === "candidate") return "正在准备新版笔记";
-  if (item.polish_status === "queued" || item.polish_status === "running") return "AI 润色中，完成后可查看详情";
-  if (item.note_status === "failed" || item.preview_status === "failed" || item.parse_status === "failed") return "资料提取失败，暂时无法查看详情";
-  if (!NOTE_STRATEGIES.includes(item.parse_strategy ?? "") || item.note_status === "ready") return "尚未生成 AI 润色笔记";
-  return "正在提取文字，润色完成后可查看详情";
-}
 type KnowledgeJob = { job_id: string; document_id: string; status: string; stage?: string; error_message?: string; total_blocks: number; completed_blocks: number; review_count: number; rejected_count: number };
 const knowledgeStages: Record<string, string> = { splitting: "组织语义块", extracting: "提取知识点", normalizing: "整理独立事实", verifying: "校验证据", embedding: "生成向量", dedup_internal: "资料内部去重", matching: "匹配课程知识库", merging: "合并入库" };
 function knowledgeLabel(job?: KnowledgeJob) {
@@ -77,6 +58,7 @@ export default function Materials({ selectedCourse }: { selectedCourse: Course |
   const [retainSnapshot, setRetainSnapshot] = useState(false);
   const [dialogError, setDialogError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [retryingJobId, setRetryingJobId] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const openedHash = useRef("");
   const [sourceHash, setSourceHash] = useState(legacyHash(window.location.hash));
@@ -99,6 +81,21 @@ export default function Materials({ selectedCourse }: { selectedCourse: Course |
       api<{ items: KnowledgeJob[] }>(`/api/courses/${encodeURIComponent(courseId)}/knowledge-build-status`).catch(() => ({ items: [] })),
     ]);
     setItems(documents.items); setJobs(currentJobs.items); setKnowledgeJobs(builds.items);
+  }
+
+  async function retryJob(jobId: string, kind: "material-jobs" | "knowledge-build-jobs") {
+    if (busy || retryingJobId) return;
+    setRetryingJobId(jobId);
+    setMessage("");
+    try {
+      await api(`/api/courses/${encodeURIComponent(courseId)}/${kind}/${encodeURIComponent(jobId)}/retry`, "POST");
+      setMessage(kind === "knowledge-build-jobs" ? "知识库构建已重新排队。" : "已重新排队处理。");
+      await refresh();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "重试失败");
+    } finally {
+      setRetryingJobId(null);
+    }
   }
 
   useEffect(() => {
@@ -324,9 +321,10 @@ export default function Materials({ selectedCourse }: { selectedCourse: Course |
       const job = jobs.find(candidate => candidate.document_id === item.document_id && candidate.status === "failed" && candidate.phase !== "images") ?? jobs.find(candidate => candidate.document_id === item.document_id && candidate.phase !== "images") ?? jobs.find(candidate => candidate.document_id === item.document_id);
       const status = item.parse_status;
       const build = knowledgeJobs.find(candidate => candidate.document_id === item.document_id);
-      const ready = noteReady(item);
-      const noteStatus = noteLabel(item);
-      return <li key={item.document_id}><div className="material-detail"><strong>{item.title}</strong><small>{item.file_name} · {sourceLabel[item.source_type] ?? item.source_type} · {item.chapter || "未归类"}</small>{item.processing_pipeline === "visual-slides-v1" && <small>{item.quality_status === "partial" ? "部分知识已通过核验；待核对内容已排除检索" : item.quality_status === "review_needed" ? "存在待核对内容，可在预览中查看" : "知识内容已通过逐块视觉核验"}</small>}{item.preview_status && <small>基础预览：{item.preview_status === "ready" ? "已就绪" : item.preview_status === "failed" ? "失败" : "正在提取"}</small>}{item.processing_pipeline === "hybrid-slides-v1" && <small>{item.quality_status === "native_checked" ? "原文提取已检查" : "文字页已检查；复杂页按视觉核验结果提供内容"}</small>}<small>资料解析：{status === "ready" ? "已完成，可检索" : status === "failed" ? "失败" : status === "queued" ? "排队中" : "处理中"}</small><small className="material-note-progress">笔记整理：{noteStatus}</small><small className={`knowledge-progress ${build?.status || ""}`}>知识库：{item.knowledge_status === "no_reliable_text" ? "暂无可靠文字，已正常跳过" : status !== "ready" && !build ? "等待资料解析完成" : knowledgeLabel(build)}</small>{status === "failed" && <p className="material-error">{job?.error_message ?? item.parse_error}</p>}</div><span className={`material-status ${status}`}>{status === "ready" ? "可检索" : status === "failed" ? "处理失败" : status === "queued" ? "排队中" : `处理中${job?.stage ? ` · ${stageLabel[job.stage] ?? job.stage}` : ""}`}</span><div className="material-actions"><button type="button" disabled={!ready || busy} title={noteStatus} onClick={() => { if (ready) window.location.hash = materialNoteHref(courseId, item.document_id); }}>详情</button><button type="button" className="material-delete" onClick={() => void openDelete(item)} disabled={busy}>删除</button></div></li>;
+      const action = materialActionState(item, jobs, busy || retryingJobId !== null);
+      const ready = action.detailEnabled;
+      const noteStatus = action.label;
+      return <li key={item.document_id}><div className="material-detail"><strong>{item.title}</strong><small>{item.file_name} · {sourceLabel[item.source_type] ?? item.source_type} · {item.chapter || "未归类"}</small>{item.processing_pipeline === "visual-slides-v1" && <small>{item.quality_status === "partial" ? "部分知识已通过核验；待核对内容已排除检索" : item.quality_status === "review_needed" ? "存在待核对内容，可在预览中查看" : "知识内容已通过逐块视觉核验"}</small>}{item.preview_status && <small>基础预览：{item.preview_status === "ready" ? "已就绪" : item.preview_status === "failed" ? "失败" : "正在提取"}</small>}{item.processing_pipeline === "hybrid-slides-v1" && <small>{item.quality_status === "native_checked" ? "原文提取已检查" : "文字页已检查；复杂页按视觉核验结果提供内容"}</small>}<small>资料解析：{status === "ready" ? "已完成，可检索" : status === "failed" ? "失败" : status === "queued" ? "排队中" : "处理中"}</small><small className="material-note-progress">笔记整理：{noteStatus}</small><small className={`knowledge-progress ${build?.status || ""}`}>知识库：{item.knowledge_status === "no_reliable_text" ? "暂无可靠文字，已正常跳过" : status !== "ready" && !build ? "等待资料解析完成" : knowledgeLabel(build)}</small>{status === "failed" && <p className="material-error">{job?.error_message ?? item.parse_error}</p>}</div><span className={`material-status ${status}`}>{status === "ready" ? "可检索" : status === "failed" ? "处理失败" : status === "queued" ? "排队中" : `处理中${job?.stage ? ` · ${stageLabel[job.stage] ?? job.stage}` : ""}`}</span><div className="material-actions"><button type="button" disabled={!ready || busy} title={noteStatus} onClick={() => { if (ready) window.location.hash = materialNoteHref(courseId, item.document_id); }}>详情</button>{action.retryJobId && <button type="button" disabled={!action.retryEnabled} onClick={() => void retryJob(action.retryJobId!, "material-jobs")}>重试</button>}{build?.status === "failed" && status === "ready" && <button type="button" disabled={busy || retryingJobId !== null} onClick={() => void retryJob(build.job_id, "knowledge-build-jobs")}>重试入库</button>}<button type="button" className="material-delete" onClick={() => void openDelete(item)} disabled={busy || retryingJobId !== null}>删除</button></div></li>;
     })}</ul>}</section>
     {sourcePreview && <div className="wb-overlay" role="presentation"><section className="wb-dialog material-dialog material-preview" role="dialog" aria-modal="true" aria-labelledby="material-preview-title">
       <header className="material-reading-header">

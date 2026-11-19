@@ -1390,12 +1390,21 @@ class PostgresStore(MaterialNoteStore):
                         "WHERE record_key=%s AND user_id=%s",
                         (row["phase"], row["document_id"], self._user()),
                     )
-                    if row["phase"] in {"preview", "images"}:
-                        key = "preview_status" if row["phase"] == "preview" else "images_status"
+                    if row["phase"] == "preview":
+                        cursor.execute(
+                            "UPDATE documents SET data=(data - 'preview_error') || %s "
+                            "WHERE document_id=%s AND user_id=%s",
+                            (
+                                Jsonb({"preview_status": "queued"}),
+                                row["document_id"],
+                                self._user(),
+                            ),
+                        )
+                    elif row["phase"] == "images":
                         cursor.execute(
                             "UPDATE documents SET data=data || %s WHERE document_id=%s "
                             "AND user_id=%s",
-                            (Jsonb({key: "queued"}), row["document_id"], self._user()),
+                            (Jsonb({"images_status": "queued"}), row["document_id"], self._user()),
                         )
         return result
 

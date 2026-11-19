@@ -74,7 +74,24 @@ def resolve_quiz_config(
         defaults.update(scope_mode="chapter", chapter=scope["chapter"])
     if scope.get("source_document_ids") is not None:
         defaults["source_document_ids"] = scope["source_document_ids"]
+    catalog = scope.get("catalog_scope")
+    if catalog:
+        defaults.update(
+            scope_mode="chapter" if catalog["chapter_id"] else "knowledge_points",
+            chapter=catalog["title"] if catalog["chapter_id"] else "",
+            knowledge_points=[]
+            if catalog["chapter_id"]
+            else list(dict.fromkeys(r["name"] for r in catalog["refs"])),
+            allow_ai_supplement=False,
+        )
     values = {**defaults, **explicit}
+    if catalog and values.get("allow_ai_supplement") is None:
+        values["allow_ai_supplement"] = False
+    if catalog and values.get("source_document_ids") is None:
+        values["source_document_ids"] = scope["source_document_ids"]
+    if catalog and catalog["chapter_id"] and values["scope_mode"] == "chapter":
+        # Natural-language ordinal aliases were already resolved against the published version.
+        values["chapter"] = catalog["title"]
     if explicit.get("duration_mode") == "untimed" and "duration_minutes" not in explicit:
         values["duration_minutes"] = None
     if values.get("scope_mode") is None:
@@ -165,7 +182,7 @@ def resolve_quiz_config(
             or partial.chapter != scope["chapter"]
         ):
             conflicts.append("当前对话限定了章节，不能扩大或更换章节范围")
-        documents = materials.select(sorted(requested), partial.chapter)
+        documents = materials.select(sorted(requested), "" if catalog else partial.chapter)
         if partial.source_types:
             documents = [d for d in documents if d["source_type"] in partial.source_types]
         documents = [d for d in documents if d.get("user_id") == user_id]
@@ -173,6 +190,13 @@ def resolve_quiz_config(
             conflicts.append("当前范围与来源约束下没有可用资料，请补充资料或调整选择")
         elif len(documents) > 100:
             conflicts.append("本次最多选择 100 份资料，请缩小选择范围")
+    if catalog:
+        if partial.allow_ai_supplement or partial.scope_mode != defaults["scope_mode"]:
+            conflicts.append("当前知识目录范围仅支持所选章节或知识点的资料题")
+        if partial.scope_mode == "knowledge_points" and set(partial.knowledge_points) != set(
+            defaults["knowledge_points"]
+        ):
+            conflicts.append("请使用当前目录中选定的知识点，或重新发起出题")
     if missing or conflicts:
         questions = [LABELS[name] for name in missing] + conflicts
         return QuizConfigResult(
@@ -196,6 +220,16 @@ def resolve_quiz_config(
             "material_versions": {
                 d["document_id"]: material_version(d)["material_version_id"] for d in documents
             },
+            "catalog_scope": {
+                **catalog,
+                "refs": [
+                    r
+                    for r in catalog["refs"]
+                    if r["document_id"] in {d["document_id"] for d in documents}
+                ],
+            }
+            if catalog
+            else None,
             "exam_updated_at": exam.get("updated_at") if exam else None,
         }
     )

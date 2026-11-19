@@ -8,6 +8,7 @@ export type PolishStatus = {
   polish_batches_done?: number | null;
   polish_batches_total?: number | null;
   polish_error?: string | null;
+  polish_error_code?: string | null;
   candidate_revision_id?: string | null;
 };
 export type NoteStatus = PolishStatus & {
@@ -63,3 +64,52 @@ export function plainNode(node: JSONContent): string {
 }
 
 export const bodyKey = (value: JSONContent) => JSON.stringify(wireBody(value));
+
+export const NOTE_STRATEGIES = ["text-images-v1", "text-polish-v1"] as const;
+
+export type NoteEntry = {
+  parse_strategy?: string;
+  note_status?: string;
+  polish_status?: PolishStatus["polish_status"];
+  preview_status?: string;
+  parse_status?: string;
+};
+
+/** A supported strategy has published a real note version. Polish progress is separate. */
+export function readableNoteVersion(item: NoteEntry): boolean {
+  return (NOTE_STRATEGIES as readonly string[]).includes(item.parse_strategy ?? "") && item.note_status === "ready";
+}
+
+export function noteProgressLabel(item: NoteEntry): string {
+  const readable = readableNoteVersion(item);
+  if (item.polish_status === "candidate" && readable) return "新版笔记已就绪，可查看并应用";
+  if (readable && (item.polish_status === "ready" || item.polish_status === "applied")) return "AI 润色完成，可查看详情";
+  if (item.polish_status === "failed") return readable ? "原文可读，打开详情查看失败原因" : "AI 润色失败，暂时无法查看详情";
+  if (item.polish_status === "not_required") return "无可提取文字，无法生成润色笔记";
+  if (item.polish_status === "candidate") return "正在准备新版笔记";
+  if (item.polish_status === "queued" || item.polish_status === "running") {
+    return readable ? "原文可读，AI 润色进行中" : "AI 润色中，完成后可查看详情";
+  }
+  if (!readable && (item.note_status === "failed" || item.preview_status === "failed" || item.parse_status === "failed")) {
+    return "资料提取失败，暂时无法查看详情";
+  }
+  if (readable) return "原文可读，可查看详情";
+  if (!(NOTE_STRATEGIES as readonly string[]).includes(item.parse_strategy ?? "")) return "尚未生成 AI 润色笔记";
+  return "正在提取文字，润色完成后可查看详情";
+}
+
+export type MaterialJobRef = { job_id: string; document_id: string; status: string; phase?: string | null };
+
+export function failedProcessingJob(jobs: MaterialJobRef[], documentId: string): MaterialJobRef | null {
+  return jobs.find(job => job.document_id === documentId && job.status === "failed" && job.phase !== "images") ?? null;
+}
+
+export function materialActionState(item: NoteEntry & { document_id: string }, jobs: MaterialJobRef[], busy: boolean) {
+  const retry = failedProcessingJob(jobs, item.document_id);
+  return {
+    detailEnabled: readableNoteVersion(item) && !busy,
+    retryJobId: retry?.job_id ?? null,
+    retryEnabled: Boolean(retry) && !busy,
+    label: noteProgressLabel(item),
+  };
+}

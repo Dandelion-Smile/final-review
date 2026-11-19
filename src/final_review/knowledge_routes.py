@@ -5,8 +5,10 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from .auth import CurrentUser
+from .knowledge_catalog_dispatch import DispatchRepository
+from .knowledge_catalog_store import CatalogConflict
 from .knowledge_store import KnowledgeRepository, build_config
-from .knowledge_tree import read_tree
+from .knowledge_tree import public_catalog_job, read_catalog_job, read_tree
 from .postgres import PostgresStore
 from .schemas import Identifier
 
@@ -133,6 +135,28 @@ def knowledge_router(settings, authorize, require_course, conversation_store, re
     @router.get("/knowledge-tree")
     def course_tree(course_id: Identifier, user: CurrentUser = Depends(authorize)):
         return read_tree(repo_for(course_id, user), course_id)
+
+    @router.get("/knowledge-catalog/jobs/{job_id}")
+    def catalog_job(course_id: Identifier, job_id: UUID, user: CurrentUser = Depends(authorize)):
+        job = read_catalog_job(repo_for(course_id, user), course_id, job_id)
+        if job is None:
+            raise HTTPException(404, "目录任务不存在")
+        return job
+
+    @router.post(
+        "/knowledge-catalog/jobs/{job_id}/retry", dependencies=[Depends(require_file_access)]
+    )
+    def retry_catalog_job(
+        course_id: Identifier, job_id: UUID, user: CurrentUser = Depends(authorize)
+    ):
+        repo = DispatchRepository(repo_for(course_id, user).store)
+        try:
+            job = repo.retry_failed(course_id, job_id)
+        except CatalogConflict as exc:
+            raise HTTPException(409, str(exc)) from exc
+        if job is None:
+            raise HTTPException(404, "目录任务不存在")
+        return public_catalog_job(job)
 
     @router.get("/knowledge-points")
     def list_points(

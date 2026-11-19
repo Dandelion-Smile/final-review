@@ -1,5 +1,7 @@
+import NoteSectionOutline from "./NoteSectionOutline";
 import { courseHref, legacyHash, readRoute } from "./course-routes";
 import { useEffect, useRef, useState } from "react";
+import "./material-note-reader.css";
 import ReactMarkdown from "react-markdown";
 import { ConfigProvider, Select } from "antd";
 import { api, type Course } from "./workbench-api";
@@ -26,6 +28,7 @@ type Point = {
   content: string;
   provenance: "source" | "synthesis" | "ai_supplement";
   excerpt?: boolean;
+  knowledge_sources?: { point_id: string; name: string }[];
   references: Reference[];
 };
 type Revision = {
@@ -353,7 +356,8 @@ function NoteEditor({
           base_revision_id: revisionId,
           title,
           points: points.map((point) => ({
-            ...point,
+            point_id: point.point_id, heading: point.heading, content: point.content,
+            provenance: point.provenance, excerpt: point.excerpt,
             references: point.references.map((ref) => ({
               document_id: ref.document_id,
               chunk_id: ref.chunk_id,
@@ -540,9 +544,15 @@ function NoteEditor({
           />
         </label>
       )}
+      <div className={!editing && points.length ? "material-note-layout generated-note-layout" : undefined}>
+        {!editing && points.length > 0 && <aside className="material-note-outline" aria-label="笔记目录">
+          <NoteSectionOutline sections={points.map((point, i) => ({id: `generated-section-${i}`, title: point.heading}))}
+            onSelect={id => document.getElementById(id)?.scrollIntoView({block: "start"})} />
+        </aside>}
+        <div className={!editing && points.length ? "material-note-document material-note-prose" : undefined}>
       {points.length ? (
         points.map((point, index) => (
-          <article className={`note-point${editing ? "" : " note-point-reading"}`} key={point.point_id}>
+          <article id={`generated-section-${index}`} className={`note-point${editing ? "" : " note-point-reading"}`} key={point.point_id}>
             <div className="note-point-body">
               <small className="note-point-number">考点 {index + 1}</small>
               {point.excerpt && <p className="note-point-excerpt">这一部分是原文摘录</p>}
@@ -590,6 +600,7 @@ function NoteEditor({
               ) : (
                 <>
                   <h2>{point.heading}</h2>
+                  {point.knowledge_sources?.length ? <small>知识点 · {[...new Set(point.knowledge_sources.map(source => source.name))].join("、")}</small> : null}
                   <div className="note-markdown">
                     <ReactMarkdown>{point.content}</ReactMarkdown>
                   </div>
@@ -702,6 +713,7 @@ function NoteEditor({
           <p>历史笔记没有考点结构，暂只支持查看。</p>
         </div>
       )}
+      </div></div>
       {editing && (
         <button
           className="note-add"

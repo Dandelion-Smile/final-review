@@ -278,7 +278,7 @@ def test_formal_llm_contract_roundtrip_uses_frozen_config(draft_case):
         data = json.loads(request.content)
         requests.append(data)
         tool_name = data["tools"][0]["function"]["name"]
-        assert tool_name in {"QuizDraftPlan", "QuizDraftPayload"}
+        assert tool_name in {"QuizDraftPlan", "QuizExcerptDraft"}
         assert '"contract_version": 1' in data["messages"][-1]["content"]
         assert "material_versions" in data["messages"][-1]["content"]
         return httpx.Response(
@@ -302,7 +302,9 @@ def test_formal_llm_contract_roundtrip_uses_frozen_config(draft_case):
                                     "function": {
                                         "name": tool_name,
                                         "arguments": json.dumps(
-                                            plan if tool_name == "QuizDraftPlan" else payload,
+                                            plan
+                                            if tool_name == "QuizDraftPlan"
+                                            else excerpt_output(payload),
                                             ensure_ascii=False,
                                         ),
                                     },
@@ -327,6 +329,53 @@ def test_formal_llm_contract_roundtrip_uses_frozen_config(draft_case):
         generated = model.quiz_draft(context, QuizDraftPlan.model_validate(generated_plan))
     assert len(requests) == 2
     assert validate_quiz_draft(context, generated_plan, generated).valid
+
+
+def excerpt_output(payload):
+    value = deepcopy(payload)
+    for question in value["questions"]:
+        question.pop("citations")
+        question.pop("provenance")
+        question["excerpt_ids"] = ["E1"]
+    return value
+
+
+def test_partial_repair_binds_selected_excerpt_and_preserves_other_question(draft_case):
+    _, context, plan, draft = draft_case
+    other = {**deepcopy(draft["questions"][0]), "id": "q2", "order": 2}
+    draft["questions"].append(other)
+    model = ReviewModel(None)
+
+    def structured(_schema, _task, data):
+        assert data["repair_ids"] == ["q2"]
+        assert data["excerpts"]["E1"]["quote"] == context.evidence[0].content
+        return excerpt_output({"title": "changed", "questions": [other]})
+
+    model.structured = structured
+    repaired = model.repair_quiz_draft(
+        context, plan, draft, [{"path": "draft.questions.1.citations"}]
+    )
+    assert repaired["title"] == draft["title"]
+    assert repaired["questions"][0] == draft["questions"][0]
+    assert repaired["questions"][1]["citations"] == [
+        {"chunk_id": context.evidence[0].chunk_id, "quote": context.evidence[0].content}
+    ]
+    assert repaired["questions"][1]["provenance"] == "source"
+
+
+def test_restore_slide_markers_only_for_unique_matching_excerpt(draft_case):
+    _, context, plan, payload = draft_case
+    quote = "定义\n 三个关键词\n 同义词 1989"
+    original = quote.replace("\n ", "\n\uf076 ")
+    ref = payload["questions"][0]["citations"][0]
+    ref["quote"] = quote
+    context.evidence[0].content = original
+    result = validate_quiz_draft(context, plan, payload)
+    assert result.valid
+    assert result.validated_draft["questions"][0]["references"][0]["quote"] == original
+    for text in [original + "\n" + original, original.replace("1989", "1998")]:
+        context.evidence[0].content = text
+        assert [i.code for i in validate_quiz_draft(context, plan, payload).issues] == ["citation"]
 
 
 def test_same_chunk_quotes_merge_before_duplicate_check(draft_case):
@@ -414,3 +463,15 @@ def test_plan_names_files_left_out_before_generation(draft_case):
     }
     result = validate_quiz_draft(context, plan, payload)
     assert any(issue.code == "source_coverage" for issue in result.issues)
+
+
+def test_catalog_question_requires_its_own_verified_quote(draft_case):
+    _, context, plan, payload = draft_case
+    citation = payload["questions"][0]["citations"][0]
+    ref = dict(**citation, name="三次握手", point_id="p", fact_id="f")
+    context.config.catalog_scope = {"refs": [ref]}
+    result = validate_quiz_draft(context, plan, payload)
+    assert result.validated_draft["questions"][0]["knowledge_point_ids"] == ["p"]
+    ref["name"] = "另一知识点"
+    assert not validate_quiz_draft(context, plan, payload).valid
+    assert validate_quiz_plan(context, plan)[0]["code"] == "knowledge_scope"

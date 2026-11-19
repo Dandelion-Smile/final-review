@@ -22,7 +22,8 @@ test("cards retain stage details and expose only detail and delete actions", asy
   await expect(card.getByText("知识库：等待资料解析完成")).toBeVisible();
   await expect(card.getByText("处理中 · 复杂页面 1/2", { exact: true })).toBeVisible();
   await expect(card.locator(".material-actions button")).toHaveText(["详情", "删除"]);
-  await expect(card.getByRole("button", { name: "详情", exact: true })).toBeDisabled();
+  await expect(card.getByRole("button", { name: "详情", exact: true })).toBeEnabled();
+  await expect(card.getByText("笔记整理：原文可读，AI 润色进行中")).toBeVisible();
   await expect(card.locator("a")).toHaveCount(0);
 });
 
@@ -64,14 +65,15 @@ test("single upload stays on the list until polishing finishes and detail opens 
   await page.getByLabel("文件", { exact: true }).setInputFiles({ name: "tcp.md", mimeType: "text/markdown", buffer: Buffer.from("TCP 原文") });
   await page.getByRole("button", { name: "上传并处理", exact: true }).click();
   const detail = page.locator(".material-actions").getByRole("button", { name: "详情", exact: true });
-  await expect(detail).toBeDisabled();
+  await expect(detail).toBeEnabled();
   await expect(page).toHaveURL(new RegExp(`/courses/${course.course_id}/materials$`));
   await expect(page.locator(".materials-upload-results a")).toHaveCount(0);
-  await expect(page.getByText("笔记整理：AI 润色中，完成后可查看详情")).toBeVisible();
+  await expect(page.getByText("笔记整理：原文可读，AI 润色进行中")).toBeVisible();
   expect(noteReads).toBe(0);
   finished = true;
   // Polish alone must keep fast polling alive when parse and knowledge jobs are inactive.
-  await expect(detail).toBeEnabled({ timeout: 5000 });
+  await expect(page.getByText("笔记整理：AI 润色完成，可查看详情")).toBeVisible({ timeout: 5000 });
+  await expect(detail).toBeEnabled();
   await expect(page).toHaveURL(new RegExp(`/courses/${course.course_id}/materials$`));
   await expect(page.getByText("知识库：构建失败：知识库暂时不可用")).toBeVisible();
   await detail.click();
@@ -104,11 +106,14 @@ test("unavailable and historical notes stay disabled while published notes do no
     const card = page.locator(".materials-list li").filter({ has: page.getByText(state.title, { exact: true }) });
     await expect(card.locator(".material-actions button")).toHaveText(["详情", "删除"]);
     const detail = card.getByRole("button", { name: "详情", exact: true });
-    if (state.title.startsWith("已") || state.title === "待应用候选") await expect(detail).toBeEnabled();
+    const openable = ["正在润色", "润色失败", "无原生文字", "待应用候选", "旧版图文笔记", "已应用润色", "已完成润色"];
+    if (openable.includes(state.title)) await expect(detail).toBeEnabled();
     else await expect(detail).toBeDisabled();
   }
   await expect(page.getByText("笔记整理：无可提取文字，无法生成润色笔记")).toBeVisible();
-  await expect(page.getByText("笔记整理：AI 润色失败，暂时无法查看详情")).toBeVisible();
+  await expect(page.getByText("笔记整理：原文可读，打开详情查看失败原因")).toBeVisible();
+  await expect(page.getByText("笔记整理：原文可读，AI 润色进行中")).toBeVisible();
+  await expect(page.getByText("暂时无法查看详情")).toHaveCount(0);
 });
 
 test("learning note reads cleanly and rich tables remain editable and saveable", async ({ page, request }) => {
@@ -185,4 +190,83 @@ test("learning note reads cleanly and rich tables remain editable and saveable",
   await candidateDialog.getByRole("button", { name: "应用润色版本", exact: true }).click();
   await expect(candidateDialog.getByRole("alert")).toHaveText("笔记或候选已更新，请重新查看后应用");
   expect(applyPayload).toEqual({ base_revision_id: "v3", candidate_revision_id: "candidate-v4" });
+});
+
+test("failed preview retries the existing job once and reload does not requeue", async ({ page, request }) => {
+  const course = await (await request.post(`${api}/api/courses`, { data: { name: "预览重试验收" } })).json();
+  let jobStatus = "failed";
+  let retries = 0;
+  let noteReads = 0;
+  await page.route(`**/api/courses/${course.course_id}/documents`, route => route.fulfill({
+    json: { items: [{ document_id: "preview-failed", title: "超限课件", file_name: "big.pptx",
+      source_type: "teacher_ppt", parse_strategy: "text-polish-v1", parse_status: "failed",
+      preview_status: "failed", preview_error: "PPT 页数为空或超过 80 页限制", note_status: "failed" }] },
+  }));
+  await page.route(`**/api/courses/${course.course_id}/material-jobs`, route => {
+    if (route.request().method() === "GET") return route.fulfill({ json: { items: [{
+      job_id: "job-preview", document_id: "preview-failed", status: jobStatus, phase: "preview", attempts: 1,
+      error_message: "PPT 页数为空或超过 80 页限制" }] } });
+    return route.fallback();
+  });
+  await page.route(`**/material-jobs/job-preview/retry`, route => {
+    retries += 1;
+    jobStatus = "queued";
+    return route.fulfill({ status: 202, json: { job_id: "job-preview", status: "queued" } });
+  });
+  await page.route(`**/documents/preview-failed/reading-note**`, route => {
+    const url = route.request().url();
+    if (url.includes("/reading-note/status")) {
+      return route.fulfill({ json: { note_status: "failed", parse_error: "PPT 页数为空或超过 80 页限制" } });
+    }
+    if (route.request().method() === "GET") {
+      noteReads += 1;
+      return route.fulfill({ status: 409, json: { detail: "资料笔记正在提取" } });
+    }
+    return route.fulfill({ status: 500, json: { detail: "unexpected write" } });
+  });
+  await page.goto(`/#/courses/${course.course_id}/materials`);
+  const card = page.locator(".materials-list li");
+  await expect(card.getByRole("button", { name: "详情", exact: true })).toBeDisabled();
+  await expect(card.getByText("笔记整理：资料提取失败，暂时无法查看详情")).toBeVisible();
+  await card.getByRole("button", { name: "重试", exact: true }).click();
+  await expect.poll(() => retries).toBe(1);
+  await expect(card.getByRole("button", { name: "重试", exact: true })).toHaveCount(0);
+  await page.goto(`/#/courses/${course.course_id}/materials/preview-failed/note`);
+  await expect(page.getByRole("alert")).toContainText("PPT 页数为空或超过 80 页限制");
+  await page.getByRole("button", { name: "重试加载", exact: true }).click();
+  await expect.poll(() => noteReads).toBe(2);
+  await page.waitForTimeout(1800);
+  expect(noteReads).toBe(2);
+  expect(retries).toBe(1);
+});
+
+test("failed polish keeps the original readable and retries polish without a new material job", async ({ page, request }) => {
+  const course = await (await request.post(`${api}/api/courses`, { data: { name: "润色失败阅读" } })).json();
+  const base = `/api/courses/${course.course_id}/documents/polish-failed`;
+  let polishRetries = 0;
+  const status = { note_status: "ready", polish_status: "failed", polish_batches_done: 6, polish_batches_total: 9,
+    polish_error: "部分章节整理未完成，已保存通过校验的批次，可重试继续", latest_saved_revision_id: "original-v1",
+    revision_numbers: { "original-v1": 1 }, index_status: "ready", images_status: "not_required" };
+  await page.route(`**${base}/reading-note/status`, route => route.fulfill({ json: status }));
+  await page.route(`**${base}/reading-note/polish/retry`, route => {
+    polishRetries += 1;
+    return route.fulfill({ status: 200, json: { status: "queued" } });
+  });
+  await page.route(`**${base}/reading-note`, route => route.fulfill({ json: {
+    document: { document_id: "polish-failed", title: "基础课件", file_name: "base.pptx", source_type: "teacher_ppt", parse_strategy: "text-polish-v1" },
+    editable: true, pages: [{ page_number: 1, title: "基础" }], status, initial_revision_id: "original-v1",
+    latest_saved_revision_id: "original-v1", indexed_revision_id: "original-v1", knowledge_revision_id: null,
+    sync_status: "current", revision: { revision_id: "original-v1", revision_no: 1, input_hash: "native", created_at: "2026-11-18T00:00:00Z",
+      body: { type: "doc", content: [{ type: "sourceBlock", attrs: { block_id: "native-1", page: 1, content_origin: "native", searchable: true, exclusion_reasons: [], source_refs: [] },
+        content: [{ type: "paragraph", content: [{ type: "text", text: "提取原文仍可阅读。" }] }] }] } },
+  } }));
+  await page.goto(`/#/courses/${course.course_id}/materials/polish-failed/note`);
+  await expect(page.getByText("提取原文仍可阅读。", { exact: true })).toBeVisible();
+  await expect(page.getByText("已完成 6/9 批。")).toBeVisible();
+  await expect(page.getByRole("button", { name: "重试整理", exact: true })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "编辑笔记", exact: true })).toBeEnabled();
+  await page.getByRole("button", { name: "重试整理", exact: true }).click();
+  await expect.poll(() => polishRetries).toBe(1);
+  await expect(page.getByRole("button", { name: "重试整理", exact: true })).toHaveCount(0);
+  await expect(page.getByText("正在整理正文（6/9 批）")).toBeVisible();
 });

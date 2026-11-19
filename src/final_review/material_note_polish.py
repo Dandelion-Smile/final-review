@@ -529,6 +529,230 @@ def consolidate_outline(outline, units):
     return outline
 
 
+_ADMIN_TEXT = re.compile(r"预习|下[次节堂]课|课后安排|学习要求")
+
+
+def _same_text(left: str, right: str) -> bool:
+    return re.sub(r"\s+", "", left or "") == re.sub(r"\s+", "", right or "")
+
+
+def program_error_class(message: str) -> str:
+    """Separate exclusion mistakes from structure, coverage and faithfulness."""
+    text = message or ""
+    if "不能按导航包装排除" in text:
+        return "exclusion_navigation"
+    if "不是可排除的课程安排" in text:
+        return "exclusion_course_admin"
+    if "缺少可验证的逐字重复来源" in text:
+        return "exclusion_duplicate"
+    if "排除" in text or "不可读" in text or "缺口" in text or "排除类别" in text:
+        return "exclusion_other"
+    if "表格" in text or "序号" in text:
+        return "structure"
+    if "数字" in text or "代码" in text or "逐字" in text or "空代码" in text:
+        return "faithfulness"
+    if "未引用" in text or "既未引用" in text or "同时被引用" in text or "之外的块" in text:
+        return "coverage"
+    if "预算" in text:
+        return "budget"
+    return "program"
+
+
+def contract_mismatches(frozen: dict | None, current: dict | None) -> list[str]:
+    """Fields that invalidate an existing generation. Empty means it can continue."""
+    frozen = frozen or {}
+    current = current or {}
+    if not frozen.get("contract_version"):
+        return []
+    return [
+        key
+        for key in ("resolved_model", "base_url", "contract_version", "prompt_digest")
+        if current.get(key) != frozen.get(key)
+    ]
+
+
+def outline_checkpoint_reusable(checkpoint, plan_hash, units) -> bool:
+    if not checkpoint or checkpoint.get("input_hash") != plan_hash:
+        return False
+    return not validate_outline(checkpoint.get("outline") or {}, units)
+
+
+def _exclusion_constraint(category: str) -> str:
+    if category == "navigation":
+        return "该块含可靠正文，必须按原文保留为有来源内容，不能排除为 navigation。"
+    if category == "course_admin":
+        return "该块含有效知识，必须按原文保留为有来源内容，不能排除为 course_admin。"
+    if category == "duplicate":
+        return "没有本批内可逐字核验的 duplicate_of 时必须保留原文，不能当作重复删除。"
+    return "该排除不合法。可靠内容必须按原文保留为有来源内容，不能改写后冒充原文。"
+
+
+def exclusion_repair_constraints(excluded, by_id) -> list[dict]:
+    """Block id, illegal category and the rule a repair must follow. Rules are not relaxed."""
+    constraints = []
+    for item in excluded or []:
+        if not isinstance(item, dict):
+            continue
+        errors = exclusion_errors([item], by_id)
+        if not errors:
+            continue
+        category = item.get("category") or "navigation"
+        constraints.append(
+            dict(
+                block_id=item.get("block_id"),
+                illegal_category=category,
+                errors=errors,
+                constraint=_exclusion_constraint(category),
+            )
+        )
+    return constraints
+
+
+def _verbatim_twin(unit, by_id) -> str | None:
+    for other in by_id.values():
+        if other["id"] != unit["id"] and _same_text(other["text"], unit["text"]):
+            return other["id"]
+    return None
+
+
+def _legal_retarget(item, unit, by_id) -> dict | None:
+    """Wrong label, but the block itself may still be legally excluded."""
+    reason = (item.get("reason") or "").strip()[:200] or "已改为可核验的排除类别"
+    candidates = []
+    if is_navigation(unit):
+        candidates.append(
+            dict(block_id=unit["id"], reason=reason, category="navigation", duplicate_of="")
+        )
+    if _ADMIN_TEXT.search(unit["text"]):
+        candidates.append(
+            dict(block_id=unit["id"], reason=reason, category="course_admin", duplicate_of="")
+        )
+    if not unit.get("reliable", True):
+        candidates.append(
+            dict(block_id=unit["id"], reason=reason, category="unreadable", duplicate_of="")
+        )
+    for candidate in candidates:
+        if not exclusion_errors([candidate], by_id):
+            return candidate
+    return None
+
+
+def _source_element(unit) -> dict:
+    return dict(
+        type="paragraph",
+        text=unit["text"],
+        items=[],
+        source_refs=[unit["id"]],
+        content_role="source",
+    )
+
+
+def settle_exclusions(result, batch):
+    """Keep legal exclusions. Put illegally excluded reliable text back as itself.
+
+    Restored text is the source block, not model prose. A duplicate is kept
+    only when a verbatim twin in this batch is already present in the note.
+    """
+    by_id = {unit["id"]: unit for unit in batch["units"]}
+    elements = [dict(element) for element in result.get("elements", [])]
+    for element in elements:
+        element["source_refs"] = list(element.get("source_refs") or [])
+    referenced = {ref for element in elements for ref in element["source_refs"]}
+    notes = []
+    kept = []
+    duplicates = []
+    for item in result.get("excluded", []):
+        item = dict(item)
+        if item.get("category") == "duplicate":
+            duplicates.append(item)
+            continue
+        if not exclusion_errors([item], by_id):
+            kept.append(item)
+            continue
+        unit = by_id.get(item.get("block_id"))
+        if unit is None:
+            kept.append(item)
+            continue
+        legal = _legal_retarget(item, unit, by_id)
+        if legal is not None:
+            kept.append(legal)
+            notes.append(
+                dict(
+                    block_id=unit["id"],
+                    action="retarget",
+                    illegal_category=item.get("category") or "navigation",
+                    category=legal["category"],
+                )
+            )
+            continue
+        if unit.get("reliable", True) and unit["id"] not in referenced:
+            elements.append(_source_element(unit))
+            referenced.add(unit["id"])
+            notes.append(
+                dict(
+                    block_id=unit["id"],
+                    action="restore",
+                    illegal_category=item.get("category") or "navigation",
+                )
+            )
+            continue
+        if unit["id"] in referenced:
+            notes.append(
+                dict(
+                    block_id=unit["id"],
+                    action="drop_exclusion",
+                    illegal_category=item.get("category") or "navigation",
+                )
+            )
+            continue
+        kept.append(item)
+    for item in duplicates:
+        unit = by_id.get(item.get("block_id"))
+        target = item.get("duplicate_of")
+        other = by_id.get(target)
+        proven = (
+            unit is not None
+            and other is not None
+            and other["id"] != unit["id"]
+            and other["id"] in referenced
+            and _same_text(unit["text"], other["text"])
+        )
+        if not proven and unit is not None:
+            twin = _verbatim_twin(unit, by_id)
+            if twin and twin in referenced:
+                target, proven = twin, True
+        if proven:
+            legal = dict(
+                block_id=unit["id"],
+                reason=(item.get("reason") or "与已保留文本逐字重复")[:200],
+                category="duplicate",
+                duplicate_of=target,
+            )
+            if not exclusion_errors([legal], by_id):
+                kept.append(legal)
+                continue
+        if unit is not None and unit.get("reliable", True) and unit["id"] not in referenced:
+            elements.append(_source_element(unit))
+            referenced.add(unit["id"])
+            notes.append(dict(block_id=unit["id"], action="restore", illegal_category="duplicate"))
+            continue
+        if unit is not None and unit["id"] in referenced:
+            continue
+        kept.append(item)
+    excluded_ids = {item["block_id"] for item in kept}
+    for unit in batch["units"]:
+        source_id = unit["id"]
+        if (
+            unit.get("reliable", True)
+            and source_id not in referenced
+            and source_id not in excluded_ids
+        ):
+            elements.append(_source_element(unit))
+            notes.append(dict(block_id=source_id, action="restore", reason="missing_coverage"))
+    settled = dict(result, elements=elements, excluded=kept)
+    return settled, notes
+
+
 def repair_batch(result, batch):
     """Normalize provable metadata mistakes; semantic claims still require review."""
     by_id = {unit["id"]: unit for unit in batch["units"]}
@@ -558,12 +782,20 @@ def repair_batch(result, batch):
             continue
         unit = by_id.get(item["block_id"])
         target = resolve(item.get("duplicate_of", ""))
-        if item.get("category") == "duplicate" and target in referenced:
-            # A model may merge paraphrases rather than exact copies. Keep BOTH
-            # source IDs on the surviving element so semantic review sees both.
+        other = by_id.get(target)
+        if (
+            item.get("category") == "duplicate"
+            and unit
+            and other
+            and target in referenced
+            and _same_text(unit["text"], other["text"])
+        ):
+            # Only a verbatim twin that is already in the note can absorb the id.
             for element in result["elements"]:
                 if target in element.get("source_refs", []):
-                    element["source_refs"].append(item["block_id"])
+                    refs = element.setdefault("source_refs", [])
+                    if item["block_id"] not in refs:
+                        refs.append(item["block_id"])
                     break
             continue
         label = unit["text"].strip("：: ") if unit else ""
@@ -582,7 +814,13 @@ def repair_batch(result, batch):
                 continue
         excluded.append(item)
     result["excluded"] = excluded
-    return result
+    # Capture the illegal exclusions before they are repaired, so a later model
+    # repair still sees the block id, category and the legal constraint.
+    result["exclusion_constraints"] = exclusion_repair_constraints(excluded, by_id)
+    settled, notes = settle_exclusions(result, batch)
+    if notes:
+        settled["exclusion_restorations"] = notes
+    return settled
 
 
 def build_batches(
@@ -789,6 +1027,28 @@ def check_batch(result: dict, batch: dict) -> list[str]:
         if not any(code.replace("\r\n", "\n") in candidate for candidate in normalized):
             errors.append(f"元素 {index} 的代码块不是引用原文的逐字子串")
     return errors
+
+
+def batch_reuse_decision(row: dict, batch: dict) -> str:
+    """Reuse a finished batch only when cache, review and program checks all agree.
+
+    ``supported=true`` is not enough: the stored draft must still pass check_batch.
+    """
+    if row.get("cache_key") != batch.get("cache_key"):
+        return "cache_key"
+    if row.get("status") != "done" or not row.get("result"):
+        return "not_done"
+    review = row.get("review") or {}
+    blocking = [
+        issue
+        for issue in review.get("issues") or []
+        if not isinstance(issue, dict) or issue.get("severity", "error") == "error"
+    ]
+    if not review.get("supported") or blocking:
+        return "review"
+    if check_batch(row["result"], batch):
+        return "program"
+    return "reuse"
 
 
 def _text_node(text: str) -> dict:

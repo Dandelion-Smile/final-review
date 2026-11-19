@@ -30,6 +30,7 @@ from .account_purge import run_account_purge
 from .account_routes import account_router
 from .agent import FinalReviewAgent, SessionConflict
 from .auth import CurrentUser, DatabaseAuth
+from .catalog_generation import resolve_scope
 from .config import Settings
 from .course_chat import CHAT_POLICY, CourseMaterials, cited_evidence, parse_chat_decision
 from .domain import DomainConflict, DomainNotFound, DomainService
@@ -744,6 +745,8 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
             "overview_kind为course、statistics、list或all。query是相关知识点的简短检索词。"
             "source_document_ids只填目录中的真实ID，null表示沿用当前范围，[]表示恢复全部课程资料。"
             "用户指定某些文件才设置ID；同名文件无法区分时追问，不猜测。"
+            "生成笔记或出题时，若明确指定知识点，catalog_points填写用户给出的知识点原名；"
+            "章节标题整体填chapter，不要将同一章名重复填成知识点。单独点名知识点时chapter清空。"
             "chapter只在用户明确限定章节时填写；null沿用，空字符串恢复全部章节。"
             "materials_only为true（只依据资料）、false（允许通用知识）或null（沿用）。"
             "所有明确的出题、测试题、练习集或模拟考试请求设intent=quiz，先交由配置弹窗确认。"
@@ -773,9 +776,16 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
         )
         instruction += "\n当前对话范围与待确认问题：" + json.dumps(
             {
-                "scope": conversation.get("chat_scope", {}),
+                "scope": {
+                    k: v
+                    for k, v in conversation.get("chat_scope", {}).items()
+                    if k != "catalog_scope"
+                },
+                "catalog_title": (
+                    conversation.get("chat_scope", {}).get("catalog_scope") or {}
+                ).get("title"),
                 "pending_clarification": conversation.get("pending_clarification"),
-                "pending_quiz": conversation.get("pending_quiz"),
+                "pending_quiz": (conversation.get("pending_quiz") or {}).get("quiz_input"),
                 "exams": conversation_store().scan(
                     "exam", {"course_id": request.course_id, "user_id": user.id}
                 ),
@@ -1909,6 +1919,7 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
         user: CurrentUser,
         *,
         auto_sources: list[dict] | None = None,
+        catalog_scope: dict | None = None,
         source_scope_set: bool = False,
     ) -> tuple[AgentResponse, dict | None]:
         if request.intent != "note":
@@ -1946,7 +1957,11 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
             },
         )
         try:
-            result = runtime().invoke(request, user.id)
+            result = (
+                runtime().invoke(request, user.id, catalog_scope=catalog_scope)
+                if catalog_scope
+                else runtime().invoke(request, user.id)
+            )
         except Exception:
             note_state(
                 request.course_id,
@@ -2050,6 +2065,60 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
             else scope.get("materials_only", False)
         )
         materials = CourseMaterials(conversation_store(), request.course_id, user.id)
+        catalog_scope = None
+        if intent in {"note", "quiz"}:
+            pending_scope = ((conversation or {}).get("pending_quiz") or {}).get("scope", {})
+            previous = scope.get("catalog_scope")
+            target = decision.chapter or (
+                decision.quiz_input.chapter if decision.quiz_input else ""
+            )
+            names = decision.catalog_points or (
+                decision.quiz_input.knowledge_points if decision.quiz_input and not target else []
+            )
+            if request.quiz_input is not None and pending_scope.get("catalog_scope"):
+                catalog_scope = pending_scope["catalog_scope"]
+                if (
+                    catalog_scope["chapter_id"]
+                    and request.quiz_input.chapter
+                    and request.quiz_input.chapter != catalog_scope["title"]
+                ):
+                    raise HTTPException(409, "目录章节已固定，更换章节请重新发起出题")
+            elif isinstance(conversation_store(), PostgresStore) and (
+                target
+                or names
+                or (
+                    not previous
+                    and not document_ids
+                    and request.quiz_input is None
+                    and not (decision.quiz_input and decision.quiz_input.scope_mode == "course")
+                )
+            ):
+                try:
+                    catalog_scope = resolve_scope(
+                        conversation_store(),
+                        request.course_id,
+                        target,
+                        names,
+                        decision.source_document_ids
+                        or request.attachment_document_ids
+                        or request.source_document_ids
+                        or (document_ids if not previous else None),
+                        message=request.message,
+                    )
+                except ValueError as exc:
+                    intent, formal = "clarify", False
+                    decision.clarification = str(exc)[:500]
+            elif (
+                previous
+                and decision.chapter is None
+                and not request.attachment_document_ids
+                and decision.source_document_ids is None
+                and request.source_document_ids is None
+            ):
+                catalog_scope = previous
+            if catalog_scope:
+                document_ids = list(dict.fromkeys(r["document_id"] for r in catalog_scope["refs"]))
+                chapter = ""
         if intent != "clarify":
             try:
                 scoped_materials = materials.select(document_ids, chapter)
@@ -2063,6 +2132,9 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
             "chapter": chapter,
             "materials_only": materials_only,
         }
+        if catalog_scope:
+            updated["chat_scope"]["catalog_scope"] = catalog_scope
+            updated["chat_scope"]["catalog_title"] = catalog_scope["title"]
         updated["pending_clarification"] = (
             decision.clarification or request.message if intent == "clarify" else None
         )
@@ -2081,6 +2153,7 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
                 ),
                 conversation_id=request.conversation_id,
                 user=user,
+                catalog_scope=catalog_scope,
                 auto_sources=scoped_materials if request.auto_queue_note else None,
                 source_scope_set=bool(document_ids or chapter),
             )
@@ -2144,6 +2217,8 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
                 if scope.get("source_document_ids") is not None or scope.get("chapter")
                 else updated["chat_scope"]
             )
+            if catalog_scope:
+                frozen_scope = updated["chat_scope"]
             result = resolve_quiz_config(
                 conversation_store(), user.id, request.course_id, partial, scope=frozen_scope
             )
@@ -2240,7 +2315,7 @@ def create_app(settings: Settings | None = None, agent: FinalReviewAgent | None 
                     else "needs_input"
                 ),
                 "quiz_configuration": result.model_dump(mode="json"),
-                "quiz_scope": frozen_scope,
+                "quiz_scope": {k: v for k, v in frozen_scope.items() if k != "catalog_scope"},
                 "quiz_job": quiz_job,
                 "model": settings.get_chat_model(request.model_id).label,
             }

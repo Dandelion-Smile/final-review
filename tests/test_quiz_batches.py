@@ -204,6 +204,14 @@ def test_paper_review_regenerates_only_affected_batch(draft_case):
     model = adapter(draft)
     model.quiz_draft_plan = lambda ctx, **_: fixture_plan(ctx)
     model.review_quiz_paper = review
+    repair = model.repair_quiz_draft
+
+    def repair_flagged(ctx, plan, candidate, issues):
+        calls.append(ctx.question_slots[0]["order"])
+        assert {issue["question_id"] for issue in issues} == {candidate["questions"][0]["id"]}
+        return repair(ctx, plan, candidate, issues)
+
+    model.repair_quiz_draft = repair_flagged
     result = generate_quiz(system.store, model, paper_config(context, 10))
     assert calls == [1, 6, 6] and len(reviews) == 2
     assert [q["order"] for q in result["draft"]["questions"]] == list(range(1, 11))

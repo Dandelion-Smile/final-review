@@ -137,7 +137,12 @@ def _process_material_job(
             return
         if phase == "preview":
             progress("native_extract")
-            pages = extract_preview(path, cache_dir, source_hash)
+            pages = extract_preview(
+                path,
+                cache_dir,
+                source_hash,
+                parse_strategy=job.get("parse_strategy") or document.get("parse_strategy"),
+            )
             now = datetime.now(UTC)
             preview = dict(
                 preview_status="ready",

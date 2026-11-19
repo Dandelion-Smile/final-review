@@ -9,6 +9,7 @@ from hashlib import sha256
 
 from pydantic import ValidationError
 
+from .catalog_generation import quiz_documents
 from .course_chat import CourseMaterials
 from .domain import DomainConflict, DomainNotFound, DomainService
 from .quiz_contract import (
@@ -42,7 +43,7 @@ def paper_hash(value):
 
 def quiz_context(store, config):
     materials = CourseMaterials(store, config.course_id, config.user_id)
-    documents = materials.select(config.source_document_ids, config.chapter)
+    documents = quiz_documents(materials, config)
     # Read real chunks fairly across files; never truncate a chunk and then claim a full quote.
     evidence, coverage = materials.read(documents, budget=60000)
     evidence = [item for item in evidence if item.source_type != "ai_supplement"][:80]
@@ -85,11 +86,15 @@ def _rank_quiz_evidence(context, slots):
             terms.add(term.casefold())
             if not term.isascii():
                 terms.update(term[i : i + 2] for i in range(len(term) - 1))
+    catalog = context.config.catalog_scope
+    names = {slot["knowledge_point"] for slot in slots}
+    preferred = {r["chunk_id"] for r in catalog["refs"] if r["name"] in names} if catalog else set()
     return [
         item
         for _, item in sorted(
             enumerate(context.evidence),
             key=lambda pair: (
+                bool(preferred) and pair[1].chunk_id not in preferred,
                 -sum(t in pair[1].content.casefold() for t in terms),
                 pair[1].document_id not in documents,
                 pair[0],
@@ -363,9 +368,7 @@ def generate_quiz(
     progress("retrieving")
     plan_context, coverage = quiz_context(store, config)
     materials = CourseMaterials(store, config.course_id, config.user_id)
-    pool, _ = materials.read(
-        materials.select(config.source_document_ids, config.chapter), budget=600000
-    )
+    pool, _ = materials.read(quiz_documents(materials, config), budget=600000)
     pool = [e for e in pool if e.source_type != "ai_supplement"][:1000]
     context = build_quiz_context(store, config, [e.model_dump(mode="json") for e in pool])
     fingerprint = paper_hash(context.model_dump(mode="json"))
@@ -541,7 +544,7 @@ def generate_quiz(
             "整卷校验未通过，已完成批次保留",
             [i.model_dump(mode="json") for i in validation.issues],
         )
-    if len(state["completed"]) > 1 and hasattr(model, "review_quiz_paper"):
+    if hasattr(model, "review_quiz_paper"):
         progress("reviewing")
         try:
             review = QuizPaperReview.model_validate(model.review_quiz_paper(context, candidate))
@@ -564,10 +567,21 @@ def generate_quiz(
             state["paper_repairs"] = state.get("paper_repairs", 0) + 1
             for batch in invalid:
                 record = state["batch_generation_state"][_batch_state_key(batch["slots"])]
+                flagged = [
+                    question["id"]
+                    for slot, question in zip(
+                        batch["slots"], record["candidate"]["questions"], strict=True
+                    )
+                    if slot["id"] in affected
+                ]
                 record.update(
                     passed=False,
                     evaluated=True,
-                    issues=[{"code": "paper_semantic", "message": i} for i in review.issues],
+                    issues=[
+                        {"code": "paper_semantic", "message": message, "question_id": question_id}
+                        for question_id in flagged or [None]
+                        for message in review.issues
+                    ],
                 )
             save_checkpoint(state)
             if state["paper_repairs"] > max_repairs:
@@ -640,13 +654,27 @@ def _generate_batch(
             return {"needs_plan_recheck": True}
         if record["candidate"] is None or record["evaluated"]:
             if record["attempts"] >= max_retries + 1:
+                issues = []
+                candidate_ids = [
+                    q.get("id") for q in (record["candidate"] or {}).get("questions", [])
+                ]
+                for issue in record.get("issues", []):
+                    path = issue.get("path", "").split(".")
+                    index = None
+                    if path[:2] == ["draft", "questions"] and len(path) >= 3 and path[2].isdigit():
+                        index = int(path[2])
+                    elif issue.get("question_id") and issue["question_id"] in candidate_ids:
+                        index = candidate_ids.index(issue["question_id"])
+                    if index is not None and index < len(slots):
+                        issue = {**issue, "question_number": slots[index]["order"]}
+                    issues.append(issue)
                 raise QuizGenerationError(
                     "试卷未通过校验或语义复核，生题重试次数已用完",
-                    record.get("issues", []),
+                    issues,
                     {"audit": audit, "candidate": record["candidate"], "plan": plan},
                 )
             old_candidate = record["candidate"]
-            record.update(attempts=record["attempts"] + 1, candidate=None, evaluated=False)
+            record["attempts"] += 1
             # Persist before the model call so recovery cannot grant another free attempt.
             save_attempt()
             progress("repairing" if old_candidate is not None else "generating")
@@ -655,6 +683,7 @@ def _generate_batch(
                 if old_candidate is not None
                 else model.quiz_draft(context, QuizDraftPlan.model_validate(plan))
             )
+            record["evaluated"] = False
             save_attempt()
         candidate = record["candidate"]
         progress("validating")

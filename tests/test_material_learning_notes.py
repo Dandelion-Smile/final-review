@@ -409,3 +409,313 @@ def test_success_is_checkpointed_even_when_a_sibling_batch_fails(monkeypatch):
     )
     assert any(c[0] == "checkpoint" and c[1] == 0 and c[2].get("result") for c in calls)
     assert calls[-1][0] == "failed"
+
+
+def _scripted_batch_model(drafts, repair=None):
+    class Model:
+        def __init__(self):
+            self.calls = []
+            self.repairs = []
+
+        def structured(self, schema, task, data):
+            self.calls.append(schema.__name__)
+            name = schema.__name__
+            if name == "PolishBatch":
+                return drafts(data) if callable(drafts) else drafts
+            if name == "PolishBatchRepair":
+                self.repairs.append(data)
+                if repair is None:
+                    raise AssertionError("unexpected repair")
+                return repair(data) if callable(repair) else repair
+            return dict(supported=True, issues=[])
+
+    return Model()
+
+
+def test_three_illegal_exclusions_are_restored_and_still_reviewed():
+    body = "聚类是把相似对象分成组的方法。"
+    knowledge = "支持度表示项集出现的频率，它是关联规则的基本度量。"
+    kept = "置信度表示规则的可靠程度。"
+    other = "提升度表示规则的相关性强弱。"
+    units = [
+        unit("body", body),
+        unit("knowledge", knowledge),
+        unit("kept", kept),
+        unit("other", other),
+    ]
+
+    def draft(_data):
+        return dict(
+            elements=[dict(type="paragraph", text=kept, source_refs=["b3"], content_role="source")],
+            excluded=[
+                dict(block_id="b1", reason="目录", category="navigation", duplicate_of=""),
+                dict(block_id="b2", reason="安排", category="course_admin", duplicate_of=""),
+                dict(block_id="b4", reason="重复", category="duplicate", duplicate_of="b3"),
+            ],
+        )
+
+    model = _scripted_batch_model(draft)
+    repaired, review = worker._run_batch(
+        model, "笔记", batch(units), "", "", {}, review_mode="always"
+    )
+    assert repaired
+    assert review["supported"] is True
+    assert check_batch(repaired, batch(units)) == []
+    texts = [element["text"] for element in repaired["elements"]]
+    assert body in texts and knowledge in texts and other in texts and kept in texts
+    assert model.calls == ["PolishBatch", "PolishBatchReview"]
+    assert model.repairs == []
+    assert "exclusion_constraints" not in repaired
+
+
+def test_supported_review_does_not_skip_a_remaining_program_error():
+    seen = {}
+
+    def draft(_data):
+        return dict(
+            elements=[
+                dict(
+                    type="paragraph",
+                    text="默认端口为 9090。",
+                    source_refs=["b1"],
+                    content_role="source",
+                )
+            ],
+            excluded=[
+                dict(
+                    block_id="b2",
+                    reason="目录",
+                    category="navigation",
+                    duplicate_of="",
+                )
+            ],
+        )
+
+    def repair(data):
+        seen["constraints"] = data.get("exclusion_constraints")
+        return dict(
+            changes=[
+                dict(
+                    index=0,
+                    replacement=dict(
+                        type="paragraph",
+                        text="默认端口为 9090。",
+                        source_refs=["b1"],
+                        content_role="source",
+                    ),
+                )
+            ],
+            excluded=[
+                dict(block_id="b2", reason="还是目录", category="navigation", duplicate_of="")
+            ],
+        )
+
+    model = _scripted_batch_model(draft, repair)
+    units = [unit("port", "默认端口为 8080。"), unit("body", "聚类是把相似对象分成组的方法。")]
+    repaired, review = worker._run_batch(
+        model, "笔记", batch(units), "", "", {}, review_mode="always"
+    )
+    assert repaired is None
+    assert review["supported"] is True
+    assert any("9090" in error for error in review["program_errors"])
+    assert "faithfulness" in review["program_error_classes"]
+    assert seen["constraints"][0]["block_id"] == "body"
+    assert seen["constraints"][0]["illegal_category"] == "navigation"
+    assert "navigation" in seen["constraints"][0]["constraint"]
+    assert model.calls == [
+        "PolishBatch",
+        "PolishBatchReview",
+        "PolishBatchRepair",
+        "PolishBatchReview",
+    ]
+
+
+def test_batch_repair_stops_when_the_call_budget_is_exhausted():
+    model = _scripted_batch_model(result())
+    draft, review = worker._run_batch(
+        model,
+        "笔记",
+        batch([unit()]),
+        "",
+        "",
+        {"output_token_budget": 0},
+        review_mode="always",
+    )
+    assert draft is None
+    assert review["budget_exhausted"] is True
+    assert model.calls == []
+    assert worker.batch_failure_code(review) == "batch_budget_exhausted"
+
+
+def test_phase_attempt_cap_keeps_the_successful_batch_and_stops(monkeypatch):
+    units = [unit(), unit("b", "另一个可靠结论。")]
+    outline = dict(
+        document_title="笔记",
+        sections=[
+            dict(title="配置", level=1, block_ids=["a"]),
+            dict(title="第二节", level=1, block_ids=["b"]),
+        ],
+        excluded=[],
+    )
+    calls = []
+
+    class Store:
+        def polish_job_context(self, job):
+            return dict(
+                document=dict(document_id="d", content_sha256="h", title="笔记"), units=units
+            )
+
+        def load_polish_batches(self, job):
+            return []
+
+        def prepare_polish_batches(self, job, batches):
+            return [
+                dict(
+                    batch_index=i, cache_key=batches[i]["cache_key"], status="pending", result=None
+                )
+                for i in range(len(batches))
+            ]
+
+        def update_polish_job(self, *args, **kwargs):
+            return True
+
+        def checkpoint_polish_batch(self, job, index, **kwargs):
+            calls.append(("checkpoint", index, kwargs))
+            return True
+
+        def fail_polish_job(self, job, **kwargs):
+            calls.append(("failed", kwargs))
+
+    monkeypatch.setattr(worker, "_plan_outline", lambda *args: outline)
+    monkeypatch.setattr(worker, "build_polish_review_model", lambda *args: SimpleNamespace())
+
+    def run(model, title, item, *args, **kwargs):
+        if item["units"][0]["id"] == "a":
+            return result(), dict(supported=True, issues=[])
+        return None, dict(
+            supported=True,
+            issues=[],
+            program_errors=["块 b 包含正文，不能按导航包装排除"],
+            program_error_classes=["exclusion_navigation"],
+        )
+
+    monkeypatch.setattr(worker, "_run_batch", run)
+    worker._process_polish_job(
+        Store(),
+        dict(
+            user_id="u",
+            document_id="d",
+            job_id="j",
+            attempts=3,
+            phase_attempts=3,
+            metrics={
+                "request_budget": dict(
+                    version=1,
+                    identity=dict(job_id="j", generation=None, input_hash=None),
+                    logical_calls=2,
+                    model_requests=3,
+                )
+            },
+            max_attempts=3,
+            model_config={},
+        ),
+        Settings(_env_file=None, llm_api_key="test", material_note_polish_model_id="default"),
+        None,
+        {},
+    )
+    saved = [call for call in calls if call[0] == "checkpoint" and call[2].get("result")]
+    failed = [call for call in calls if call[0] == "checkpoint" and call[2].get("error")]
+    assert saved and saved[0][1] == 0
+    assert failed[0][2]["error"] == "exclusion_failed"
+    assert calls[-1] == (
+        "failed",
+        {
+            "code": "exclusion_failed",
+            "message": "部分章节整理未完成，已保存通过校验的批次，可重试继续",
+            "retry": False,
+        },
+    )
+
+
+def test_incompatible_contract_is_rejected_before_reuse(monkeypatch):
+    calls = []
+
+    class Store:
+        def polish_job_context(self, job):
+            return dict(
+                document=dict(document_id="d", content_sha256="h", title="笔记"),
+                units=[unit()],
+            )
+
+        def update_polish_job(self, *args, **kwargs):
+            return True
+
+        def fail_polish_job(self, job, **kwargs):
+            calls.append(kwargs)
+
+    monkeypatch.setattr(
+        worker,
+        "build_polish_review_model",
+        lambda *args: (_ for _ in ()).throw(AssertionError("model")),
+    )
+    settings = Settings(_env_file=None, llm_api_key="test", material_note_polish_model_id="default")
+    frozen = dict(worker.polish_model_config(settings), prompt_digest="0" * 64)
+    worker._process_polish_job(
+        Store(),
+        dict(
+            user_id="u",
+            document_id="d",
+            job_id="j",
+            attempts=1,
+            phase_attempts=1,
+            max_attempts=3,
+            model_config=frozen,
+        ),
+        settings,
+        None,
+        {},
+    )
+    assert calls[0]["code"] == "polish_unavailable"
+    assert calls[0]["retry"] is False
+
+
+def test_job_budget_stops_outline_calls_without_resetting_attempts():
+    class Model:
+        def __init__(self):
+            self.calls = 0
+
+        def structured(self, schema, task, data):
+            self.calls += 1
+            raise AssertionError("budget should stop before the model call")
+
+    metrics = {"model_requests": worker.MAX_JOB_MODEL_CALLS, "max_output_tokens": 16384}
+    with pytest.raises(worker.PolishBudgetExhausted):
+        worker._request(Model(), worker.PolishOutline, "task", {}, metrics)
+    assert metrics["model_requests"] == worker.MAX_JOB_MODEL_CALLS
+
+
+def test_generation_reservations_cover_parser_retries_and_resume():
+    job = dict(job_id="j", generation=1, input_hash="h", attempts=1)
+    saved = []
+
+    class Model:
+        def structured(self, schema, task, data, before_request):
+            before_request()
+            before_request()
+            return "ok"
+
+    def save(*, metrics):
+        saved.append(metrics["request_budget"])
+
+    budget = worker.PolishRequestBudget(job, Model(), save)
+    assert budget.structured(None, "", {}) == "ok"
+    assert [(r["logical_calls"], r["model_requests"]) for r in saved] == [(0, 0), (1, 1), (1, 2)]
+    job.update(attempts=2, metrics={"request_budget": saved[-1]})
+    worker.PolishRequestBudget(job, Model(), save).structured(None, "", {})
+    assert saved[-1]["model_requests"] == 4
+    job["generation"] += 1
+    with pytest.raises(ValueError):
+        worker.PolishRequestBudget(job, Model(), save)
+    job["metrics"] = {"outline_checkpoint": {}}
+    with pytest.raises(ValueError):
+        worker.PolishRequestBudget(job, Model(), save)

@@ -52,6 +52,19 @@ services:
       agent:
         condition: service_healthy
     restart: on-failure:3
+  catalog-worker:
+    build: .
+    profiles: [catalog]
+    command: ["uv", "run", "--no-sync", "python", "-m", "final_review.knowledge_catalog_scheduler"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://final_review:${POSTGRES_PASSWORD}@postgres:5432/final_review
+      CATALOG_SCHEDULER_ENABLED: ${CATALOG_SCHEDULER_ENABLED:-false}
+    depends_on:
+      postgres:
+        condition: service_started
+    restart: on-failure:3
+    stop_grace_period: 15m
   note-worker:
     build: .
     command: ["uv", "run", "--no-sync", "python", "-m", "final_review.note_jobs"]

@@ -321,6 +321,14 @@ class DomainService:
                 "note_type": payload["note_type"],
                 "points": payload["points"],
                 "coverage": payload.get("coverage"),
+                **(
+                    {
+                        "catalog_version_id": payload["catalog_scope"]["version_id"],
+                        "catalog_chapter_id": payload["catalog_scope"]["chapter_id"],
+                    }
+                    if payload.get("catalog_scope")
+                    else {}
+                ),
                 "edit_source": "ai",
                 "source_document_ids": sorted(
                     {
@@ -351,6 +359,12 @@ class DomainService:
                     ):
                         raise DomainConflict("来源资料已不可用")
                     version = self.store.ensure_material_source(document)
+                    if payload.get("catalog_scope") and any(
+                        r["material_version_id"] != version["material_version_id"]
+                        for r in point["knowledge_sources"]
+                        if r["document_id"] == ref["document_id"]
+                    ):
+                        raise DomainConflict("笔记来源版本已变化，请重新生成")
                     chunks = {
                         row["chunk_id"]: row
                         for row in self.store.list_material_chunks(ref["document_id"])
@@ -404,9 +418,14 @@ class DomainService:
                     available=bool(document and document.get("parse_status") == "ready"),
                 )
         snapshots = self.store.scan("source_snapshot", {"course_id": asset["course_id"]})
+        documents = {}
+        chunk_indexes = {}
         for point in revision.get("points", []):
             for ref in point["references"]:
-                document = self.store.get("document", ref["document_id"])
+                doc_id = ref["document_id"]
+                if doc_id not in documents:
+                    documents[doc_id] = self.store.get("document", doc_id)
+                document = documents[doc_id]
                 ref["available"] = bool(
                     document
                     and document.get("user_id") == self.user_id
@@ -426,17 +445,22 @@ class DomainService:
                     version = self._owned("material_version", stored["material_version_id"])
                     ref.update(file_name=version["file_name"], source_type=version["source_type"])
                 if document and document.get("user_id") == self.user_id:
-                    chunks = self.store.list_material_chunks(ref["document_id"]) + document.get(
-                        "historical_chunks", []
-                    )
-                    for ordinal, chunk in enumerate(chunks):
-                        if chunk["chunk_id"] == ref["chunk_id"]:
-                            ref.update(
-                                position_kind=chunk.get("position_kind", "document"),
-                                position=chunk.get("position"),
-                                chunk_ordinal=chunk.get("chunk_ordinal", ordinal),
-                            )
-                            break
+                    if doc_id not in chunk_indexes:
+                        chunks = self.store.list_material_chunks(doc_id) + document.get(
+                            "historical_chunks", []
+                        )
+                        index = {}
+                        for ordinal, chunk in enumerate(chunks):
+                            index.setdefault(chunk["chunk_id"], (ordinal, chunk))
+                        chunk_indexes[doc_id] = index
+                    location = chunk_indexes[doc_id].get(ref["chunk_id"])
+                    if location:
+                        ordinal, chunk = location
+                        ref.update(
+                            position_kind=chunk.get("position_kind", "document"),
+                            position=chunk.get("position"),
+                            chunk_ordinal=chunk.get("chunk_ordinal", ordinal),
+                        )
                 matching = [
                     row
                     for row in snapshots
@@ -602,6 +626,20 @@ class DomainService:
                         position=chunk.get("position"),
                         chunk_ordinal=chunk.get("chunk_ordinal", 0),
                     )
+            original_points = {p["point_id"]: p for p in base.get("points", [])}
+            for point in points:
+                original = original_points.get(point["point_id"], {})
+                if (
+                    original.get("knowledge_sources")
+                    and all(
+                        point.get(key) == original.get(key)
+                        for key in ("heading", "content", "provenance")
+                    )
+                    and {(r["chunk_id"], r["quote"]) for r in point["references"]}
+                    == {(r["chunk_id"], r["quote"]) for r in original["references"]}
+                ):
+                    point["knowledge_sources"] = original["knowledge_sources"]
+                    point["knowledge_point_ids"] = original["knowledge_point_ids"]
             now, revision_id = _now(), _id("revision")
             lines = [f"# {payload['title']}"]
             for point in points:
@@ -621,6 +659,7 @@ class DomainService:
                 "note_type": base.get("note_type", "chapter"),
                 "points": points,
                 "coverage": base.get("coverage"),
+                **{k: base[k] for k in ("catalog_version_id", "catalog_chapter_id") if k in base},
                 "edit_source": "student",
                 "source_document_ids": sorted(documents),
                 "based_on_revision_id": base["revision_id"],

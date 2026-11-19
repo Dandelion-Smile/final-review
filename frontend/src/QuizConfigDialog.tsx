@@ -16,7 +16,7 @@ export type QuizInput = {
   source_document_ids?: string[] | null; source_types?: string[]; allow_ai_supplement?: boolean | null;
   total_score?: number | null;
 };
-export type PendingQuiz = { quiz_input: QuizInput; scope?: { source_document_ids?: string[] | null; selectable_document_ids?: string[] | null; chapter?: string } };
+export type PendingQuiz = { quiz_input: QuizInput; scope?: { catalog_title?: string; source_document_ids?: string[] | null; selectable_document_ids?: string[] | null; chapter?: string } };
 export type QuizConfiguration = { status: string; quiz_input: QuizInput; conflicts: string[]; missing: string[]; prompt?: { message: string } | null };
 
 // Shares the note dialog's custom dropdown classes, including the popup itself.
@@ -158,14 +158,14 @@ export default function QuizConfigDialog({
           <div className="note-dialog-grid">
             <QuizSelect label="出题范围" value={input.scope_mode ?? ""}
               options={[["course", "全课程"], ["chapter", "指定章节"], ["knowledge_points", "指定知识点"]]}
-              disabled={busy} onChange={value => patch({
+              disabled={busy || Boolean(pending.scope?.catalog_title)} onChange={value => patch({
                 scope_mode: value || null, chapter: pending.scope?.chapter || input.chapter, knowledge_points: [],
               })} />
             {(input.scope_mode === "chapter" || (input.scope_mode === "knowledge_points" && pending.scope?.chapter)) &&
-              <label>章节<input maxLength={200} value={input.chapter ?? ""} disabled={busy}
+              <label>章节<input maxLength={200} value={input.chapter ?? ""} disabled={busy || Boolean(pending.scope?.catalog_title)}
                 onChange={event => patch({ chapter: event.target.value })} placeholder="例如：第三章" /></label>}
           </div>
-          {input.scope_mode === "knowledge_points" && <label>知识点<textarea value={points} disabled={busy}
+          {input.scope_mode === "knowledge_points" && <label>知识点<textarea value={points} disabled={busy || Boolean(pending.scope?.catalog_title)}
             onChange={event => setPoints(event.target.value)} placeholder="每行一个知识点，每个知识点最多 6 题" /></label>}
           <div className="note-dialog-source">
             <div className="note-dialog-source-head">
@@ -181,6 +181,7 @@ export default function QuizConfigDialog({
             {materials.length > 0 && <div className="note-config-files">{materials.map(item => (
               <span key={item.document_id}>{materialLabel(item)}{item.parse_status !== "ready" ? " · 未就绪" : ""}</span>
             ))}</div>}
+            {pending.scope?.catalog_title && <small>正式知识目录 · {pending.scope.catalog_title}</small>}
             {pending.scope?.chapter && <small>当前对话限定章节：{pending.scope.chapter}</small>}
             {pending.scope?.source_document_ids && <small>资料选择受当前对话指定的文件范围限制。</small>}
             {Boolean(input.source_types?.length) && <small>已识别的来源类别：{input.source_types?.map(type => sourceNames[type] ?? type).join("、")}

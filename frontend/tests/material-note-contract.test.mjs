@@ -8,7 +8,7 @@ async function loadTypeScript(path) {
   const result = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } });
   return import("data:text/javascript;base64," + Buffer.from(result.outputText).toString("base64"));
 }
-const { wireBody, bodyKey, plainNode } = await loadTypeScript("../src/material-note-api.ts");
+const { wireBody, bodyKey, plainNode, readableNoteVersion, noteProgressLabel, materialActionState } = await loadTypeScript("../src/material-note-api.ts");
 const { materialNoteHref, materialNoteDocument, readRoute, legacyHash } = await loadTypeScript("../src/course-routes.ts");
 const source = content => ({ type: "sourceBlock", attrs: { block_id: "native-1", page: 1,
   content_origin: "native", searchable: true, exclusion_reasons: [], source_refs: [] }, content });
@@ -67,4 +67,46 @@ test("learning-note tables, inline marks and server-owned content roles survive 
   assert.equal(table.content[1].content[0].attrs, undefined);
   assert.deepEqual(table.content[0].content[0].content[0].content[0].marks, [{ type: "bold" }]);
   assert.equal(plainNode(body), "参数\nport");
+});
+
+test("readable original is independent of polish, and retry stays on the failed processing job", () => {
+  const base = { document_id: "doc-1", parse_strategy: "text-polish-v1", note_status: "ready" };
+  const cases = [
+    { item: { ...base, polish_status: "queued" }, detail: true, label: "原文可读，AI 润色进行中" },
+    { item: { ...base, polish_status: "running" }, detail: true, label: "原文可读，AI 润色进行中" },
+    { item: { ...base, polish_status: "failed" }, detail: true, label: "原文可读，打开详情查看失败原因" },
+    { item: { ...base, polish_status: "not_required" }, detail: true, label: "无可提取文字，无法生成润色笔记" },
+    { item: { ...base, polish_status: "candidate" }, detail: true, label: "新版笔记已就绪，可查看并应用" },
+    { item: { ...base, polish_status: "applied" }, detail: true, label: "AI 润色完成，可查看详情" },
+    { item: { ...base, polish_status: "ready" }, detail: true, label: "AI 润色完成，可查看详情" },
+    { item: { document_id: "doc-1", parse_strategy: "text-images-v1", note_status: "ready" }, detail: true, label: "原文可读，可查看详情" },
+    { item: { document_id: "doc-1", parse_strategy: "text-polish-v1", note_status: "queued", parse_status: "queued" }, detail: false, label: "正在提取文字，润色完成后可查看详情" },
+    { item: { document_id: "doc-1", parse_strategy: "text-polish-v1", note_status: "queued", polish_status: "ready" }, detail: false, label: "正在提取文字，润色完成后可查看详情" },
+    { item: { document_id: "doc-1", parse_strategy: undefined, note_status: "ready" }, detail: false, label: "尚未生成 AI 润色笔记" },
+    { item: { document_id: "doc-1", parse_strategy: "text-polish-v1", note_status: "failed", preview_status: "failed", parse_status: "failed" }, detail: false, label: "资料提取失败，暂时无法查看详情" },
+  ];
+  const failed = { job_id: "job-failed", document_id: "doc-1", status: "failed", phase: "preview" };
+  const images = { job_id: "job-images", document_id: "doc-1", status: "failed", phase: "images" };
+  for (const entry of cases) {
+    assert.equal(readableNoteVersion(entry.item), entry.detail);
+    assert.equal(noteProgressLabel(entry.item), entry.label);
+    const idle = materialActionState(entry.item, [failed, images], false);
+    assert.equal(idle.detailEnabled, entry.detail);
+    assert.equal(idle.retryJobId, "job-failed");
+    assert.equal(idle.retryEnabled, true);
+    const busy = materialActionState(entry.item, [failed], true);
+    assert.equal(busy.detailEnabled, false);
+    assert.equal(busy.retryEnabled, false);
+    assert.equal(busy.retryJobId, "job-failed");
+  }
+  const readableFailed = materialActionState({ ...base, polish_status: "failed" }, [failed], false);
+  assert.equal(readableFailed.detailEnabled, true);
+  assert.equal(readableFailed.retryJobId, "job-failed");
+  const running = materialActionState(
+    { document_id: "doc-1", parse_strategy: "text-polish-v1", note_status: "failed", parse_status: "failed" },
+    [{ job_id: "job-run", document_id: "doc-1", status: "running", phase: "preview" }],
+    false,
+  );
+  assert.equal(running.retryJobId, null);
+  assert.equal(materialActionState(base, [images], false).retryJobId, null);
 });

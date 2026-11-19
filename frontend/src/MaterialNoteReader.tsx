@@ -1,3 +1,4 @@
+import NoteSectionOutline from "./NoteSectionOutline";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EditorContent, useEditor } from "@tiptap/react";
 import type { JSONContent } from "@tiptap/core";
@@ -27,7 +28,14 @@ export default function MaterialNoteReader({ courseId, documentId }: { courseId:
           try {
             const status = await api<NoteStatus>(base + "/reading-note/status");
             if (!active) return;
-            if (status.note_status === "failed") { setError(status.parse_error || status.polish_error || "资料提取失败，请返回资料页重试处理。"); return; }
+            if (status.note_status === "failed" || status.parse_error) {
+              setError(status.parse_error || status.polish_error || "资料提取失败，请返回资料页重试处理。");
+              return;
+            }
+            if (status.note_status !== "running") {
+              setError("资料尚未提取完成，没有可阅读的笔记版本。请返回资料页查看状态；“重试加载”只会重新读取，不会重新排队。");
+              return;
+            }
           } catch (statusError) { if (active) setError(statusError instanceof Error ? statusError.message : "读取处理状态失败"); return; }
           timer = window.setTimeout(() => { void load(); }, 1500);
         } else setError(failure instanceof Error ? failure.message : "资料笔记加载失败");
@@ -215,7 +223,7 @@ function NoteWorkspace({ initial, base, courseId }: { initial: MaterialNote; bas
     setPolishBusy(true); setError(""); setMessage(busyNote);
     try {
       const result = await api<{ status?: string }>(base + path, "POST");
-      setStatus(current => ({ ...current, polish_status: "queued", polish_stage: null, polish_error: null }));
+      setStatus(current => ({ ...current, polish_status: "queued", polish_stage: null, polish_error: null, polish_error_code: null }));
       setMessage(typeof result?.status === "string" && result.status === "queued" ? "已重新排队，正在基于原文整理笔记。" : busyNote);
     } catch (failure) { setError(failure instanceof Error ? failure.message : "操作失败，请重试。"); setMessage(""); }
     finally { setPolishBusy(false); }
@@ -298,11 +306,13 @@ function NoteWorkspace({ initial, base, courseId }: { initial: MaterialNote; bas
       </div>;
     }
     if (polishState === "failed") {
+      const budgetExhausted = status.polish_error_code === "budget_exhausted";
       return <div className="material-note-polish-banner is-error" role="alert">
-        <strong>笔记整理失败</strong>
-        <span>{status.polish_error || "模型调用未完成，可重试。"}</span>
+        <strong>{budgetExhausted ? "笔记整理预算已用完" : "笔记整理失败"}</strong>
+        <span>{status.polish_error || "模型调用未完成，可重试。"}{(status.polish_batches_total ?? 0) > 0 ? ` 已完成 ${status.polish_batches_done ?? 0}/${status.polish_batches_total} 批。` : ""}</span>
         <span className="material-note-polish-actions">
-          <button type="button" disabled={polishBusy} onClick={() => { void polishAction("/reading-note/polish/retry", "正在重新排队…"); }}>重试整理</button>
+          {budgetExhausted ? <span>已保存通过校验的批次，追加额度后可继续整理。</span> :
+            <button type="button" disabled={polishBusy} onClick={() => { void polishAction("/reading-note/polish/retry", "正在重新排队…"); }}>重试整理</button>}
           <button type="button" onClick={() => setMode("edit")}>使用原文开始编辑</button>
         </span>
       </div>;
@@ -362,9 +372,8 @@ function NoteWorkspace({ initial, base, courseId }: { initial: MaterialNote; bas
     <div className="material-note-layout">
       <aside className="material-note-outline" aria-label="资料目录">
         {polishedBody
-          ? <><h2>目录</h2><p>按章节组织</p>
-            <nav aria-label="章节目录">{sections.map(section => <button key={section.blockId} type="button" className={section.level > 1 ? "is-subsection" : ""} onClick={() => scrollSection(section.blockId)}>
-              <strong>{section.title}</strong></button>)}</nav></>
+          ? <NoteSectionOutline sections={sections.map(s => ({id: s.blockId, title: s.title, level: s.level}))}
+              onSelect={scrollSection} />
           : <><h2>目录</h2><p>按原课件页码定位</p>
             <nav aria-label="课件页码目录">{initial.pages.map(page => <button key={page.page_number} type="button" onClick={() => scrollPage(page.page_number)}>
               <span>{String(page.page_number).padStart(2, "0")}</span><strong>{page.title || `第 ${page.page_number} 页`}</strong></button>)}

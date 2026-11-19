@@ -118,6 +118,7 @@ class MaterialNoteStore:
             polish_stage=polish["stage"] if polish else None,
             polish_batches_done=polish["batches_done"] if polish else None,
             polish_batches_total=polish["batches_total"] if polish else None,
+            polish_error_code=polish["error_code"] if polish else None,
             polish_error=(polish["error_message"] if polish else None)
             or document.get("polish_error"),
             candidate_revision_id=candidate_revision_id,
@@ -598,7 +599,7 @@ class MaterialNoteStore:
             )
             return True
 
-    def claim_polish_job(self) -> dict | None:
+    def claim_polish_job(self, job_id=None) -> dict | None:
         """Claim one due polish job; expired leases fail without touching notes."""
         with self.transaction():
             with self.connection.cursor() as cursor:
@@ -633,9 +634,11 @@ class MaterialNoteStore:
                     "SELECT * FROM material_note_polish_jobs j WHERE "
                     "((status='queued' AND available_at<=now()) OR "
                     "(status='running' AND lease_until<now() AND phase_attempts<max_attempts)) "
+                    "AND (%s::text IS NULL OR j.job_id=%s) "
                     "AND EXISTS (SELECT 1 FROM app_users u WHERE u.id=j.user_id "
                     "AND u.deletion_due_at IS NULL) "
-                    "ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1"
+                    "ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1",
+                    (job_id, job_id),
                 )
                 row = cursor.fetchone()
                 if not row:
@@ -1020,7 +1023,7 @@ class MaterialNoteStore:
             )
             return True
 
-    def retry_polish(self, document):
+    def retry_polish(self, document, *, extra_model_calls=None):
         """Requeue the latest failed polish job for this document."""
         with self.transaction(), self.connection.cursor() as cursor:
             cursor.execute(
@@ -1038,11 +1041,53 @@ class MaterialNoteStore:
                 raise ValueError("此资料没有可提取的原生文字，无法生成润色笔记")
             if row["status"] != "failed":
                 return dict(status=row["status"], job_id=row["job_id"])
+            metrics = {}
+            if extra_model_calls is not None:
+                from .material_note_polish_jobs import MAX_CONTINUATION_CALLS, MAX_JOB_MODEL_CALLS
+
+                if (
+                    type(extra_model_calls) is not int
+                    or not 1 <= extra_model_calls <= MAX_CONTINUATION_CALLS
+                ):
+                    raise ValueError("续跑额度超出允许范围")
+                if (
+                    head["polish_job_id"] != row["job_id"]
+                    or document.get("content_sha256") != row["source_hash"]
+                ):
+                    raise ValueError("当前笔记或原文版本已变化")
+                ledger = row["metrics"].get("request_budget")
+                if row["metrics"].get("request_budget_continuation"):
+                    raise ValueError("该轮整理已追加过续跑预算")
+                legacy = ledger is None and row["error_code"] == "faithfulness_failed"
+                if not legacy and (
+                    row["error_code"] != "budget_exhausted"
+                    or not ledger
+                    or ledger.get("logical_calls") != MAX_JOB_MODEL_CALLS
+                ):
+                    raise ValueError("当前失败记录不符合定额续跑条件")
+                if legacy:
+                    ledger = dict(
+                        version=1,
+                        identity={key: row[key] for key in ("job_id", "generation", "input_hash")},
+                        logical_calls=0,
+                        model_requests=0,
+                    )
+                    metrics["request_budget"] = ledger
+                granted_at = self.connection.execute("SELECT now() AS time").fetchone()["time"]
+                metrics["request_budget_continuation"] = dict(
+                    extra_calls=extra_model_calls,
+                    logical_calls_before=ledger["logical_calls"],
+                    model_requests_before=ledger["model_requests"],
+                    historical_usage_recorded=not legacy,
+                    granted_at=granted_at.isoformat(),
+                )
+            elif row["error_code"] == "budget_exhausted":
+                raise ValueError("本轮模型调用预算已用完，需要追加额度后才能继续整理")
             cursor.execute(
                 "UPDATE material_note_polish_jobs SET status='queued',phase_attempts=0,"
                 "lease_token=NULL,available_at=now(),finished_at=NULL,error_code=NULL,"
-                "error_message=NULL WHERE job_id=%s",
-                (row["job_id"],),
+                "error_message=NULL,metrics=metrics || %s,updated_at=now() WHERE job_id=%s",
+                (Jsonb(metrics), row["job_id"]),
             )
             cursor.execute(
                 "UPDATE material_note_heads SET polish_status='queued',updated_at=now() "

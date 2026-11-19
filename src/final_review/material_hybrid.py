@@ -39,12 +39,38 @@ def presentation_source(path, cache_dir, source_hash):
     return target
 
 
-def extract_preview(path, cache_dir, source_hash):
-    with observation("material.native_extraction"):
+def load_presentation_pages(path, cache_dir, source_hash, *, limit, parse_strategy=None):
+    """Open a presentation and apply one shared slide check.
+
+    Callers choose ``limit``. Visual and text-images callers pass
+    ``MAX_PRESENTATION_SLIDES``. The text-only worker passes the strategy cap.
+    """
+    try:
         source = presentation_source(path, cache_dir, source_hash)
         pages = inspect_presentation(source.read_bytes())
-        if not pages or len(pages) > conversion.MAX_PRESENTATION_SLIDES:
-            raise ValueError(f"PPT 页数为空或超过 {conversion.MAX_PRESENTATION_SLIDES} 页限制")
+    except conversion.PresentationSlideError:
+        raise
+    except Exception as exc:
+        mapped = conversion.as_corrupt_slide_error(exc, limit=limit, parse_strategy=parse_strategy)
+        if mapped is None:
+            raise
+        raise mapped from exc
+    conversion.validate_presentation_slide_count(
+        len(pages), limit=limit, parse_strategy=parse_strategy
+    )
+    return pages
+
+
+def extract_preview(path, cache_dir, source_hash, *, parse_strategy=None):
+    """Hybrid and text-images preview. The text-only cap never applies here."""
+    with observation("material.native_extraction"):
+        pages = load_presentation_pages(
+            path,
+            cache_dir,
+            source_hash,
+            limit=conversion.MAX_PRESENTATION_SLIDES,
+            parse_strategy=parse_strategy,
+        )
     with observation("material.classification") as span:
         summary = {
             "native_pages": sum(p["route"] == "native" for p in pages),

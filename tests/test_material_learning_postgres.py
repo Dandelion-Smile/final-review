@@ -12,6 +12,11 @@ from test_postgres_migrations import USER, database_url  # noqa: F401
 
 from final_review.material_jobs import process_material_job
 from final_review.material_note_polish import assemble_body, polish_model_config
+from final_review.material_note_polish_jobs import (
+    MAX_JOB_MODEL_CALLS,
+    PolishBudgetExhausted,
+    PolishRequestBudget,
+)
 from final_review.material_notes import NoteConflict, node_text
 from final_review.material_text_source import source_units
 
@@ -87,6 +92,44 @@ def regenerate(s, document):
         prompt_version=s.settings.material_note_polish_prompt_version,
     )
     return s.store.claim_polish_job()
+
+
+def test_exhausted_polish_continues_once_without_resetting_usage(knowledge_system, tmp_path):
+    store = knowledge_system.store
+    document, job = setup_source(knowledge_system, tmp_path)
+    ledger = dict(
+        version=1,
+        identity={key: job[key] for key in ("job_id", "generation", "input_hash")},
+        logical_calls=MAX_JOB_MODEL_CALLS,
+        model_requests=MAX_JOB_MODEL_CALLS + 1,
+    )
+    assert store.update_polish_job(
+        job["job_id"],
+        job["attempts"],
+        lease_token=job["lease_token"],
+        metrics={"request_budget": ledger},
+    )
+    assert store.fail_polish_job(job, code="budget_exhausted", message="额度用完", retry=False)
+    with pytest.raises(ValueError, match="追加额度"):
+        store.retry_polish(document)
+    assert store.retry_polish(document, extra_model_calls=1)["status"] == "queued"
+    claimed = store.claim_polish_job(job["job_id"])
+    assert claimed["metrics"]["request_budget"] == ledger
+
+    class Model:
+        def structured(self, schema, task, data, *, before_request):
+            before_request()
+            before_request()
+            return {}
+
+    budget = PolishRequestBudget(claimed, Model(), lambda **_kwargs: None)
+    assert budget.structured(None, "", {}) == {}
+    with pytest.raises(PolishBudgetExhausted):
+        budget.structured(None, "", {})
+    assert budget.ledger["model_requests"] == ledger["model_requests"] + 2
+    assert store.fail_polish_job(claimed, code="budget_exhausted", message="额度用完", retry=False)
+    with pytest.raises(ValueError, match="已追加过"):
+        store.retry_polish(document, extra_model_calls=1)
 
 
 def test_new_note_publishes_without_affecting_original_index(knowledge_system, tmp_path):
@@ -166,6 +209,85 @@ def test_cache_is_materialized_per_generation_and_failed_rows_do_not_block_regen
     assert s.store.checkpoint_polish_batch(
         next_job, 0, result=accepted, review=dict(supported=True, issues=[])
     )
+
+
+def test_failed_exclusion_checkpoint_preserves_user_note_and_attempt_counters(
+    knowledge_system, tmp_path
+):
+    """A failed polish batch must not replace a saved note, its sources, or attempt totals."""
+    s = knowledge_system
+    document, job = setup_source(s, tmp_path)
+    published = s.store.publish_polished_note(job, body_for(s, document), {})
+    current = s.store.read_material_note("course-1", document["document_id"])
+    edited = deepcopy(current["revision"]["body"])
+    edited["content"][-1]["content"][0]["content"][0]["text"] = "我补充的理解。"
+    saved = s.store.save_material_note(document, published["revision_id"], "edit", edited)
+    saved_body = s.store.read_material_note("course-1", document["document_id"])["revision"]["body"]
+    saved_refs = [
+        node["attrs"].get("source_refs", [])
+        for node in saved_body["content"]
+        if node.get("attrs", {}).get("source_refs")
+    ]
+    knowledge_before = s.store.connection.execute(
+        "SELECT count(*) AS n FROM knowledge_points"
+    ).fetchone()["n"]
+    next_job = regenerate(s, document)
+    assert next_job["generation"] == job["generation"] + 1
+    assert next_job["attempts"] >= 1
+    rows = s.store.prepare_polish_batches(
+        next_job,
+        [
+            dict(cache_key="kept-context", units=[dict(id="kept")]),
+            dict(cache_key="failed-context", units=[dict(id="failed")]),
+        ],
+    )
+    assert [row["status"] for row in rows] == ["pending", "pending"]
+    assert s.store.checkpoint_polish_batch(
+        next_job,
+        0,
+        result=dict(elements=[], excluded=[]),
+        review=dict(supported=True, issues=[]),
+    )
+    assert s.store.checkpoint_polish_batch(
+        next_job,
+        1,
+        error="exclusion_failed",
+        review=dict(
+            supported=True,
+            issues=[],
+            program_errors=["块 failed 包含正文，不能按导航包装排除"],
+            program_error_classes=["exclusion_navigation"],
+        ),
+    )
+    assert s.store.fail_polish_job(next_job, code="exclusion_failed", message="stop", retry=False)
+    stored = s.store.connection.execute(
+        "SELECT status,attempts,phase_attempts,generation FROM material_note_polish_jobs "
+        "WHERE job_id=%s",
+        (next_job["job_id"],),
+    ).fetchone()
+    assert stored["status"] == "failed"
+    assert stored["attempts"] == next_job["attempts"]
+    assert stored["phase_attempts"] == next_job["phase_attempts"]
+    assert stored["generation"] == next_job["generation"]
+    failed_row = s.store.load_polish_batches(next_job)[1]
+    assert failed_row["error"] == "exclusion_failed"
+    assert failed_row["review"]["program_errors"]
+    head = s.store.note_head("course-1", document["document_id"])
+    assert head["latest_saved_revision_id"] == saved["revision_id"]
+    assert head["candidate_revision_id"] is None
+    current = s.store.read_material_note("course-1", document["document_id"])
+    assert "我补充的理解" in node_text(current["revision"]["body"])
+    assert [
+        node["attrs"].get("source_refs", [])
+        for node in current["revision"]["body"]["content"]
+        if node.get("attrs", {}).get("source_refs")
+    ] == saved_refs
+    assert (
+        s.store.connection.execute("SELECT count(*) AS n FROM knowledge_points").fetchone()["n"]
+        == knowledge_before
+    )
+    assert s.store.publish_polished_note(job, body_for(s, document), {}) is False
+    assert s.store.publish_polished_note(next_job, body_for(s, document), {}) is False
 
 
 def test_stale_token_or_generation_cannot_publish(knowledge_system, tmp_path):

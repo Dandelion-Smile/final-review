@@ -73,6 +73,46 @@ def test_ambiguous_body_is_excluded_but_teaching_notes_remain_independent(kind):
     assert units and all(u["origin"] == "teaching_note" for u in units)
 
 
+def test_preview_retry_clears_preview_error_and_does_not_open_a_second_job():
+    from conftest import MemoryStore
+
+    store = MemoryStore()
+    store.put(
+        "document",
+        "doc-1",
+        {
+            "document_id": "doc-1",
+            "parse_status": "failed",
+            "parse_error": "PPT 页数为空或超过 80 页限制",
+            "preview_status": "failed",
+            "preview_error": "PPT 页数为空或超过 80 页限制",
+            "note_body": "用户已经保存的原文",
+        },
+    )
+    store.put(
+        "material_job",
+        "job-1",
+        {
+            "job_id": "job-1",
+            "document_id": "doc-1",
+            "status": "failed",
+            "phase": "preview",
+            "attempts": 1,
+            "phase_attempts": 1,
+        },
+    )
+    retried = store.retry_material_job("job-1")
+    assert retried["status"] == "queued" and retried["job_id"] == "job-1"
+    document = store.get("document", "doc-1")
+    assert document["parse_status"] == "queued" and document["preview_status"] == "queued"
+    assert "parse_error" not in document and "preview_error" not in document
+    assert document["note_body"] == "用户已经保存的原文"
+    assert store.retry_material_job("job-1") is None
+    store.tables["material_job"]["job-1"]["status"] = "failed"
+    store.tables["document"]["doc-1"]["parse_status"] = "deleted"
+    assert store.retry_material_job("job-1") is None
+
+
 @pytest.mark.parametrize("mutation", ["url", "html", "duplicate", "foreign_image", "mark_url"])
 def test_untrusted_nodes_are_rejected(mutation):
     doc = body(("picture",))

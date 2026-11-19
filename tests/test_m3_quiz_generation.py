@@ -11,6 +11,7 @@ from test_llm import completion
 from test_m3_quiz_config import complete_input
 from test_m3_quiz_config import quiz_system as quiz_system
 from test_m3_quiz_contract import draft_case as draft_case
+from test_m3_quiz_contract import excerpt_output
 
 from final_review.api import create_app
 from final_review.domain import DomainConflict, DomainNotFound, DomainService
@@ -325,11 +326,13 @@ def test_real_sdk_generation_review_and_repair_roundtrip(draft_case):
         tool_calls.append(name)
         if name == "QuizDraftPlan":
             value = plan
-        elif name == "QuizDraftPayload":
-            value = payload
+        elif name == "QuizExcerptDraft":
+            value = excerpt_output(payload)
+        elif name == "QuizPaperReview":
+            value = {"supported": True, "issues": [], "affected_question_ids": []}
         else:
             # Force a semantic repair once; all calls use actual LangChain/SDK encoding.
-            failed = tool_calls.count("QuizSemanticReview") == 1
+            failed = tool_calls.count("QuizDraftSemanticReview") == 1
             value = {
                 "items": [
                     {
@@ -354,10 +357,11 @@ def test_real_sdk_generation_review_and_repair_roundtrip(draft_case):
         result = generate_quiz(system.store, model, context.config)
     assert tool_calls == [
         "QuizDraftPlan",
-        "QuizDraftPayload",
-        "QuizSemanticReview",
-        "QuizDraftPayload",
-        "QuizSemanticReview",
+        "QuizExcerptDraft",
+        "QuizDraftSemanticReview",
+        "QuizExcerptDraft",
+        "QuizDraftSemanticReview",
+        "QuizPaperReview",
     ]
     assert result["audit"][-1]["issues"] == []
 

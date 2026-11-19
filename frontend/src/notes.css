@@ -600,3 +600,7 @@ body:has(.note-export-dialog[open]) { overflow: hidden; }
   .note-export-file .note-actions { width: 100%; justify-content: flex-end; }
   .note-print-dialog .note-export-dialog-head { align-items: flex-start; flex-direction: column; }
 }
+
+.generated-note-layout .note-point-reading { display:block; margin:0; padding:1.25rem 0; border:0; border-radius:0; background:transparent; box-shadow:none; scroll-margin-top:1rem }
+.generated-note-layout .note-point-number { display:none }
+.generated-note-layout .material-note-document { min-width:0 }

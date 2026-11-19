@@ -3,6 +3,7 @@
 import json
 from copy import deepcopy
 
+from .catalog_generation import citation_links
 from .course_chat import CourseMaterials
 from .domain import DomainConflict, DomainNotFound, DomainService, _id, _now
 from .policy import SOURCE_LABELS
@@ -190,6 +191,20 @@ def save_quiz_revision(store, user_id: str, course_id: str, asset_id: str, edit:
                     "source_types": sorted({ref["source_type"] for ref in refs}),
                 }
             )
+            if catalog := base_payload["config"].get("catalog_scope"):
+                links = [
+                    [
+                        r
+                        for r in citation_links(
+                            catalog, ref["chunk_id"], ref["quote"], value["knowledge_point"]
+                        )
+                        if r["material_version_id"] == ref["material_version_id"]
+                    ]
+                    for ref in refs
+                ]
+                verified = [r for group in links for r in group] if all(links) else []
+                question["knowledge_point_ids"] = sorted({r["point_id"] for r in verified})
+                question["knowledge_sources"] = verified
             question["content_hash"] = paper_hash(question)
             questions.append(question)
             slots.append(

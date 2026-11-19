@@ -1,11 +1,13 @@
 """Formal quiz generation contract; no revision writes or model grading here."""
 
+import re
 from collections import Counter
 from decimal import Decimal
 from typing import Annotated
 
 from pydantic import Field, ValidationError, model_validator
 
+from .catalog_generation import citation_links, quiz_documents
 from .domain import DomainConflict, DomainNotFound, DomainService
 from .policy import SOURCE_LABELS
 from .quiz_answers import validate_extended_key
@@ -56,9 +58,7 @@ def build_quiz_context(store, config: ResolvedQuizConfig, evidence: list[dict]):
             raise DomainNotFound(config.exam_id)
         if exam.get("status") != "active" or exam.get("updated_at") != config.exam_updated_at:
             raise DomainConflict("考试配置已变更，请重新确认试卷配置")
-    documents = CourseMaterials(store, config.course_id, config.user_id).select(
-        config.source_document_ids, config.chapter
-    )
+    documents = quiz_documents(CourseMaterials(store, config.course_id, config.user_id), config)
     if {d["document_id"] for d in documents} != set(config.source_document_ids):
         raise DomainConflict("资料章节范围已变更，请重新确认配置")
     chunks = {}
@@ -104,7 +104,7 @@ class QuizDraftPlan(Model):
     allocations: list[QuizPlanItem] = Field(min_length=1, max_length=100)
 
 
-class QuizDraftQuestion(Model):
+class QuizQuestionFields(Model):
     id: Text
     order: int = Field(ge=1, le=100, strict=True)
     knowledge_point: Text
@@ -125,13 +125,26 @@ class QuizDraftQuestion(Model):
     must_include: list[Text] = Field(min_length=1, max_length=30)
     common_mistakes: list[Text] = Field(min_length=1, max_length=30)
     scoring_tips: Text
-    provenance: str = Field(pattern=r"^(source|synthesis|ai_supplement)$")
-    citations: list[Citation] = Field(default_factory=list, max_length=30)
 
     @model_validator(mode="after")
     def check_extended_keys(self):
         validate_extended_key(self.model_dump())
         return self
+
+
+class QuizDraftQuestion(QuizQuestionFields):
+    provenance: str = Field(pattern=r"^(source|synthesis|ai_supplement)$")
+    citations: list[Citation] = Field(default_factory=list, max_length=30)
+
+
+class QuizExcerptQuestion(QuizQuestionFields):
+    excerpt_ids: list[Text] = Field(max_length=30)
+    ai_supplement: bool = False
+
+
+class QuizExcerptDraft(Model):
+    title: Text
+    questions: list[QuizExcerptQuestion] = Field(min_length=1, max_length=100)
 
 
 class QuizDraftPayload(Model):
@@ -236,6 +249,11 @@ def _merge_same_chunk_citations(draft, evidence) -> None:
         grouped: dict[str, list] = {}
         order: list[str] = []
         for ref in question.citations:
+            content = lookup.get(ref.chunk_id, "")
+            if ref.quote not in content:
+                restored = _restore_slide_bullets(content, ref.quote)
+                if restored is not None:
+                    ref = ref.model_copy(update={"quote": restored})
             grouped.setdefault(ref.chunk_id, [])
             if not grouped[ref.chunk_id]:
                 order.append(ref.chunk_id)
@@ -250,6 +268,21 @@ def _merge_same_chunk_citations(draft, evidence) -> None:
             else:
                 merged.append(refs[0].model_copy(update={"quote": span}))
         question.citations = merged
+
+
+def _restore_slide_bullets(content: str, quote: str) -> str | None:
+    # Some slide fonts encode a list marker as U+F0B6. Keep all other characters,
+    # including whitespace, and map the unique match back to the original source.
+    markers = {m.start() for m in re.finditer(r"(?m)^\uf076(?=[ \t])", content)}
+    if not markers:
+        return None
+    offsets = [i for i in range(len(content)) if i not in markers]
+    searchable = "".join(content[i] for i in offsets)
+    start = searchable.find(quote)
+    if start < 0 or searchable.find(quote, start + 1) >= 0:
+        return None
+    original = content[offsets[start] : offsets[start + len(quote) - 1] + 1]
+    return original if len(original) <= 1500 else None
 
 
 def validate_quiz_plan(context: QuizGenerationContext, value: dict) -> list[dict]:
@@ -276,6 +309,10 @@ def validate_quiz_plan(context: QuizGenerationContext, value: dict) -> list[dict
             """
             issues.append({"code": "allocation", "message": "分配重复或包含排除项"})
         slots.add(key)
+    if config.catalog_scope and set(points) - {r["name"] for r in config.catalog_scope["refs"]}:
+        issues.append(
+            {"code": "knowledge_scope", "message": "请逐字使用 catalog_scope.refs 中的知识点 name"}
+        )
     if actual != expected:
         issues.append({"code": "plan_count", "message": "计划题型数量不符合配置"})
     if any(count > 6 for count in points.values()):
@@ -386,7 +423,11 @@ def validate_quiz_draft(context: QuizGenerationContext, plan: dict, payload: dic
         if question.question_type == "fill_blank" and not (
             question.accepted_answers or question.blank_answers
         ):
-            fail("accepted_answers", path, "填空题需要可接受答案")
+            fail(
+                "accepted_answers",
+                path,
+                "填空题需要可接受答案，单空填写 accepted_answers，多空按顺序填写 blank_answers",
+            )
         if question.question_type != "fill_blank" and question.accepted_answers:
             fail("accepted_answers", path, "非填空题不能包含填空答案列表")
         refs = []
@@ -407,6 +448,21 @@ def validate_quiz_draft(context: QuizGenerationContext, plan: dict, payload: dic
                 path,
                 "同一片段被引用了两次，且这些摘录无法合并成该片段中的一段连续原文",
             )
+        if config.catalog_scope:
+            links = []
+            for ref in question.citations:
+                matches = citation_links(
+                    config.catalog_scope, ref.chunk_id, ref.quote, question.knowledge_point
+                )
+                if not matches:
+                    fail("knowledge_evidence", path, "请逐字引用该知识点名下已核验的证据")
+                links.extend(matches)
+            if not links:
+                fail("knowledge_evidence", path, "题目缺少正式知识点证据")
+            canonical["questions"][index]["knowledge_point_ids"] = sorted(
+                {r["point_id"] for r in links}
+            )
+            canonical["questions"][index]["knowledge_sources"] = links
         documents = {item.document_id for item in refs}
         if question.provenance == "ai_supplement":
             if not config.allow_ai_supplement or question.citations:
@@ -414,8 +470,9 @@ def validate_quiz_draft(context: QuizGenerationContext, plan: dict, payload: dic
             label = "AI补充"
         else:
             count = len(documents)
-            if (question.provenance == "source" and count != 1) or (
-                question.provenance == "synthesis" and count < 2
+            if len(refs) == len(question.citations) and (
+                (question.provenance == "source" and count != 1)
+                or (question.provenance == "synthesis" and count < 2)
             ):
                 fail(
                     "provenance",

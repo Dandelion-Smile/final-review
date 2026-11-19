@@ -511,6 +511,7 @@ def test_user_account_purge_cascades_new_tables(knowledge_system):
 
 def test_upload_parse_build_full_chain_and_repeat_upload(knowledge_system, tmp_path):
     s = knowledge_system
+    s.settings.material_pptx_parse_mode = "text_only_polished"
     s.settings.auth_mode = "database"
     s.settings.auth_cookie_secure = False
     s.settings.api_token = SecretStr("")
@@ -533,9 +534,15 @@ def test_upload_parse_build_full_chain_and_repeat_upload(knowledge_system, tmp_p
                 headers={"Idempotency-Key": "knowledge-upload-proof"},
             )
             assert response.status_code == 202, response.text
-            material_job = s.store.claim_material_job()
-            process_material_job(s.store, s.kb, material_job, 10 * 1024 * 1024)
-            assert s.store.get_material_job(material_job["job_id"])["status"] == "succeeded"
+            assert response.json()["parse_strategy"] == "text-polish-v1"
+            preview = s.store.claim_material_job("preview")
+            assert preview and preview["job_id"] == response.json()["job_id"]
+            process_material_job(s.store, s.kb, preview, 10 * 1024 * 1024)
+            assert s.store.get_material_job(preview["job_id"])["status"] == "succeeded"
+            parse = s.store.claim_material_job("parse")
+            assert parse and parse["document_id"] == preview["document_id"]
+            process_material_job(s.store, s.kb, parse, 10 * 1024 * 1024)
+            assert s.store.get_material_job(parse["job_id"])["status"] == "succeeded"
             # Simulate a file parsed before this feature: repeated upload must enqueue its build.
             s.store.connection.execute("DELETE FROM knowledge_build_jobs")
             reused = client.post(

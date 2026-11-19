@@ -179,20 +179,31 @@ def _pdf_pages(path) -> list[dict]:
     return pages
 
 
-def extract_source_pages(path: Path, cache_dir, source_hash) -> list[dict]:
-    """Extract native text for any supported format. Never renders or OCRs."""
-    from .material_conversion import MAX_PRESENTATION_SLIDES
+def extract_source_pages(
+    path: Path,
+    cache_dir,
+    source_hash,
+    *,
+    parse_strategy: str | None = None,
+    text_max_slides: int | None = None,
+) -> list[dict]:
+    """Extract native text for any supported format. Never renders or OCRs.
 
+    PPT limits follow the saved ``parse_strategy``. Only ``text-polish-v1``
+    uses the text-only cap; a missing or historical strategy stays at 80.
+    """
     suffix = path.suffix.lower()
     if suffix in {".ppt", ".pptx"}:
-        from .material_hybrid import presentation_source
-        from .material_structure import inspect_presentation
+        from .material_conversion import presentation_slide_limit
+        from .material_hybrid import load_presentation_pages
 
-        source = presentation_source(path, cache_dir, source_hash)
-        pages = inspect_presentation(source.read_bytes())
-        if not pages or len(pages) > MAX_PRESENTATION_SLIDES:
-            raise ValueError(f"PPT 页数为空或超过 {MAX_PRESENTATION_SLIDES} 页限制")
-        return pages
+        return load_presentation_pages(
+            path,
+            cache_dir,
+            source_hash,
+            limit=presentation_slide_limit(parse_strategy, text_max_slides=text_max_slides),
+            parse_strategy=parse_strategy,
+        )
     if suffix in {".doc", ".docx"}:
         from markitdown import MarkItDown
 

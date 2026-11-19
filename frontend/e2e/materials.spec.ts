@@ -4,6 +4,27 @@ test.beforeEach(async ({ request }) => {
   await request.post("http://127.0.0.1:8081/test/reset");
 });
 
+async function retryFailedMaterialOnce(page: Page, fileName: string) {
+  const card = page.locator(".materials-list li").filter({ hasText: fileName });
+  await expect(card.getByRole("button", { name: "详情", exact: true })).toBeDisabled();
+  const retry = card.getByRole("button", { name: "重试", exact: true });
+  await expect(retry).toBeEnabled();
+  const listJobs = async () => {
+    const courses = await (await page.request.get("http://127.0.0.1:8081/api/courses")).json();
+    const courseId = courses.items[0].course_id;
+    const listed = await (await page.request.get(`http://127.0.0.1:8081/api/courses/${courseId}/material-jobs`)).json();
+    return listed.items as { job_id: string; status: string; phase?: string }[];
+  };
+  const before = await listJobs();
+  const target = before.find(job => job.status === "failed" && job.phase !== "images");
+  expect(target).toBeTruthy();
+  const responsePromise = page.waitForResponse(response => response.request().method() === "POST" && response.url().includes(`/material-jobs/${target!.job_id}/retry`));
+  await retry.click();
+  expect((await responsePromise).status()).toBe(202);
+  const after = await listJobs();
+  expect(after.map(job => job.job_id).sort()).toEqual(before.map(job => job.job_id).sort());
+}
+
 // Existing citations still open their source preview without a card action.
 async function openSourceCitation(page: Page) {
   const courses = await (await page.request.get("http://127.0.0.1:8081/api/courses")).json();
@@ -182,8 +203,7 @@ test("student uploads course material and sees a readable failure", async ({ pag
   await page.getByRole("button", { name: "上传并处理" }).click();
   await expect(page.locator(".material-status.failed")).toBeVisible();
   await expect(page.getByText("图片损坏或格式与扩展名不符")).toBeVisible();
-  await expect(page.locator(".material-actions").getByRole("button", { name: "重试", exact: true })).toHaveCount(0);
-  await expect(page.locator(".materials-list li").filter({ hasText: "bad.png" }).getByRole("button", { name: "详情", exact: true })).toBeDisabled();
+  await retryFailedMaterialOnce(page, "bad.png");
 });
 
 test("student filters and deletes an unreferenced material", async ({ page }) => {
@@ -288,9 +308,8 @@ test("duplicate uploads report ready and failed material states truthfully", asy
   await expect(page.locator(".materials-upload-results .processing_failed")).toContainText("已有资料处理失败");
   await expect(page.getByRole("status")).toContainText("具体原因见下方资料列表");
   await expect(page.getByRole("button", { name: "上传并处理" })).toBeDisabled();
-  await expect(page.locator(".material-actions").getByRole("button", { name: "重试", exact: true })).toHaveCount(0);
-  await expect(page.locator(".materials-list li").filter({ hasText: "broken.png" }).getByRole("button", { name: "详情", exact: true })).toBeDisabled();
   await expect(page.locator(".materials-list .material-detail")).toHaveCount(2);
+  await retryFailedMaterialOnce(page, "broken.png");
 });
 
 test("material polling continues when job and document snapshots differ", async ({ page, request }) => {

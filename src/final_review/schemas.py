@@ -299,6 +299,7 @@ class QuizInput(Model):
 
 
 class ResolvedQuizConfig(QuizInput):
+    catalog_scope: dict | None = Field(default=None, exclude_if=lambda scope: scope is None)
     scope_mode: Literal["course", "chapter", "knowledge_points"]
     blueprint: list[QuizBlueprintItem] = Field(min_length=1, max_length=7)
     duration_mode: Literal["timed", "untimed"]
@@ -399,6 +400,7 @@ class ChatRequest(Model):
 
 
 class ChatDecision(Model):
+    catalog_points: list[Text] = Field(default_factory=list, max_length=20)
     intent: Literal["note", "quiz", "ask", "clarify"] = "ask"
     action: Literal["general", "overview", "search", "read"] = "search"
     overview_kind: Literal["course", "statistics", "list", "all"] = "all"

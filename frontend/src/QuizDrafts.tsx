@@ -3,7 +3,7 @@ import { Modal } from "antd";
 import { courseHref } from "./course-routes";
 import { api, apiResponse, type Course } from "./workbench-api";
 import FormalAttemptView from "./FormalAttemptView";
-import QuizDraftPreview, { quizStages, type QuizJob } from "./QuizDraftPreview";
+import QuizDraftPreview, { quizStages, quizFailureText, type QuizJob } from "./QuizDraftPreview";
 import QuizConfigDialog, { type QuizInput, type PendingQuiz } from "./QuizConfigDialog";
 import Mistakes from "./Mistakes";
 import "./quiz-drafts.css";
@@ -132,7 +132,7 @@ export default function QuizDrafts({ courseId, routeDetail, courses = [] }: { co
       {tab === "mistakes" ? <Mistakes courses={courses} selectedCourseId={courseId} /> : loading ? <p role="status">正在加载测试…</p> : tab === "all" ? <>
         <div className="quiz-list-caption"><h2>我的试卷</h2><span>{items.length} 份试卷{taskJobs.length > 0 ? ` · ${taskJobs.length} 个生成任务` : ""}</span></div>
         {taskJobs.map(job => <a className="quiz-workspace-card quiz-task-card" key={job.job_id} href={courseHref(courseId, "quiz", ["jobs", job.job_id])}>
-          <div><span className={`quiz-status ${job.status === "failed" ? "is-failed" : "is-pending"}`}>{job.status === "failed" ? "生成失败" : job.status === "succeeded" ? "结果待检查" : "生成中"}</span><h3>试卷生成任务</h3><p>{job.status === "failed" ? job.error || "生成暂未完成，可查看原因后重试。" : quizStages[job.stage] || "正在处理"}{job.progress ? ` · ${job.progress.completed_questions}/${job.progress.total_questions} 题` : ""}</p></div><span className="quiz-card-action">{job.status === "failed" ? "查看并重试" : "查看进度"} →</span>
+          <div><span className={`quiz-status ${job.status === "failed" ? "is-failed" : "is-pending"}`}>{job.status === "failed" ? "生成失败" : job.status === "succeeded" ? "结果待检查" : "生成中"}</span><h3>试卷生成任务</h3><p>{job.status === "failed" ? quizFailureText(job) : quizStages[job.stage] || "正在处理"}{job.status !== "failed" && job.progress ? ` · ${job.progress.completed_questions}/${job.progress.total_questions} 题` : ""}</p></div><span className="quiz-card-action">{job.status === "failed" ? "查看并重试" : "查看进度"} →</span>
         </a>)}
         {items.map(item => {
           const draft = item.latest_revision_state === "draft" || item.status === "draft";
@@ -189,7 +189,7 @@ function QuizJobNotice({ courseId, jobId }: { courseId: string; jobId: string })
   }
   return <section className="quiz-job-notice"><span className="quiz-eyebrow">后台生成</span><h1>试卷生成任务</h1>
     {error && <div role="alert"><p>{error}</p><button type="button" onClick={() => setRefresh(value => value + 1)}>重新加载</button></div>}
-    {job?.status === "failed" ? <><p role="status">本次试卷生成失败：{job.error || "请稍后重试"}</p><button type="button" className="quiz-primary" disabled={retrying} onClick={() => void retry()}>重试生成</button></>
+    {job?.status === "failed" ? <><p role="status">{quizFailureText(job)}</p><button type="button" className="quiz-primary" disabled={retrying} onClick={() => void retry()}>重试生成</button></>
       : job?.status === "succeeded" && job.result ? <><p>{job.result.state === "confirmed" ? "试卷已生成，可以开始测试。" : "试卷已生成，可以查看试卷。"}</p><a className="quiz-primary" href={courseHref(courseId, "quiz", ["papers", job.result.asset_id, job.result.revision_id, ...(job.result.state === "confirmed" ? ["start"] : [])])}>{job.result.state === "confirmed" ? "开始测试" : "查看试卷"} →</a></>
         : <p role="status">{job ? `${quizStages[job.stage] || "正在处理"}${job.progress ? ` · 已完成 ${job.progress.completed_questions}/${job.progress.total_questions} 题` : ""}，可离开页面等待通知。` : "正在加载任务…"}</p>}
   </section>;

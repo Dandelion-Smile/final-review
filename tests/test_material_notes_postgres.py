@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 from test_course_knowledge_postgres import knowledge_system  # noqa: F401
 from test_material_text_images_postgres import app_for, run, submit
-from test_postgres_migrations import USER, database_url  # noqa: F401
+from test_postgres_migrations import USER, _seed_course, apply_migrations, database_url  # noqa: F401
 
 from final_review.material_notes import NoteConflict
 from final_review.postgres import PostgresStore
@@ -148,3 +148,86 @@ def test_document_deletion_cascades_notes_requests_and_children(knowledge_system
         "material_page_results",
     ):
         assert s.store.connection.execute(f"SELECT count(*) AS n FROM {table}").fetchone()["n"] == 0
+
+
+def test_preview_retry_clears_preview_error_and_keeps_one_job(database_url):
+    apply_migrations(database_url)
+    with psycopg.connect(database_url) as connection:
+        _seed_course(connection)
+    store = PostgresStore(database_url)
+    token = store.bind_user(str(USER))
+    try:
+        role = store.connection.execute(
+            "SELECT current_database() AS db, current_user AS usr, rolsuper, rolcreatedb "
+            "FROM pg_roles WHERE rolname = current_user"
+        ).fetchone()
+        assert role["db"] == "fr_stage1_repair_20261118"
+        assert role["usr"] == "fr_stage1_repair"
+        assert role["rolsuper"] is False and role["rolcreatedb"] is False
+        document = {
+            "document_id": "preview-doc",
+            "course_id": "course-1",
+            "user_id": str(USER),
+            "title": "预览失败",
+            "file_name": "slides.pptx",
+            "source_type": "teacher_ppt",
+            "parse_status": "queued",
+            "parse_strategy": "text-polish-v1",
+            "content_sha256": "preview-sha",
+            "chunk_count": 0,
+        }
+        store.create_material_job(
+            document,
+            {
+                "job_id": "preview-job",
+                "document_id": "preview-doc",
+                "course_id": "course-1",
+                "idempotency_key": "preview-once",
+                "fingerprint": "preview-fp",
+                "phase": "preview",
+            },
+        )
+        claimed = store.claim_material_job("preview")
+        assert claimed["job_id"] == "preview-job"
+        assert store.fail_material_job(
+            "preview-job",
+            claimed["attempts"],
+            code="invalid_material",
+            message="PPT 页数为空或超过 80 页限制",
+            retry=False,
+            lease_token=claimed["lease_token"],
+        )
+        failed = store.get("document", "preview-doc")
+        assert failed["preview_status"] == "failed"
+        assert failed["preview_error"] == "PPT 页数为空或超过 80 页限制"
+        assert failed["parse_status"] == "failed" and "parse_error" in failed
+        notes_before = store.connection.execute(
+            "SELECT count(*) AS n FROM material_note_revisions"
+        ).fetchone()["n"]
+        retried = store.retry_material_job("preview-job")
+        assert retried["job_id"] == "preview-job" and retried["status"] == "queued"
+        assert store.retry_material_job("preview-job") is None
+        cleared = store.get("document", "preview-doc")
+        assert cleared["preview_status"] == "queued" and cleared["parse_status"] == "queued"
+        assert "preview_error" not in cleared and "parse_error" not in cleared
+        assert store.connection.execute("SELECT count(*) AS n FROM material_jobs").fetchone()["n"] == 1
+        assert (
+            store.connection.execute("SELECT count(*) AS n FROM material_note_revisions").fetchone()[
+                "n"
+            ]
+            == notes_before
+        )
+        with store.transaction():
+            store.connection.execute(
+                "UPDATE documents SET data = data || jsonb_build_object('parse_status','deleted') "
+                "WHERE document_id=%s",
+                ("preview-doc",),
+            )
+            store.connection.execute(
+                "UPDATE material_jobs SET status='failed' WHERE job_id='preview-job'"
+            )
+        assert store.retry_material_job("preview-job") is None
+        assert store.connection.execute("SELECT count(*) AS n FROM material_jobs").fetchone()["n"] == 1
+    finally:
+        store.reset_user(token)
+        store.close()

@@ -8,6 +8,7 @@ from uuid import uuid4
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
+from .catalog_generation import citation_links, scoped_chunks
 from .checkpoints import SurrealSaver
 from .config import Settings
 from .domain import DomainService
@@ -216,7 +217,9 @@ class FinalReviewAgent:
     def _config(self, key):
         return {"configurable": {"thread_id": key}, "recursion_limit": 40}
 
-    def invoke(self, request: AgentRequest, user_id: str | None = None) -> AgentResponse:
+    def invoke(
+        self, request: AgentRequest, user_id: str | None = None, *, catalog_scope=None
+    ) -> AgentResponse:
         key = self._key(request.course_id, request.session_id)
         with self._lock(key):
             self._require_not_cancelled(key)
@@ -229,6 +232,8 @@ class FinalReviewAgent:
                 if request.note_input is not None
                 else {}
             )
+            if catalog_scope:
+                incoming["catalog_scope"] = catalog_scope
             incoming["owner_id"] = user_id
             incoming["quiz_input"] = (
                 request.quiz_input.model_dump(mode="json", exclude_unset=True)
@@ -510,7 +515,15 @@ class FinalReviewAgent:
         return {"request": request}
 
     def _note_parse(self, state):
-        extracted = NoteInput.model_validate(self.model.note_request(state["request"]))
+        request = state["request"]
+        extracted = NoteInput.model_validate(
+            self.model.note_request({k: v for k, v in request.items() if k != "catalog_scope"})
+        )
+        if request.get("catalog_scope"):
+            extracted.source_document_ids = []
+            extracted.scope = request["catalog_scope"]["title"]
+            extracted.note_type = extracted.note_type or "chapter"
+            extracted.duration_minutes = extracted.duration_minutes or 15
         explicit = state["request"].get("note_input") or {}
         return {"note_input": {**extracted.model_dump(mode="json"), **explicit}}
 
@@ -540,6 +553,10 @@ class FinalReviewAgent:
             available.add(document["document_id"])
         if selected != available:
             raise ValueError("所选资料不存在、不可用或不属于当前课程")
+        if scope := request.get("catalog_scope"):
+            if not selected <= {r["document_id"] for r in scope["refs"]}:
+                raise ValueError("所选资料超出知识目录范围")
+            return missing, note.source_document_ids
         for chapter, number in _chapter_requirements(note.scope):
             matching = False
             for document_id in note.source_document_ids:
@@ -665,6 +682,13 @@ class FinalReviewAgent:
                             "source_type": source["source_type"],
                         }
                     )
+                if catalog := request.get("catalog_scope"):
+                    if not refs or any(
+                        not citation_links(catalog, r["chunk_id"], r["quote"]) for r in refs
+                    ):
+                        issues.append(
+                            "每个小节须引用对应知识点 verified_excerpts 中单条 quote 的连续原文"
+                        )
                 distinct = {ref["document_id"] for ref in refs}
                 if point.provenance == "ai_supplement" and refs:
                     issues.append(f"第 {index} 条 AI 补充不得带资料引用")
@@ -726,6 +750,10 @@ class FinalReviewAgent:
         points = []
         for source in evidence:
             content = source["content"].strip()
+            verified = source.get("verified_excerpts")
+            if verified:
+                excerpt = max(verified, key=lambda r: len(r["quote"]))
+                content = excerpt["quote"]
             if not content or any(point["content"] == content[:400] for point in points):
                 continue
             if source.get("position_kind") == "page" and source.get("position"):
@@ -741,7 +769,7 @@ class FinalReviewAgent:
             )
             points.append(
                 {
-                    "heading": heading[:200],
+                    "heading": excerpt["name"][:200] if verified else heading[:200],
                     "content": content[:400],
                     "provenance": "source",
                     "excerpt": True,
@@ -826,7 +854,8 @@ class FinalReviewAgent:
         grouped = {}
         file_names = {}
         chapter_scoped = {}
-        if config.get("chapter"):
+        catalog = request.get("catalog_scope")
+        if config.get("chapter") and not catalog:
             from .course_chat import CourseMaterials
 
             chapter_scoped = {
@@ -840,7 +869,7 @@ class FinalReviewAgent:
         for document_id in config["source_document_ids"]:
             document = (
                 chapter_scoped.get(document_id)
-                if config.get("chapter")
+                if config.get("chapter") and not catalog
                 else self.store.get("document", document_id)
             )
             if (
@@ -852,7 +881,12 @@ class FinalReviewAgent:
                 raise ValueError("所选资料已不可用")
             file_names[document_id] = document.get("file_name") or document["title"]
             grouped[document_id] = []
-            for chunk in document.get("_chat_chunks", self.store.list_material_chunks(document_id)):
+            chunks = (
+                scoped_chunks(self.store, document, catalog)
+                if catalog
+                else document.get("_chat_chunks", self.store.list_material_chunks(document_id))
+            )
+            for chunk in chunks:
                 if not chunk["content"].strip():
                     continue
                 grouped[document_id].append(
@@ -874,7 +908,7 @@ class FinalReviewAgent:
         restrict_chapters = bool(chapter_requests) and not any(
             term in scope for term in ("重点", "侧重", "着重", "优先")
         )
-        if restrict_chapters:
+        if restrict_chapters and not catalog:
             matched = {}
             for document_id, items in grouped.items():
                 if not items:
@@ -979,6 +1013,14 @@ class FinalReviewAgent:
         if not plan:
             return {"response": self._note_refusal(request["session_id"])}
         evidence = plan["evidence"]
+        catalog = request.get("catalog_scope")
+        if catalog:
+            by_chunk = defaultdict(list)
+            for source in catalog["refs"]:
+                by_chunk[source["chunk_id"]].append(source)
+            evidence = [
+                {**item, "verified_excerpts": by_chunk[item["chunk_id"]]} for item in evidence
+            ]
         batches = (
             [evidence[index : index + 10] for index in range(0, len(evidence), 10)]
             if len(evidence) > 12
@@ -988,6 +1030,19 @@ class FinalReviewAgent:
         for index, batch in enumerate(batches):
             source_ids = [item["chunk_id"] for item in batch]
             cached = progress.completed.get(str(index)) if progress else None
+            if (
+                catalog
+                and cached
+                and any(
+                    not point["references"]
+                    or any(
+                        not citation_links(catalog, ref["chunk_id"], ref["quote"])
+                        for ref in point["references"]
+                    )
+                    for point in cached["points"]
+                )
+            ):
+                cached = None
             if cached and cached.get("source_ids") == source_ids:
                 result = cached
             else:
@@ -1028,6 +1083,18 @@ class FinalReviewAgent:
         available = {item["chunk_id"]: item for item in evidence}
         for point in points:
             sources = set()
+            catalog = request.get("catalog_scope")
+            if catalog:
+                if not point["references"]:
+                    raise ValueError("目录笔记的每段内容都需要原文引用")
+                links = []
+                for ref in point["references"]:
+                    matches = citation_links(catalog, ref["chunk_id"], ref["quote"])
+                    if not matches:
+                        raise ValueError("笔记引文超出所选知识点证据")
+                    links.extend(matches)
+                point["knowledge_point_ids"] = sorted({r["point_id"] for r in links})
+                point["knowledge_sources"] = links
             for ref in point["references"]:
                 source = available.get(ref["chunk_id"])
                 if source is None or ref["quote"] not in source["content"]:
@@ -1049,6 +1116,8 @@ class FinalReviewAgent:
             )
         )
         title = re.sub(r"\s*[（(]?批次\s*\d+\s*/\s*\d+[）)]?", "", results[0]["title"]).strip()
+        if catalog:
+            title = catalog["title"] + "复习笔记"
         if fallback_count:
             title = f"{title}（含 {fallback_count} 部分资料摘录）"
         coverage = plan["coverage"]
@@ -1066,6 +1135,7 @@ class FinalReviewAgent:
                 "note_type": config["note_type"],
                 "points": points,
                 "coverage": coverage,
+                "catalog_scope": request.get("catalog_scope"),
             },
             state["run_id"],
         )

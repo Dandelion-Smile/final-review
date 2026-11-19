@@ -460,9 +460,15 @@ class MemoryStore:
                 error_message=None,
             )
             document = self.tables["document"][job["document_id"]]
-            if job["phase"] != "images":
+            phase = job.get("phase", "parse")
+            if phase != "images":
                 document["parse_status"] = "queued"
                 document.pop("parse_error", None)
+            if phase == "preview":
+                document["preview_status"] = "queued"
+                document.pop("preview_error", None)
+            elif phase == "images":
+                document["images_status"] = "queued"
             return deepcopy(job)
 
 

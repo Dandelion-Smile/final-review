@@ -6,7 +6,7 @@ React + TypeScript + Vite 前端。默认打开“我的课程”卡片列表，
 
 路由：`#/courses` 为课程列表，`#/courses/:courseId/overview|materials|notes|quizzes|tutor` 为课程内页面；裸课程地址也打开总览。笔记详情及对话可继续追加内容 ID。原有 `#note/...`、`#materials/...`、`#chat/...` 链接仍兼容。侧栏沿用现有蓝色，展开 224px / 收起 64px，手机端使用抽屉导航。
 
-课程总览读取 `/api/courses/:courseId/knowledge-tree`、`documents`、`notes`、`quizzes` 和 `formal-attempts`。知识树根据真实来源资料的章节排序，没有章节信息时归入“未分章”；只展示存在有效资料来源且已通过证据核验的入库知识点，合并知识点保留所有来源。默认展开前两章，支持搜索、全部展开/收起和来源定位。右侧各展示两条内容，可进入完整列表；笔记跳到具体版本，资料进入阅读预览，测试优先继续进行中的作答，其次查看已完成作答或试卷。各区域独立处理加载失败；空知识库显示空态，不用示例内容填充。存在解析或知识构建任务时每 10 秒刷新。
+课程总览读取 `/api/courses/:courseId/knowledge-tree`、`documents`、`notes`、`quizzes` 和 `formal-attempts`。没有正式课程目录时，知识树仍按真实来源资料的章节排序，没有章节信息时归入“未分章”，并提示“当前按资料章节展示”。`catalog.status` 为 `ready` 或 `stale` 时改用已发布的课程级章节；章节数使用 `catalog.chapter_count`，不用 `chapters.length`，因为数组里可能另有虚拟“未分章”。正式章节即使暂时没有知识点也保留，并显示轻量空态；虚拟“未分章”只在有知识点时出现。同一未分章里，`unclassified` 显示“暂未归入章节”，`pending_catalog` 显示“等待目录整理”，两者都不是分类失败。`stale` 继续展示上一版，目录整理中也不把已有内容换成整页加载。`CatalogNoChanges` 不提示分类失败；目录随后变为 `stale` 时仍提示尚未同步。`SupersededBeforeExecution` 不当作错误。只展示存在有效资料来源且已通过证据核验的入库知识点，合并知识点保留所有来源。默认展开前两章，支持搜索、全部展开/收起和来源定位。右侧各展示两条内容，可进入完整列表；笔记跳到具体版本，资料进入阅读预览，测试优先继续进行中的作答，其次查看已完成作答或试卷。各区域独立处理加载失败；空知识库显示空态，不用示例内容填充。资料解析、知识构建或 `catalog.is_updating` 任一仍在进行时，沿用原来的 10 秒刷新；`stale`、`uninitialized` 和已结束的目录任务本身不持续轮询。同一课程的后台刷新保留当前内容，后到达的旧响应不会覆盖更新的目录。
 
 启动：
 

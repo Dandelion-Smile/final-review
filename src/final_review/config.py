@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     material_pptx_parse_mode: Literal["hybrid_visual", "text_images", "text_only_polished"] = (
         "hybrid_visual"
     )
+    # Cap for a saved text-polish-v1 task only. Keep in sync with
+    # material_conversion.MATERIAL_TEXT_MAX_SLIDES_MIN/MAX. Visual paths use
+    # MAX_PRESENTATION_SLIDES (80) and do not read this value.
+    material_text_max_slides: int = Field(default=120, ge=1, le=500)
     material_note_edit_enabled: bool = False
     material_preview_concurrency: int = Field(default=2, ge=1, le=4)
     material_image_concurrency: int = Field(default=1, ge=1, le=2)
@@ -80,6 +84,15 @@ class Settings(BaseSettings):
     embedding_request_concurrency: int = Field(default=2, ge=1, le=8)
     knowledge_task_concurrency: int = Field(default=2, ge=1, le=4)
     knowledge_model_id: str = "default"
+    # Standalone catalog process: opt in only after migration/environment review.
+    catalog_scheduler_enabled: bool = False
+    catalog_scan_interval_seconds: int = Field(default=10, ge=1, le=3600)
+    catalog_reconcile_interval_seconds: int = Field(default=60, ge=1, le=86400)
+    catalog_quiet_window_seconds: int = Field(default=60, ge=1, le=3600)
+    catalog_max_wait_seconds: int = Field(default=300, ge=1, le=86400)
+    catalog_max_concurrency: int = Field(default=1, ge=1, le=4)
+    catalog_page_size: int = Field(default=100, ge=1, le=1000)
+    catalog_model_id: str = "default"
     knowledge_model_timeout: float = Field(default=180, gt=0, le=600)
     knowledge_max_output_tokens: int = Field(default=8192, ge=2048, le=32768)
     knowledge_extractor_version: str = "course-knowledge-v1"
@@ -120,6 +133,14 @@ class Settings(BaseSettings):
         if self.retrieval_candidates < self.top_k:
             raise ValueError("RETRIEVAL_CANDIDATES 必须 >= TOP_K")
         return self
+
+    @field_validator("material_text_max_slides", mode="before")
+    @classmethod
+    def material_text_max_slides_is_int(cls, value):
+        # bool is an int subclass; reject it before Pydantic coerces True to 1.
+        if isinstance(value, bool):
+            raise ValueError("MATERIAL_TEXT_MAX_SLIDES 必须是 1 到 500 的整数")
+        return value
 
     @field_validator("chat_models")
     @classmethod

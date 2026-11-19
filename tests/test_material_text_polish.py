@@ -2,12 +2,27 @@
 
 import json
 
+from final_review.config import Settings
 from final_review.material_note_polish import (
+    BATCH_TASK,
+    DOCUMENT_REVIEW_TASK,
+    OUTLINE_TASK,
+    POLISH_PROMPT_VERSION,
+    REVIEW_TASK,
+    PolishBatch,
+    PolishOutline,
     assemble_body,
+    batch_reuse_decision,
     build_batches,
     check_batch,
+    contract_mismatches,
+    exclusion_errors,
     final_coverage,
+    outline_checkpoint_reusable,
     outline_input,
+    polish_model_config,
+    program_error_class,
+    repair_batch,
     repair_outline,
     validate_outline,
 )
@@ -318,6 +333,257 @@ def test_check_batch_allows_reasoned_exclusion_of_placeholders():
         "excluded": [{"block_id": "native-b", "reason": "页码"}],
     }
     assert check_batch(result, batch) == []
+
+
+def _exclusion_batch(*units):
+    return _batch(list(units))
+
+
+def _block(key, text, **kwargs):
+    block = dict(id=key, page=2, kind="text", reliable=True, issues=[], text=text)
+    block.update(kwargs)
+    return block
+
+
+def test_phase3_generation_contract_is_unchanged():
+    """Failure handling must not move the frozen prompt digest or contract."""
+    settings = Settings(_env_file=None, llm_api_key="test")
+    current = polish_model_config(settings)
+    assert POLISH_PROMPT_VERSION == "material-learning-v2"
+    assert current["contract_version"] == "material-learning-v2"
+    assert current["prompt_digest"] == (
+        "a6b9c0c5fd6755707b0427b3690f43a612195dbace283be6c3b38f2a36d32ec8"
+    )
+    assert "course_admin" in BATCH_TASK
+    assert "navigation/duplicate/unreadable" in OUTLINE_TASK
+    assert "supported=true" in REVIEW_TASK
+    assert "severity=error" in DOCUMENT_REVIEW_TASK
+    frozen = dict(current)
+    assert contract_mismatches(frozen, current) == []
+    changed = dict(frozen, prompt_digest="0" * 64)
+    assert contract_mismatches(changed, current) == ["prompt_digest"]
+    assert PolishOutline.model_json_schema()["title"] == "PolishOutline"
+    assert PolishBatch.model_json_schema()["title"] == "PolishBatch"
+
+
+def test_failed_batch_exclusion_rules_reject_then_restore_reliable_text():
+    """Batches 0/4/6: body as navigation, knowledge as course_admin, unverified duplicate."""
+    body = _block("body", "聚类是把相似对象分成组的方法。")
+    knowledge = _block("knowledge", "支持度表示项集出现的频率，它是关联规则的基本度量。")
+    kept = _block("kept", "置信度表示规则的可靠程度。")
+    other = _block("other", "提升度表示规则的相关性强弱。")
+    raw = {
+        "elements": [
+            {"type": "paragraph", "text": kept["text"], "items": [], "source_refs": ["kept"]},
+        ],
+        "excluded": [
+            {
+                "block_id": "body",
+                "reason": "目录标题",
+                "category": "navigation",
+                "duplicate_of": "",
+            },
+            {
+                "block_id": "knowledge",
+                "reason": "课堂安排",
+                "category": "course_admin",
+                "duplicate_of": "",
+            },
+            {
+                "block_id": "other",
+                "reason": "与置信度重复",
+                "category": "duplicate",
+                "duplicate_of": "kept",
+            },
+        ],
+    }
+    batch = _exclusion_batch(body, knowledge, kept, other)
+    raw_errors = check_batch(raw, batch)
+    assert any("包含正文" in error for error in raw_errors)
+    assert any("不是可排除的课程安排" in error for error in raw_errors)
+    assert any("缺少可验证的逐字重复来源" in error for error in raw_errors)
+    assert {program_error_class(error) for error in raw_errors} >= {
+        "exclusion_navigation",
+        "exclusion_course_admin",
+        "exclusion_duplicate",
+    }
+    # The reviewer agreeing does not make these exclusions legal.
+    assert exclusion_errors(raw["excluded"], {unit["id"]: unit for unit in batch["units"]})
+
+    repaired = repair_batch(json.loads(json.dumps(raw)), batch)
+    assert check_batch(repaired, batch) == []
+    restored = {element["text"] for element in repaired["elements"]}
+    assert body["text"] in restored
+    assert knowledge["text"] in restored
+    assert other["text"] in restored
+    assert kept["text"] in restored
+    assert {item["block_id"] for item in repaired["excluded"]} == set()
+    for element in repaired["elements"]:
+        if element["text"] == body["text"]:
+            assert element["source_refs"] == ["body"]
+            assert element["content_role"] == "source"
+            assert element["text"] == body["text"]
+
+
+def test_legal_exclusions_are_not_restored_and_verbatim_duplicates_stay_collapsed():
+    navigation = _block("nav", "1 数据预处理\n2 关联规则")
+    admin = _block("admin", "下节课预习要求：阅读教材第三章。")
+    gap = _block("gap", "配置示例")
+    original = _block("original", "谢谢观看")
+    copy = _block("copy", "谢谢观看")
+    outside = _block("outside", "这个概念需要单独保留，不能只凭另一批的判断删除。")
+    raw = {
+        "elements": [
+            {
+                "type": "paragraph",
+                "text": original["text"],
+                "items": [],
+                "source_refs": ["original"],
+            }
+        ],
+        "excluded": [
+            {"block_id": "nav", "reason": "目录", "category": "navigation", "duplicate_of": ""},
+            {
+                "block_id": "admin",
+                "reason": "预习安排",
+                "category": "course_admin",
+                "duplicate_of": "",
+            },
+            {"block_id": "gap", "reason": "只有标题", "category": "source_gap", "duplicate_of": ""},
+            {
+                "block_id": "copy",
+                "reason": "逐字重复",
+                "category": "duplicate",
+                "duplicate_of": "original",
+            },
+            {
+                "block_id": "outside",
+                "reason": "别的批次有",
+                "category": "duplicate",
+                "duplicate_of": "not-in-this-batch",
+            },
+        ],
+    }
+    batch = _exclusion_batch(navigation, admin, gap, original, copy, outside)
+    assert (
+        check_batch(
+            {
+                "elements": raw["elements"],
+                "excluded": [item for item in raw["excluded"] if item["block_id"] != "outside"],
+            },
+            _exclusion_batch(navigation, admin, gap, original, copy),
+        )
+        == []
+    )
+    repaired = repair_batch(json.loads(json.dumps(raw)), batch)
+    assert check_batch(repaired, batch) == []
+    texts = [element["text"] for element in repaired["elements"]]
+    assert texts.count(original["text"]) == 1
+    assert navigation["text"] not in texts
+    assert admin["text"] not in texts
+    assert gap["text"] not in texts
+    assert outside["text"] in texts
+    excluded = {item["block_id"]: item["category"] for item in repaired["excluded"]}
+    assert excluded["nav"] == "navigation"
+    assert excluded["admin"] == "course_admin"
+    assert excluded["gap"] == "source_gap"
+    assert "outside" not in excluded
+    if "copy" in excluded:
+        assert excluded["copy"] == "duplicate"
+    else:
+        assert "copy" in repaired["elements"][0]["source_refs"]
+    again = repair_batch(json.loads(json.dumps(repaired)), batch)
+    assert [element["text"] for element in again["elements"]] == texts
+
+
+def test_unreliable_text_is_retargeted_instead_of_rewritten_as_a_conclusion():
+    fragment = _block("figure", "图中的箭头关系无法辨认。", reliable=False)
+    raw = {
+        "elements": [],
+        "excluded": [
+            {
+                "block_id": "figure",
+                "reason": "当成目录删了",
+                "category": "navigation",
+                "duplicate_of": "",
+            }
+        ],
+    }
+    batch = _exclusion_batch(fragment)
+    assert any("包含正文" in error for error in check_batch(raw, batch))
+    repaired = repair_batch(raw, batch)
+    assert check_batch(repaired, batch) == []
+    assert repaired["elements"] == []
+    assert repaired["excluded"][0]["category"] == "unreadable"
+
+
+def test_outline_and_batch_reuse_reject_incompatible_checkpoints():
+    units = [_block("a", "默认端口为 8080。")]
+    outline = {
+        "document_title": "笔记",
+        "sections": [{"title": "配置", "level": 1, "block_ids": ["a"]}],
+        "excluded": [],
+    }
+    assert outline_checkpoint_reusable({"input_hash": "plan", "outline": outline}, "plan", units)
+    assert not outline_checkpoint_reusable(
+        {"input_hash": "other", "outline": outline}, "plan", units
+    )
+    broken = dict(outline, sections=[])
+    assert not outline_checkpoint_reusable({"input_hash": "plan", "outline": broken}, "plan", units)
+    batch = _exclusion_batch(*units)
+    batch["cache_key"] = "same"
+    good = {
+        "elements": [
+            {"type": "paragraph", "text": "默认端口为 8080。", "source_refs": ["a"], "items": []}
+        ],
+        "excluded": [],
+    }
+    row = {
+        "cache_key": "same",
+        "status": "done",
+        "result": good,
+        "review": {"supported": True, "issues": []},
+    }
+    assert batch_reuse_decision(row, batch) == "reuse"
+    assert batch_reuse_decision({**row, "cache_key": "other"}, batch) == "cache_key"
+    assert (
+        batch_reuse_decision(
+            {
+                **row,
+                "review": {"supported": True, "issues": [{"severity": "error", "issue": "漏了"}]},
+            },
+            batch,
+        )
+        == "review"
+    )
+    ungrounded = {
+        "elements": [
+            {"type": "paragraph", "text": "默认端口为 9090。", "source_refs": ["a"], "items": []}
+        ],
+        "excluded": [],
+    }
+    assert batch_reuse_decision({**row, "result": ungrounded}, batch) == "program"
+    changed_context = build_batches(
+        [{"title": "配置", "level": 1, "block_ids": ["a"], "note": "理解端口"}],
+        units,
+        max_blocks=24,
+        user_id="u",
+        document_id="d",
+        source_hash="hash-a",
+        model_config={"contract_version": "material-learning-v2"},
+        prompt_version="material-learning-v2",
+    )
+    other_source = build_batches(
+        [{"title": "配置", "level": 1, "block_ids": ["a"], "note": "理解端口"}],
+        units,
+        max_blocks=24,
+        user_id="u",
+        document_id="d",
+        source_hash="hash-b",
+        model_config={"contract_version": "material-learning-v2"},
+        prompt_version="material-learning-v2",
+    )
+    assert changed_context[0]["cache_key"] != other_source[0]["cache_key"]
 
 
 # --------------------------------------------------------- assembly/publish

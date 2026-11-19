@@ -22,7 +22,7 @@ def now():
 
 
 def public_quiz_job(job):
-    return {
+    public = {
         key: job.get(key)
         for key in (
             "job_id",
@@ -37,6 +37,33 @@ def public_quiz_job(job):
             "updated_at",
         )
     }
+    if job.get("status") == "failed":
+        issues = job.get("issues") or []
+        citation_paths = {
+            i.get("path", "").split(".citations")[0] for i in issues if i.get("code") == "citation"
+        }
+        if citation_paths:
+            public_issues = []
+            for issue in issues:
+                path = issue.get("path", "")
+                if issue.get("code") == "provenance" and path in citation_paths:
+                    continue
+                if issue.get("code") == "citation":
+                    issue = {**issue, "message": "资料引用未通过核对"}
+                if issue not in public_issues:
+                    public_issues.append(issue)
+            public["issues"] = public_issues
+            public["error"] = "试卷尚未发布"
+            state = job.get("checkpoint") or {}
+            from .quiz_generation import _batch_state_key
+
+            count = sum(len(b["questions"]) for b in state.get("completed", []))
+            for slots in state.get("pending", []):
+                record = state.get("batch_generation_state", {}).get(_batch_state_key(slots), {})
+                count += len((record.get("candidate") or {}).get("questions", []))
+            if count:
+                public["error"] = f"已生成 {count} 道候选题，试卷尚未发布"
+    return public
 
 
 def owned_job(store, user_id, course_id, job_id, *, for_update=False):
@@ -134,6 +161,16 @@ def retry_quiz(store, user_id, course_id, job_id):
             if other and other["status"] in {"queued", "running"}:
                 raise DomainConflict("当前对话已有试卷正在生成")
             store.put("conversation", key, {**conversation, "active_quiz": {"job_id": job_id}})
+        # A user retry can revalidate the saved candidate under current rules.
+        # Leave automatic lease recovery and the generation attempt limit intact.
+        for batch in (job.get("checkpoint") or {}).get("batch_generation_state", {}).values():
+            if batch.get("passed"):
+                continue
+            batch["audit"].append({"phase": "manual_retry", "previous_attempts": batch["attempts"]})
+            batch["attempts"] = 0
+            codes = {issue.get("code") for issue in batch.get("issues", [])}
+            if batch.get("candidate") and "citation" in codes:
+                batch["evaluated"] = False
         # Keep the attempt counter monotonic so a previous worker can never regain its lease.
         job.update(
             status="queued",

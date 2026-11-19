@@ -140,3 +140,31 @@ def test_tree_endpoint_requires_owner_and_returns_actual_knowledge(knowledge_sys
             assert client.get("/api/courses/course-1/knowledge-tree").status_code == 404
         finally:
             auth.close()
+
+
+@pytest.mark.integration
+def test_tree_projects_build_activity_independently_of_catalog_job(knowledge_system):  # noqa: F811
+    system = knowledge_system
+    parsed(system)
+    repo = KnowledgeRepository(system.store)
+    queued = read_tree(repo, "course-1")
+    assert queued["build_status"] == {"queued": 1}
+    assert queued["catalog_job"] is None
+    assert queued["catalog"]["status"] == "uninitialized"
+    assert queued["catalog"]["is_updating"] is False
+
+    job = repo.claim()
+    assert job is not None
+    running = read_tree(repo, "course-1")
+    assert running["build_status"] == {"running": 1}
+    assert running["catalog_job"] is None
+    assert running["catalog"]["is_updating"] is False
+
+    process(system, [("HTTP", "HTTP无状态性", [STATELESS])], job=job)
+    ready = read_tree(repo, "course-1")
+    assert ready["build_status"] == {"succeeded": 1}
+    assert ready["point_count"] == 1
+    assert len(ready["chapters"]) == 1
+    assert ready["catalog"]["chapter_count"] == 0
+    assert ready["catalog"]["version_id"] is None
+    assert ready["catalog_job"] is None
